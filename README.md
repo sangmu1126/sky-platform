@@ -133,3 +133,15 @@ GitHub Actions에는 코드 검사, UI 테스트, 서비스 이미지 검증과 
 - [호스팅 ZIP 접수](docs/b-upload-preview-flow.md) · [원격 빌드](docs/b-consumer-remote-build.md) · [이미지 배포](docs/b-built-image-deployment.md)
 - [상태 저장소](docs/state-store-boundary.md) · [PostgreSQL 상태 DB](docs/postgres-state-foundation.md)
 - [서비스 이미지와 인프라 연결](docs/infra-image-pr.md)
+
+## 자동 선택 평가
+
+저장소 루트에서 규칙 평가를 실행합니다. 고정된 합성 앱 10개를 사용하며, 클라우드 리소스는 생성하지 않습니다.
+
+```bash
+python -m tests.live.evaluate_target_selection
+# OPENAI_API_KEY를 설정한 뒤, HTTP 앱 4개에 실제 모델 평가 추가
+python -m tests.live.evaluate_target_selection --live
+```
+
+JSON 결과는 규칙·모델 검증을 구분합니다. 허용 대상·작업 유형·소스 인용을 확인하며, 판단 이유의 타당성은 별도 검토가 필요합니다. 실배포·최적 비용·전체 선택 품질의 증명은 아닙니다.
