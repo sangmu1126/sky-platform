@@ -2,7 +2,8 @@
 
 **One Action, Infinite Clouds.** 웹앱을 올리면 실행 환경을 판단하고, 배포 결과를 확인합니다.
 
-SoftBank Hackathon 2026 팀 **SoftBank-Hydrogen**의 배포 플랫폼입니다.
+SoftBank Hackathon 2026 팀 **SoftBank-Hydrogen**에서 개발한 배포 플랫폼입니다.
+이 저장소는 [팀 원본](https://github.com/SoftBank-Hydrogen/sky-platform)을 바탕으로 개인적으로 유지·보완합니다.
 ZIP·앱 폴더·공개 GitHub 저장소를 입력으로 받습니다. 배포 대상 앱보다 **배포 시스템의 품질**에 집중합니다.
 
 ## 배포 흐름
@@ -25,7 +26,7 @@ AI는 계획과 코드 변경을 제안합니다. Python 서비스가 계약·�
 | --- | --- | --- |
 | Local Docker | 같은 PC에서 컨테이너 실행 | 실제 배포 검증 |
 | On-prem Compose | 같은 PC에서 Compose 실행, SQLite 볼륨 보관 | 구현 |
-| On-prem Linux VM | SSH로 원격 Docker에 배포 | 로컬 Linux VM 검증 |
+| On-prem Linux VM | 준비된 Linux VM의 Docker에 SSH로 배포 | 로컬 Linux VM 검증 |
 | AWS ECS Express | Fargate 컨테이너, 관리형 HTTPS 주소 | 실제 AWS 배포 검증 |
 | AWS S3 + CloudFront | 정적 웹앱 호스팅 | 실제 AWS 배포 검증 |
 | AWS Lambda | 외부 의존성 없는 Python 핸들러 | 명시 선택 ZIP 배포·실제 AWS 검증 |
@@ -64,6 +65,8 @@ AI 기능을 쓰려면 `OPENAI_API_KEY`를 설정합니다.
 | GCP | `gcloud` 인증, `SKY_GCP_PROJECT`, `SKY_GCP_REGION` |
 | Linux VM | `SKY_VM_SSH_HOST`, `SKY_VM_SSH_USER`, `SKY_VM_PUBLIC_HOST` |
 
+Linux VM은 먼저 Docker·Compose·SSH 계정을 준비해야 합니다. [Ansible 준비 절차](https://github.com/sangmu1126/sky-infra/tree/main/ansible/onprem-vm)는 VM 생성과 HTTPS 구성을 포함하지 않습니다.
+
 계정·역할 권한·네트워크 설정도 해당 어댑터의 조건을 충족해야 합니다.
 실행 옵션은 `.venv/bin/sky-platform --help`에서 확인할 수 있습니다.
 
@@ -90,7 +93,7 @@ V4의 목표는 **관측 → 변경 제안 → 승인 → 재배포 → 검증**
 | 저장소 | 역할 |
 | --- | --- |
 | **sky-platform** | 분석, 판단, 코드 변환, 배포, API·워커·UI |
-| [sky-infra](https://github.com/SoftBank-Hydrogen/sky-infra) | Terraform 기반 Sky 호스팅 인프라, Ansible 기반 VM 준비 |
+| [sky-infra](https://github.com/sangmu1126/sky-infra) | Terraform 기반 Sky 호스팅 인프라, 기존 Linux VM의 Ansible 준비 구성 |
 | [demo-game](https://github.com/SoftBank-Hydrogen/demo-game) | 배포 시연용 앱 |
 
 ```text
@@ -117,7 +120,7 @@ Sky 호스팅 리소스는 `sky-infra`가 관리합니다. 사용자 앱 리소�
 
 PostgreSQL·Docker 통합 테스트에는 별도 실행 환경이 필요합니다. 실계정·실모델 테스트는 수동으로 실행합니다.
 GitHub Actions에는 코드 검사, UI 테스트, 서비스 이미지 검증과 ECR 게시 흐름이 정의돼 있습니다.
-현재 주 CI 워크플로는 수동 비활성화 상태입니다. 이미지 게시에는 워크플로 활성화와 OIDC·ECR 설정이 필요합니다.
+개인 fork에서는 워크플로 실행 허용과 OIDC·ECR 설정을 별도로 확인해야 합니다. 코드만 복사해도 AWS 게시 권한이 생기는 것은 아닙니다.
 서비스 이미지 게시와 실제 서비스 갱신은 별도 단계입니다.
 
 ## 사용·운영 문서

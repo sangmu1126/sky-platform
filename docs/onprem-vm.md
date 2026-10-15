@@ -2,6 +2,8 @@
 
 Sky의 `onprem-vm` 대상은 Sky와 다른 Linux VM의 Docker Engine에 SSH로 연결해 Compose 서비스를 실행한다. 자동 선택 대상은 아니며, 사용자가 직접 선택해야 한다. 현재는 상태 없는 HTTP 앱 한 개를 컨테이너 하나로 실행한다. SQLite 볼륨, PostgreSQL 연결, HTTPS 프록시, VM 생성은 이 대상에서 지원하지 않는다.
 
+기존 Debian/Ubuntu VM의 Docker·Compose·배포 계정·SSH 준비에는 [개인 sky-infra의 Ansible 구성](https://github.com/sangmu1126/sky-infra/tree/main/ansible/onprem-vm)을 사용할 수 있다. VM을 생성하는 기능은 아니며, 초기 설정은 sudo 가능한 관리자 계정으로 별도 실행한다.
+
 Sky 서버를 시작하기 전에 다음 값을 **서버 환경변수**로 설정한다. SSH 키는 저장소나 업로드 앱에 넣지 않는다.
 
 ```sh
