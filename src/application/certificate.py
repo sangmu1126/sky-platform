@@ -119,6 +119,8 @@ def _decision_trace(job: dict, infrastructure: dict, compatibility: dict) -> dic
              'violated_rule_ids': item.get('violated_rule_ids', [])}
             | ({'structural_status': item.get('structural_status'),
                 'execution_status': item.get('execution_status'),
+                'automatic_selection': item.get('automatic_selection'),
+                'native_adapter': item.get('native_adapter'),
                 'reason_codes': item.get('reason_codes', []),
                 'evidence_ids': item.get('evidence_ids', []),
                 'pending_verification_rule_ids': item.get('unknown_rule_ids', [])}

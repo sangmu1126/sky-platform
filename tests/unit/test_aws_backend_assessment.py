@@ -191,7 +191,7 @@ def test_architecture_decision_records_unselected_unsupported_options(tmp_path):
     assert options["aws-lambda"].eligibility == "unsupported_by_sky"
     assert options["aws-lambda"].selection == "not_selected"
     assert options["aws-ec2"].selection == "not_selected"
-    assert "SKY_ADAPTER_UNIMPLEMENTED" in options["aws-lambda"].reason_codes
+    assert "AUTOMATIC_SELECTION_NOT_INTEGRATED" in options["aws-lambda"].reason_codes
     candidates[1]["status"] = "unsupported_by_sky"
     with pytest.raises(ValueError, match="selection disagrees"):
         architecture_decision(
@@ -258,8 +258,58 @@ def test_fixed_decision_and_certificate_preserve_comparisons_and_pending_evidenc
     assert function["structural_status"] == "requires_transformation"
     assert function["execution_status"] == "unsupported_by_sky"
     assert function["evidence_ids"]
+    assert function["automatic_selection"]["eligible"] is False
+    assert function["native_adapter"]["support"] == "implemented"
     assert "LAMBDA-DURATION-01" in function["pending_verification_rule_ids"]
     job["infrastructure_plan"]["architecture_options"][0]["selected"] = True
     assert deployment_certificate(job)["decision_trace"]["status"] == "incomplete"
     with pytest.raises(ValueError, match="cannot be selected"):
         architecture_decision(ir, policy, plan)
+
+
+def test_host_fit_does_not_imply_native_ec2_can_execute_it(tmp_path):
+    from application.native_deployments import native_profile
+
+    profile = inspect(tmp_path, {"app.py": "import subprocess\nsubprocess.run(['modprobe', 'kvm'])\n"})
+    candidate = by_id(profile)["aws-ec2"]
+    assert candidate["structural_status"] == "potentially_compatible"
+    assert candidate["native_adapter"]["support"] == "implemented"
+    assert candidate["native_adapter"]["workload_status"] == "blocked"
+    assert candidate["native_adapter"]["blockers"] == ["host-kernel-control"]
+    assert candidate["automatic_selection"]["eligible"] is False
+    with pytest.raises(ValueError, match="host-kernel-control"):
+        native_profile(tmp_path, "aws-ec2")
+
+
+def test_handler_signal_is_not_native_packaging_or_runtime_approval(tmp_path):
+    profile = inspect(tmp_path, {"handler.py": "def handler(event, context):\n    return {}\n"})
+    candidate = by_id(profile)["aws-lambda"]
+    assert candidate["structural_status"] == "potentially_compatible"
+    assert candidate["native_adapter"]["workload_status"] == "needs_review"
+    assert candidate["native_adapter"]["blockers"] == []
+    assert "packaging_and_entrypoint" in candidate["native_adapter"]["remaining_checks"]
+    assert candidate["status"] == "unsupported_by_sky"
+    assert candidate["automatic_selection"] == {
+        "status": "not_integrated", "eligible": False,
+        "reason_code": "AUTOMATIC_SELECTION_NOT_INTEGRATED",
+    }
+    assert "SKY_ADAPTER_UNIMPLEMENTED" not in candidate["reason_codes"]
+
+
+@pytest.mark.parametrize("target", ["aws-lambda", "aws-ec2"])
+@pytest.mark.parametrize("files", [
+    {"requirements.txt": "psycopg>=3\n"},
+    {"app.py": "import sqlite3\nsqlite3.connect('app.db')\n"},
+    {"package.json": '{"dependencies":{"bullmq":"1"}}'},
+    {"app.py": "open('uploads/file.txt', 'w')\n"},
+    {"server.js": "const {WebSocketServer}=require('ws'); new WebSocketServer({port:80});"},
+])
+def test_preview_and_native_execution_share_blocking_requirements(tmp_path, target, files):
+    from application.native_deployments import native_profile
+
+    profile = inspect(tmp_path, files)
+    native = by_id(profile)[target]["native_adapter"]
+    assert native["workload_status"] == "blocked"
+    with pytest.raises(ValueError) as error:
+        native_profile(tmp_path, target)
+    assert str(error.value).split(": ", 1)[1].split(", ") == native["blockers"]

@@ -2,6 +2,8 @@
 
 Persisted jobs keep their original target ID. This registry only adds meaning
 for new decisions and previews; it does not rewrite historical records.
+Support and selection fields describe the automatic compiler contract. Limited
+explicit native ZIP profiles are assessed separately in aws_backend_assessment.
 """
 
 from dataclasses import asdict, dataclass

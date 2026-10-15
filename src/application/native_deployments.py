@@ -18,6 +18,7 @@ from adapters.aws.native_image import NativeImagePublisher
 from application.deployment_core import DeploymentPlan, source_digest
 from application.deployment_core import analyze as analyze_project_rules
 from application.infrastructure import inspect_infrastructure
+from engine.native_profile_constraints import native_profile_blockers
 
 NATIVE_TARGETS = {"aws-lambda", "aws-ec2"}
 
@@ -26,15 +27,11 @@ def native_profile(project: Path, target: str, handler: str = "handler.handler")
     if target not in NATIVE_TARGETS:
         raise ValueError("Unknown native AWS target")
     profile = inspect_infrastructure(project)
-    signals = dict(profile.source_signals)
-    unsupported = set(profile.requirements)
-    forbidden = {"host-kernel-control", "host-device-access", "websocket", "persistent-http-server"}
-    if target == "aws-ec2":
-        forbidden.remove("persistent-http-server")
-    if unsupported or forbidden.intersection(signals):
+    blockers = native_profile_blockers(profile, target)
+    if blockers:
         raise ValueError(
             "이 실행 경로는 DB·영속 파일·워커·호스트 제어·장기 연결을 지원하지 않습니다: "
-            + ", ".join(sorted(unsupported | forbidden.intersection(signals)))
+            + ", ".join(blockers)
         )
     result = {
         "target": target,

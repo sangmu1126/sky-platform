@@ -35,7 +35,28 @@ test('EC2 is not preferred without host requirements', () => {
     id: 'aws-ec2', status: 'unsupported_by_sky', structural_status: 'not_preferred',
     reasons: ['호스트 제어 필요성 미확인'], selection_mode: 'unavailable',
   }]});
-  assert.match(text, /AWS EC2 \(호스트 제어\)/);
+  assert.match(text, /AWS EC2 \(구조 비교\)/);
   assert.match(text, /호스트 제어 근거 없어 우선하지 않음/);
   assert.match(text, /Sky 배포 미지원/);
+});
+
+
+test('host-control fit does not imply the limited native EC2 adapter can deploy it', () => {
+  const text = render({candidates: [{
+    id: 'aws-ec2', status: 'unsupported_by_sky', structural_status: 'potentially_compatible',
+    reasons: [], native_adapter: {support: 'implemented', workload_status: 'blocked', blockers: ['host-kernel-control']},
+  }]});
+  assert.match(text, /제한된 ZIP 경로 구현 · 자동 선택 제외/);
+  assert.match(text, /명시적 ZIP 경로: 현재 앱 요구와 충돌 · host-kernel-control/);
+  assert.match(text, /적합 가능 · 추가 검증 필요/);
+  assert.doesNotMatch(text, /Sky 배포 미지원|배포 시도 가능/);
+});
+
+test('native handler preview still requires packaging and runtime verification', () => {
+  const text = render({candidates: [{
+    id: 'aws-lambda', status: 'unsupported_by_sky', structural_status: 'potentially_compatible',
+    reasons: [], native_adapter: {support: 'implemented', workload_status: 'needs_review', blockers: []},
+  }]});
+  assert.match(text, /패키징·설정·실행 검증 필요/);
+  assert.match(text, /자동 선택 제외/);
 });

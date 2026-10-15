@@ -1,4 +1,4 @@
-"""Assess unimplemented AWS options without offering them as executable targets.
+"""Assess AWS architecture options outside the automatic selection contract.
 
 Lambda is scoped to a request/event handler, not every Lambda product or adapter.
 EC2 is a host-control option; a large app or a database alone never requires it.
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from engine.backend_identity import backend_identity
 from engine.compatibility import InfrastructureProfile, evidence_id
+from engine.native_profile_constraints import native_profile_blockers
 
 LAMBDA_REFERENCES = (
     "https://docs.aws.amazon.com/lambda/latest/dg/urls-invocation.html",
@@ -18,7 +19,7 @@ HOST_REFERENCES = (
     "https://docs.aws.amazon.com/AmazonECS/latest/developerguide/fargate-tasks-services.html",
     "https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters_ec2.html",
 )
-UNIMPLEMENTED_AWS_TARGETS = ("aws-lambda", "aws-ec2")
+COMPARISON_AWS_TARGETS = ("aws-lambda", "aws-ec2")
 
 
 def with_aws_backend_options(profile: InfrastructureProfile, plan: dict) -> dict:
@@ -33,10 +34,10 @@ def with_aws_backend_options(profile: InfrastructureProfile, plan: dict) -> dict
 
 
 def aws_backend_assessments(profile: InfrastructureProfile) -> list[dict]:
-    """Return source-bound comparisons. Every result remains unsupported by Sky."""
+    """Return source-bound comparisons; neither target is enabled for automatic selection."""
     signals = dict(profile.source_signals)
     requirements = dict(profile.requirement_evidence)
-    checks: dict[str, list[dict]] = {target: [] for target in UNIMPLEMENTED_AWS_TARGETS}
+    checks: dict[str, list[dict]] = {target: [] for target in COMPARISON_AWS_TARGETS}
 
     def check(target: str, rule: str, status: str, kind: str, reason: str) -> None:
         paths = sorted(set(signals.get(kind, ())) | set(requirements.get(kind, ())))
@@ -182,6 +183,7 @@ def aws_backend_assessments(profile: InfrastructureProfile) -> list[dict]:
     ):
         identity = backend_identity(target)
         constraints = checks[target]
+        native_blockers = native_profile_blockers(profile, target)
         result.append(
             {
                 "id": target,
@@ -192,6 +194,12 @@ def aws_backend_assessments(profile: InfrastructureProfile) -> list[dict]:
                 "structural_status": structure,
                 "execution_status": "unsupported_by_sky",
                 "status": "unsupported_by_sky",
+                # Legacy status/support fields describe the automatic compiler contract.
+                "automatic_selection": {
+                    "status": "not_integrated",
+                    "eligible": False,
+                    "reason_code": "AUTOMATIC_SELECTION_NOT_INTEGRATED",
+                },
                 "native_adapter": {
                     "support": "implemented",
                     "selection_mode": "explicit_zip_or_cli",
@@ -202,6 +210,13 @@ def aws_backend_assessments(profile: InfrastructureProfile) -> list[dict]:
                         else "stateless_ecr_container_public_subnet"
                     ),
                     "verification_status": "unverified",
+                    "workload_status": "blocked" if native_blockers else "needs_review",
+                    "blockers": native_blockers,
+                    "remaining_checks": [
+                        "packaging_and_entrypoint",
+                        "target_configuration_and_permissions",
+                        "runtime_verification",
+                    ],
                     "compiler_integration": "explicit_native_zip",
                     "automatic_selection": "unimplemented",
                 },
@@ -217,7 +232,7 @@ def aws_backend_assessments(profile: InfrastructureProfile) -> list[dict]:
                     {item["rule_id"] for item in constraints if item["status"] == "unknown"}
                 ),
                 "reason_codes": sorted(
-                    {"SKY_ADAPTER_UNIMPLEMENTED", *(item["rule_id"] for item in constraints)}
+                    {"AUTOMATIC_SELECTION_NOT_INTEGRATED", *(item["rule_id"] for item in constraints)}
                 ),
                 "evidence_ids": sorted({ref for item in constraints for ref in item["evidence_ids"]}),
                 "evidence_files": sorted({path for item in constraints for path in item["evidence_files"]}),
@@ -226,7 +241,7 @@ def aws_backend_assessments(profile: InfrastructureProfile) -> list[dict]:
                 "cost": {
                     "estimate": None,
                     "drivers": drivers,
-                    "note": "미구현 후보의 비용 영향 항목입니다. 사용량·요금·구성은 미검증입니다.",
+                    "note": "비교 후보의 비용 영향 항목입니다. 사용량·요금·구성은 미검증입니다.",
                 },
                 "selected": False,
             }
