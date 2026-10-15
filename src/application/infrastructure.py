@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import re
 import tomllib
 import urllib.request
@@ -47,7 +48,13 @@ requires-unsupported-resources and explain the specific requirement. Never claim
 The public_access flag means internet exposure is permitted, not required. AWS ECS Express is only
 available when that permission was explicitly granted. Compare only the supplied candidates and
 their Sky deployment facts. These facts describe the current Sky adapter configuration, not every
-provider capability. Cost drivers are not price estimates: never claim one target is cheaper without
+provider capability. Eligibility means permission to attempt this automatic path, not verified
+application compatibility or deployment success. Explicit PostgreSQL binding support belongs to a
+separate path and does not permit a database in this automatic stateless-container contract.
+Lambda and EC2 have limited explicit ZIP profiles but are not integrated into this automatic path;
+never select them or imply that no Sky adapter exists. Do not remove application requirements to
+fit an available backend. If source evidence indicates unsupported requirements, report them.
+Cost drivers are not price estimates: never claim one target is cheaper without
 measured usage and prices. Do not infer a need for a public URL from public_access alone.
 If retry_invalid_evidence is true, your previous citation did not appear verbatim in the supplied
 file. Recheck every cited file and copy a short exact substring; keep the target decision grounded
@@ -232,15 +239,19 @@ class OpenAIInfrastructurePlanner:
                 *, retry_invalid_evidence: bool = False) -> dict:
         if not self.settings.available:
             raise AnalysisError('AI 인프라 선택을 사용하려면 OPENAI_API_KEY를 설정하세요.')
+        candidates = automatic_target_context(available_targets, public_access)
+        # Each request has its own enum: do not mutate the shared response contract.
+        schema = deepcopy(INFRA_SCHEMA)
+        schema['properties']['target']['enum'] = [item['target'] for item in candidates]
         request_body = {
             'model': self.settings.model, 'store': False, 'instructions': INFRA_INSTRUCTIONS,
             'input': json.dumps({'files': files, 'available_targets': available_targets,
-                                 'candidates': automatic_target_context(available_targets, public_access),
+                                 'candidates': candidates,
                                  'public_access': public_access,
                                  'retry_invalid_evidence': retry_invalid_evidence}, ensure_ascii=False),
             'max_output_tokens': 1600,
             'text': {'format': {'type': 'json_schema', 'name': 'infrastructure_selection',
-                                'strict': True, 'schema': INFRA_SCHEMA}},
+                                'strict': True, 'schema': schema}},
         }
         request = urllib.request.Request('https://api.openai.com/v1/responses',
             data=json.dumps(request_body).encode(), headers={

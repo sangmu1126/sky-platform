@@ -290,20 +290,24 @@ def test_handler_signal_is_not_native_packaging_or_runtime_approval(tmp_path):
     assert "packaging_and_entrypoint" in candidate["native_adapter"]["remaining_checks"]
     assert candidate["status"] == "unsupported_by_sky"
     assert candidate["automatic_selection"] == {
-        "status": "not_integrated", "eligible": False,
+        "status": "not_integrated",
+        "eligible": False,
         "reason_code": "AUTOMATIC_SELECTION_NOT_INTEGRATED",
     }
     assert "SKY_ADAPTER_UNIMPLEMENTED" not in candidate["reason_codes"]
 
 
 @pytest.mark.parametrize("target", ["aws-lambda", "aws-ec2"])
-@pytest.mark.parametrize("files", [
-    {"requirements.txt": "psycopg>=3\n"},
-    {"app.py": "import sqlite3\nsqlite3.connect('app.db')\n"},
-    {"package.json": '{"dependencies":{"bullmq":"1"}}'},
-    {"app.py": "open('uploads/file.txt', 'w')\n"},
-    {"server.js": "const {WebSocketServer}=require('ws'); new WebSocketServer({port:80});"},
-])
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"requirements.txt": "psycopg>=3\n"},
+        {"app.py": "import sqlite3\nsqlite3.connect('app.db')\n"},
+        {"package.json": '{"dependencies":{"bullmq":"1"}}'},
+        {"app.py": "open('uploads/file.txt', 'w')\n"},
+        {"server.js": "const {WebSocketServer}=require('ws'); new WebSocketServer({port:80});"},
+    ],
+)
 def test_preview_and_native_execution_share_blocking_requirements(tmp_path, target, files):
     from application.native_deployments import native_profile
 

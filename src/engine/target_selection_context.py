@@ -35,7 +35,13 @@ _DEPLOYMENT_FACTS = {
 
 def automatic_target_context(targets: list[str], public_access: bool) -> list[dict]:
     """Return only facts for offered, implemented automatic server targets."""
-    if type(public_access) is not bool or len(targets) != len(set(targets)):
+    if (
+        type(public_access) is not bool
+        or not isinstance(targets, list)
+        or not targets
+        or any(not isinstance(target, str) for target in targets)
+        or len(targets) != len(set(targets))
+    ):
         raise ValueError("Invalid automatic target selection context")
     context = []
     for target in targets:
@@ -43,12 +49,29 @@ def automatic_target_context(targets: list[str], public_access: bool) -> list[di
             raise ValueError("Unsupported automatic server target")
         identity = backend_identity(target)
         capabilities = TARGET_CAPABILITIES[target]
+        access_mode = deployment_access_mode(target, public_access)
+        if access_mode is None:
+            raise ValueError("Automatic target does not support the permitted access mode")
         context.append(
             {
                 "target": target,
                 "provider": identity.provider,
                 "backend": identity.backend,
-                "access_mode": deployment_access_mode(target, public_access),
+                "access_mode": access_mode,
+                "automatic_selection": {
+                    "eligible": True,
+                    "scope": "stateless_http_container",
+                    "adapter_support": "implemented",
+                    "runtime_verification": "pending",
+                },
+                "unsupported_requirements": [
+                    "database",
+                    "durable_volume",
+                    "background_worker",
+                    "custom_network",
+                    "migration",
+                    "host_control",
+                ],
                 "automatic_path_supports_database": False,
                 "explicit_postgresql_binding": capabilities["postgresql_binding"],
                 "sky_deployment": dict(_DEPLOYMENT_FACTS[target]),
