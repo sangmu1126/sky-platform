@@ -45,6 +45,12 @@ def test_model_only_receives_eligible_cases_and_server_validates_its_outputs():
     assert planner.propose.call_count == result["model_evaluated"] == 4
     assert result["model_failed"] == 0
     assert result["model_attempts"] == 4
+    assert [call.kwargs.get("public_url_required", False) for call in planner.propose.call_args_list] == [
+        False,
+        True,
+        False,
+        True,
+    ]
     for item in result["cases"]:
         if item["model_status"] == "passed":
             assert item["selected_target"] in item["eligible_targets"]

@@ -94,7 +94,13 @@ def run_case(case: dict, planner=None) -> dict:
 
         started = time.monotonic()
         try:
-            plan = plan_infrastructure(project, targets, case["public_access"], CountedPlanner())
+            plan = plan_infrastructure(
+                project,
+                targets,
+                case["public_access"],
+                CountedPlanner(),
+                public_url_required=case["public_url_required"],
+            )
             result.update(
                 model_status="passed",
                 selected_target=plan["target"],

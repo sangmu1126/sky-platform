@@ -33,10 +33,14 @@ _DEPLOYMENT_FACTS = {
 }
 
 
-def automatic_target_context(targets: list[str], public_access: bool) -> list[dict]:
+def automatic_target_context(
+    targets: list[str], public_access: bool, *, public_url_required: bool = False
+) -> list[dict]:
     """Return only facts for offered, implemented automatic server targets."""
     if (
         type(public_access) is not bool
+        or type(public_url_required) is not bool
+        or (public_url_required and not public_access)
         or not isinstance(targets, list)
         or not targets
         or any(not isinstance(target, str) for target in targets)
@@ -50,7 +54,7 @@ def automatic_target_context(targets: list[str], public_access: bool) -> list[di
         identity = backend_identity(target)
         capabilities = TARGET_CAPABILITIES[target]
         access_mode = deployment_access_mode(target, public_access)
-        if access_mode is None:
+        if access_mode is None or (public_url_required and access_mode != "public"):
             raise ValueError("Automatic target does not support the permitted access mode")
         context.append(
             {

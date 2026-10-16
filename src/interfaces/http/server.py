@@ -2510,7 +2510,8 @@ def handler_for(app: App):
                             if not available_targets:
                                 raise ValueError('현재 설정에서 감지된 요구와 호환되는 자동 배포 대상이 없습니다.')
                             infrastructure_plan = plan_infrastructure(project, available_targets,
-                                public_flag == 'true', app.infrastructure_planner_factory(app.ai_settings))
+                                public_flag == 'true', app.infrastructure_planner_factory(app.ai_settings),
+                                public_url_required=public_url_required == 'true')
                             target = infrastructure_plan['target']
                             validate_infrastructure(infrastructure_profile, target)
                             infrastructure_plan['candidates'] = [

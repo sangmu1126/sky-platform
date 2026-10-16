@@ -56,6 +56,9 @@ never select them or imply that no Sky adapter exists. Do not remove application
 fit an available backend. If source evidence indicates unsupported requirements, report them.
 Cost drivers are not price estimates: never claim one target is cheaper without
 measured usage and prices. Do not infer a need for a public URL from public_access alone.
+The selection_conditions object contains explicit user requirements. If public_url_required is true,
+a public URL is mandatory; if false, internet exposure is only permitted by public_access, not required.
+Ground the rationale in these supplied conditions without inventing latency, budget or isolation requirements.
 If retry_invalid_evidence is true, your previous citation did not appear verbatim in the supplied
 file. Recheck every cited file and copy a short exact substring; keep the target decision grounded
 in the same supplied files.
@@ -236,10 +239,11 @@ class OpenAIInfrastructurePlanner:
         self.settings = settings
 
     def propose(self, files: dict[str, str], available_targets: list[str], public_access: bool,
-                *, retry_invalid_evidence: bool = False) -> dict:
+                *, retry_invalid_evidence: bool = False, public_url_required: bool = False) -> dict:
         if not self.settings.available:
             raise AnalysisError('AI 인프라 선택을 사용하려면 OPENAI_API_KEY를 설정하세요.')
-        candidates = automatic_target_context(available_targets, public_access)
+        candidates = automatic_target_context(
+            available_targets, public_access, public_url_required=public_url_required)
         # Each request has its own enum: do not mutate the shared response contract.
         schema = deepcopy(INFRA_SCHEMA)
         schema['properties']['target']['enum'] = [item['target'] for item in candidates]
@@ -248,6 +252,10 @@ class OpenAIInfrastructurePlanner:
             'input': json.dumps({'files': files, 'available_targets': available_targets,
                                  'candidates': candidates,
                                  'public_access': public_access,
+                                 'selection_conditions': {
+                                     'public_access_allowed': public_access,
+                                     'public_url_required': public_url_required,
+                                 },
                                  'retry_invalid_evidence': retry_invalid_evidence}, ensure_ascii=False),
             'max_output_tokens': 1600,
             'text': {'format': {'type': 'json_schema', 'name': 'infrastructure_selection',
@@ -301,16 +309,24 @@ def validate_infrastructure_proposal(proposal: dict, files: dict[str, str],
 
 
 def plan_infrastructure(project: Path, available_targets: list[str], public_access: bool,
-                        planner: OpenAIInfrastructurePlanner) -> dict:
+                        planner: OpenAIInfrastructurePlanner, *, public_url_required: bool = False) -> dict:
+    # Enforce user conditions before invoking any planner, including injected implementations.
+    automatic_target_context(available_targets, public_access, public_url_required=public_url_required)
     files = source_context(project)
     if not files:
         raise AnalysisError('AI 인프라 계획에 사용할 앱 소스가 없습니다.')
-    proposal = planner.propose(files, available_targets, public_access)
+    # Preserve the legacy planner interface for callers with no public URL requirement.
+    options = {'public_url_required': True} if public_url_required else {}
+    proposal = planner.propose(files, available_targets, public_access, **options)
     try:
-        return validate_infrastructure_proposal(proposal, files, available_targets)
+        plan = validate_infrastructure_proposal(proposal, files, available_targets)
     except AnalysisError as exc:
         if str(exc) != 'AI 인프라 계획의 근거를 소스에서 확인할 수 없습니다.':
             raise
-    proposal = planner.propose(files, available_targets, public_access,
-                               retry_invalid_evidence=True)
-    return validate_infrastructure_proposal(proposal, files, available_targets)
+        proposal = planner.propose(files, available_targets, public_access,
+                                   retry_invalid_evidence=True, **options)
+        plan = validate_infrastructure_proposal(proposal, files, available_targets)
+    return {**plan, 'selection_conditions': {
+        'public_access_allowed': public_access,
+        'public_url_required': public_url_required,
+    }}

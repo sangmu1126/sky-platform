@@ -3,7 +3,7 @@
 import io
 import json
 from copy import deepcopy
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -97,3 +97,56 @@ def test_explicit_database_support_is_not_automatic_database_permission():
 def test_server_rejects_an_unoffered_choice_even_if_model_returns_valid_global_target():
     with pytest.raises(AnalysisError, match="사용할 수 없는"):
         validate_infrastructure_proposal(proposal("aws-ecs-express"), {"app.py": "hello"}, ["local-docker"])
+
+
+def test_public_url_requirement_is_transmitted_and_retained_after_citation_retry(tmp_path):
+    from application.infrastructure import plan_infrastructure
+
+    (tmp_path / "app.py").write_text("hello")
+    planner = Mock()
+    invalid = {**proposal("aws-ecs-express"), "evidence": [{"file": "app.py", "quote": "invented"}]}
+    planner.propose.side_effect = [invalid, proposal("aws-ecs-express")]
+    result = plan_infrastructure(
+        tmp_path,
+        ["aws-ecs-express"],
+        True,
+        planner,
+        public_url_required=True,
+    )
+    assert result["selection_conditions"] == {"public_access_allowed": True, "public_url_required": True}
+    assert [call.kwargs for call in planner.propose.call_args_list] == [
+        {"public_url_required": True},
+        {"retry_invalid_evidence": True, "public_url_required": True},
+    ]
+
+
+def test_model_request_records_explicit_public_url_requirement():
+    planner = OpenAIInfrastructurePlanner(AISettings("fixture-key", "fixture-model"))
+    with patch("application.infrastructure.urllib.request.build_opener") as opener:
+        opener.return_value.open.return_value = response("aws-ecs-express")
+        planner.propose({"app.py": "hello"}, ["aws-ecs-express"], True, public_url_required=True)
+        payload = json.loads(opener.return_value.open.call_args.args[0].data)
+    assert json.loads(payload["input"])["selection_conditions"] == {
+        "public_access_allowed": True,
+        "public_url_required": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "targets,public,required",
+    [
+        (["local-docker"], True, True),
+        (["cloud-run"], False, True),
+        (["aws-ecs-express"], True, "true"),
+    ],
+)
+def test_application_rejects_inconsistent_conditions_before_injected_planner(
+    tmp_path, targets, public, required
+):
+    from application.infrastructure import plan_infrastructure
+
+    (tmp_path / "app.py").write_text("hello")
+    planner = Mock()
+    with pytest.raises(ValueError):
+        plan_infrastructure(tmp_path, targets, public, planner, public_url_required=required)
+    planner.propose.assert_not_called()

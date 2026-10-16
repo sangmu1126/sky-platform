@@ -130,6 +130,7 @@ def _decision_trace(job: dict, infrastructure: dict, compatibility: dict) -> dic
         ],
         'selected_target': job.get('target'),
         'selection_basis': infrastructure.get('planner'),
+        'selection_conditions': infrastructure.get('selection_conditions'),
         'note': '업로드한 소스와 작업 시점의 판단 기록입니다. 실행 중 상태의 독립적인 증명이 아닙니다.',
     }
 
