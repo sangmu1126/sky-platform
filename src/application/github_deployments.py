@@ -45,6 +45,27 @@ def validate_github_public_requirement(targets, public, required):
         raise ValueError("공개 URL 필수 조건은 인터넷 공개를 허용한 단일 자동 선택에서 사용할 수 있습니다.")
 
 
+def _active_subscription_backend(jobs, application_id, subscription_id):
+    """Read under the app lock; only this subscription's successful active jobs count."""
+    if not subscription_id:
+        return None
+    targets = {job["target"] for job in jobs
+               if job.get("application_id") == application_id
+               and (job.get("github_source") or {}).get("subscription_id") == subscription_id
+               and job.get("status") == "succeeded"
+               and job.get("deployment_state", "active") == "active"}
+    if len(targets) > 1:
+        raise ValueError("GitHub 앱에 여러 활성 백엔드가 있어 수동 확인이 필요합니다.")
+    return next(iter(targets), None)
+
+
+def _require_same_backend(previous, target):
+    if previous is not None and previous != target:
+        raise ValueError(
+            f"GitHub 앱의 실행 백엔드가 {previous} → {target}로 바뀝니다. "
+            "기존 배포를 유지하며 수동 확인이 필요합니다.")
+
+
 class GitHubDeploymentsMixin:
     def restore_github_sources(self):
         self.github_sources = {}
@@ -179,17 +200,9 @@ class GitHubDeploymentsMixin:
     ) -> dict:
         profile = inspect_infrastructure(project)
         subscription_id = source.get("subscription_id")
-        previous_target = None
-        if subscription_id:
-            with self.lock:
-                previous = [job for job in self.jobs.values()
-                            if job.get("application_id") == application_id
-                            and (job.get("github_source") or {}).get("subscription_id") == subscription_id
-                            and job.get("status") == "succeeded"
-                            and job.get("deployment_state", "active") == "active"]
-            if len({job["target"] for job in previous}) > 1:
-                raise ValueError("GitHub 앱에 여러 활성 백엔드가 있어 수동 확인이 필요합니다.")
-            previous_target = previous[0]["target"] if previous else None
+        with self.lock:
+            previous_target = _active_subscription_backend(
+                self.jobs.values(), application_id, subscription_id)
         static_selected = (
             requested_target == "auto" and public
             and assess_static_site(project, profile).status == "eligible"
@@ -212,6 +225,10 @@ class GitHubDeploymentsMixin:
                 public_access=public, public_url_required=public_url_required,
             )
             available = [item["id"] for item in candidates if item["status"] == "eligible"]
+            if previous_target and previous_target not in available:
+                raise ValueError(
+                    "기존 GitHub 백엔드의 앱 호환성 또는 설정이 바뀌었습니다. "
+                    "기존 배포를 유지하며 수동 확인이 필요합니다.")
             if not available:
                 raise ValueError("현재 설정에서 감지된 요구와 호환되는 자동 배포 대상이 없습니다.")
             plan = plan_infrastructure(
@@ -224,6 +241,7 @@ class GitHubDeploymentsMixin:
         else:
             target = requested_target
             plan = explicit_infrastructure_plan(target, profile)
+        _require_same_backend(previous_target, target)
         plan["compatibility"] = infrastructure_compatibility(profile, target, public_access=public)
         plan = with_aws_backend_options(profile, plan)
         if plan["compatibility"]["access_mode"] is None:
@@ -273,6 +291,9 @@ class GitHubDeploymentsMixin:
             elif target == "aws-ecs-express":
                 job["aws"] = asdict(self.aws_settings)
             with self.lock:
+                # Recheck after model planning/copying; active jobs may have changed meanwhile.
+                _require_same_backend(
+                    _active_subscription_backend(self.jobs.values(), application_id, subscription_id), target)
                 self.ensure_application_available(application_id, target)
                 previous = [
                     old
