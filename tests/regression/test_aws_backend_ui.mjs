@@ -60,3 +60,37 @@ test('native handler preview still requires packaging and runtime verification',
   assert.match(text, /패키징·설정·실행 검증 필요/);
   assert.match(text, /자동 선택 제외/);
 });
+
+test('GitHub upload payload preserves the required public URL condition', () => {
+  const start = html.indexOf('function githubDeploymentPayload(application,targets){');
+  const end = html.indexOf('function selectedUploadBody()', start);
+  assert.ok(start >= 0 && end > start);
+  const elements = {
+    repositoryUrl: {value: 'https://github.com/team/demo'}, repositoryBranch: {value: 'main'},
+    public: {checked: true}, publicRequired: {checked: true}, githubAutoDeploy: {checked: true},
+  };
+  const payload = vm.runInNewContext(html.slice(start, end) + '\ngithubDeploymentPayload;', {
+    el: id => elements[id],
+  })('demo-app', ['auto']);
+  assert.equal(payload.public_url_required, true);
+  assert.equal(payload.auto_deploy, true);
+});
+
+test('public URL requirement is visible in GitHub auto mode and cleared for fixed targets', () => {
+  const start = html.indexOf('const updateTargetOptions=');
+  const end = html.indexOf("el('publicRequired').onchange", start);
+  assert.ok(start >= 0 && end > start);
+  const elements = {
+    target: {value: 'auto', onchange: () => {}}, multiMode: {checked: false},
+    publicRequiredOption: {hidden: true}, publicRequired: {checked: true},
+    cloudSqlOptions: {}, cloudSqlExisting: {}, sqliteConversionOption: {},
+  };
+  vm.runInNewContext(html.slice(start, end), {el: id => elements[id], githubMode: true});
+  elements.target.onchange();
+  assert.equal(elements.publicRequiredOption.hidden, false);
+  assert.equal(elements.publicRequired.checked, true);
+  elements.target.value = 'local-docker';
+  elements.target.onchange();
+  assert.equal(elements.publicRequiredOption.hidden, true);
+  assert.equal(elements.publicRequired.checked, false);
+});

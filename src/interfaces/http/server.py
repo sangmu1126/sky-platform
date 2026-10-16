@@ -1821,7 +1821,7 @@ def handler_for(app: App):
                     if not 0 < size <= 2048:
                         raise ValueError('GitHub 배포 요청은 2 KiB 이하여야 합니다.')
                     payload = json.loads(self.rfile.read(size))
-                    if (not isinstance(payload, dict) or set(payload) != {
+                    if (not isinstance(payload, dict) or set(payload) - {'public_url_required'} != {
                             'repository_url', 'branch', 'application_id', 'targets',
                             'public', 'auto_deploy'}):
                         raise ValueError('GitHub 저장소와 배포 설정이 필요합니다.')
@@ -1831,7 +1831,8 @@ def handler_for(app: App):
                     self.json_response(202, app.create_github_deployment(
                         payload['repository_url'], payload['branch'], payload['application_id'],
                         payload['targets'], payload['public'], payload['auto_deploy'],
-                        owner=self.request_owner()))
+                        owner=self.request_owner(),
+                        public_url_required=payload.get('public_url_required', False)))
                     return
                 if re.fullmatch(r'/api/github/sources/[a-f0-9]{16}/(pause|resume|check|retry|disconnect)', self.path):
                     if int(self.headers.get('Content-Length', '0')) != 0:

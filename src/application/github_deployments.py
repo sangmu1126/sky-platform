@@ -32,11 +32,17 @@ from engine.application_ir import application_ir
 from engine.architecture_decision import architecture_decision
 from engine.aws_backend_assessment import with_aws_backend_options
 from engine.compilation import compile_decision
+from engine.candidates import compare_targets
 from engine.deployment_policy import deployment_policy
 from engine.static_site import assess_static_site
 from domain.access import AccessResult, Action, ResourceOwner, owner_from_record, record_access
 
 TARGETS = {"auto", "local-docker", "aws-ecs-express", "cloud-run"}
+
+
+def validate_github_public_requirement(targets, public, required):
+    if type(required) is not bool or (required and (public is not True or targets != ["auto"])):
+        raise ValueError("공개 URL 필수 조건은 인터넷 공개를 허용한 단일 자동 선택에서 사용할 수 있습니다.")
 
 
 class GitHubDeploymentsMixin:
@@ -77,6 +83,8 @@ class GitHubDeploymentsMixin:
                         and owner_from_record(item) is None)
                 ):
                     raise ValueError("invalid source record")
+                validate_github_public_requirement(
+                    item["targets"], item["public"], item.get("public_url_required", False))
                 item["repository_url"] = repository.url
                 self.github_sources[item["id"]] = item
             if len(self.github_sources) != len(records):
@@ -141,7 +149,9 @@ class GitHubDeploymentsMixin:
                 raise
             return {"id": source_id, "disconnected": True}
 
-    def _validate_github_request(self, application_id: str, targets: list[str], public: bool):
+    def _validate_github_request(
+        self, application_id: str, targets: list[str], public: bool, *, public_url_required=False
+    ):
         if not self.ai_settings.available:
             raise ValueError("GitHub 소스 배포에는 AI 설정이 필요합니다.")
         if not re.fullmatch(r"[a-z][a-z0-9-]{2,30}", application_id):
@@ -155,6 +165,7 @@ class GitHubDeploymentsMixin:
             or type(public) is not bool
         ):
             raise ValueError("배포 대상을 올바르게 선택하세요.")
+        validate_github_public_requirement(targets, public, public_url_required)
         if "aws-ecs-express" in targets and not public:
             raise ValueError("AWS를 포함하려면 인터넷 공개를 허용하세요.")
         for target in targets:
@@ -190,17 +201,24 @@ class GitHubDeploymentsMixin:
             if previous_target and previous_target != "aws-s3-cloudfront":
                 raise ValueError("GitHub 앱의 실행 백엔드가 바뀌어 수동 확인이 필요합니다.")
             return self._reserve_static_github_job(project, application_id, source)
-        policy = deployment_policy(requested_target, public)
+        public_url_required = source.get("public_url_required", False)
+        policy = deployment_policy(requested_target, public, public_url_required=public_url_required)
         validate_infrastructure(profile, requested_target)
         if requested_target == "auto":
-            available = ["local-docker"]
-            if self.cloud_settings.unavailable_reason() is None:
-                available.append("cloud-run")
-            if public and self.aws_settings.unavailable_reason() is None:
-                available.append("aws-ecs-express")
-            plan = plan_infrastructure(
-                project, available, public, self.infrastructure_planner_factory(self.ai_settings)
+            _, candidates = compare_targets(
+                profile, {"local-docker": None,
+                          "cloud-run": self.cloud_settings.unavailable_reason(),
+                          "aws-ecs-express": self.aws_settings.unavailable_reason()},
+                public_access=public, public_url_required=public_url_required,
             )
+            available = [item["id"] for item in candidates if item["status"] == "eligible"]
+            if not available:
+                raise ValueError("현재 설정에서 감지된 요구와 호환되는 자동 배포 대상이 없습니다.")
+            plan = plan_infrastructure(
+                project, available, public, self.infrastructure_planner_factory(self.ai_settings),
+                public_url_required=public_url_required,
+            )
+            plan["candidates"] = [{**item, "selected": item["id"] == plan["target"]} for item in candidates]
             target = plan["target"]
             validate_infrastructure(profile, target)
         else:
@@ -308,6 +326,7 @@ class GitHubDeploymentsMixin:
             self.create_static_job(
                 job_id, copied, application_id, requested_target="auto", source=source,
                 owner=owner_from_record(source),
+                public_url_required=source.get("public_url_required", False),
             )
             self.clear_upload_marker(directory)
             return {"id": job_id, "status": "running", "target": "aws-s3-cloudfront"}
@@ -328,13 +347,16 @@ class GitHubDeploymentsMixin:
         public: bool,
         subscription_id: str | None = None,
         owner: ResourceOwner | None = None,
+        *, public_url_required: bool = False,
     ) -> tuple[dict, list[str]]:
-        self._validate_github_request(application_id, targets, public)
+        self._validate_github_request(
+            application_id, targets, public, public_url_required=public_url_required)
         source = {
             "repository_url": repository.url,
             "branch": branch,
             "commit": commit,
             "subscription_id": subscription_id,
+            **({"public_url_required": True} if public_url_required else {}),
             **(owner.record() if owner else {}),
         }
         with tempfile.TemporaryDirectory(prefix=".github-import-", dir=self.root) as temporary:
@@ -372,10 +394,11 @@ class GitHubDeploymentsMixin:
         targets: list[str],
         public: bool,
         auto_deploy: bool,
-        *, owner: ResourceOwner | None = None,
+        *, owner: ResourceOwner | None = None, public_url_required: bool = False,
     ) -> dict:
         repository = parse_repository_url(repository_url)
-        self._validate_github_request(application_id, targets, public)
+        self._validate_github_request(
+            application_id, targets, public, public_url_required=public_url_required)
         if type(auto_deploy) is not bool:
             raise ValueError("자동 배포 선택이 올바르지 않습니다.")
         if auto_deploy and not self.github_poll_interval:
@@ -391,7 +414,8 @@ class GitHubDeploymentsMixin:
         actual_branch, commit = resolve_revision(repository, branch)
         source_id = uuid.uuid4().hex[:16] if auto_deploy else None
         result, job_ids = self._reserve_github_revision(
-            repository, actual_branch, commit, application_id, targets, public, source_id, owner
+            repository, actual_branch, commit, application_id, targets, public, source_id, owner,
+            public_url_required=public_url_required,
         )
         if auto_deploy:
             item = {
@@ -401,6 +425,7 @@ class GitHubDeploymentsMixin:
                 "application_id": application_id,
                 "targets": targets,
                 "public": public,
+                **({"public_url_required": True} if public_url_required else {}),
                 "enabled": True,
                 "last_revision": commit,
                 "last_job_ids": job_ids,
@@ -488,6 +513,7 @@ class GitHubDeploymentsMixin:
                     snapshot["public"],
                     source_id,
                     owner_from_record(snapshot),
+                    public_url_required=snapshot.get("public_url_required", False),
                 )
                 try:
                     with self.lock:
