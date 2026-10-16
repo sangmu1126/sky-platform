@@ -39,7 +39,6 @@ jobs:
     timeout-minutes: 5
     env:
       AWS_EC2_METADATA_DISABLED: "true"
-      SKY_TEST_BUILD_EXPORT_DIR: ${{ runner.temp }}/sky-builder-handoff
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,3 +53,5 @@ jobs:
           path: ${{ runner.temp }}/sky-builder-handoff/
       - name: Verify and execute the transferred synthetic image
         run: python -m scripts.check_builder_handoff
+        env:
+          SKY_TEST_BUILD_EXPORT_DIR: ${{ runner.temp }}/sky-builder-handoff
