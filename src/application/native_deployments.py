@@ -70,6 +70,8 @@ class NativeDeploymentsMixin:
     def create_native_job(
         self, job_id, project, application_id, target, *, handler="handler.handler", owner=None
     ):
+        with self.lock:
+            self.ensure_deployment_source_available(application_id)
         reason = self.native_unavailable_reason(target)
         if reason:
             raise ValueError(reason)
@@ -78,6 +80,7 @@ class NativeDeploymentsMixin:
         if target == "aws-ec2":
             assessment["subnet_id"] = os.environ["SKY_EC2_SUBNET_ID"]
         with self.lock:
+            self.ensure_deployment_source_available(application_id)
             self.ensure_application_available(application_id, target)
             if any(
                 j.get("application_id") == application_id

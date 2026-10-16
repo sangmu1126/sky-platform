@@ -217,6 +217,18 @@ class GitHubDeploymentsMixin:
             if target == "cloud-run" and self.cloud_settings.unavailable_reason():
                 raise ValueError(self.cloud_settings.unavailable_reason())
 
+    def ensure_deployment_source_available(self, application_id, source=None):
+        """Check under self.lock at reservation; pausing does not transfer source control."""
+        for item in self.github_sources.values():
+            if item.get("application_id") != application_id:
+                continue
+            expected = _github_subscription_scope(item, item["id"])
+            incoming = {"application_id": application_id, "github_source": source,
+                        **{key: source[key] for key in ("organization_id", "created_by")
+                           if isinstance(source, dict) and key in source}}
+            if not same_github_release_scope(expected, incoming):
+                raise ValueError("GitHub 자동 배포가 연결된 앱입니다. 수동 배포하려면 연결을 해제하거나 다른 앱 ID를 사용하세요.")
+
     def _reserve_single_github_job(
         self, project: Path, application_id: str, requested_target: str, public: bool, source: dict
     ) -> dict:
@@ -316,6 +328,7 @@ class GitHubDeploymentsMixin:
                 # Recheck after model planning/copying; active jobs may have changed meanwhile.
                 _require_same_backend(
                     _active_subscription_backend(self.jobs.values(), application_id, subscription_id), target)
+                self.ensure_deployment_source_available(application_id, source)
                 self.ensure_application_available(application_id, target)
                 previous = [
                     old
@@ -407,6 +420,8 @@ class GitHubDeploymentsMixin:
             **({"public_url_required": True} if public_url_required else {}),
             **(owner.record() if owner else {}),
         }
+        with self.lock:
+            self.ensure_deployment_source_available(application_id, source)
         with tempfile.TemporaryDirectory(prefix=".github-import-", dir=self.root) as temporary:
             root = Path(temporary)
             archive = root / "source.zip"
@@ -528,6 +543,10 @@ class GitHubDeploymentsMixin:
                         source["application_id"] == application_id for source in self.github_sources.values()
                     ):
                         raise ValueError("이 앱에는 이미 GitHub 자동 배포가 연결돼 있습니다.")
+                    if any(job.get("application_id") == application_id and job["id"] not in job_ids
+                           and job.get("status") in {"planned", "provisioning", "running", "waiting_input"}
+                           for job in self.jobs.values()):
+                        raise ValueError("이 앱의 다른 배포가 진행 중입니다. 완료 후 GitHub 자동 배포를 연결하세요.")
                     self._stamp_github_dispatch_locked(job_ids, item)
                     self.github_sources[source_id] = item
                     self.save_github_sources()

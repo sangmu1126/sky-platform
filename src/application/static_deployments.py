@@ -23,6 +23,8 @@ class StaticDeploymentsMixin:
         owner: ResourceOwner | None = None,
     ) -> None:
         """Persist one static release before starting its cloud worker."""
+        with self.lock:
+            self.ensure_deployment_source_available(application_id, source)
         attempt_id = job_id + "-a1"
         preflight = AwsStaticSiteAdapter(self.aws_settings).preflight(project, application_id, attempt_id)
         records = static_compilation(
@@ -30,6 +32,7 @@ class StaticDeploymentsMixin:
             public_url_required=public_url_required,
         )
         with self.lock:
+            self.ensure_deployment_source_available(application_id, source)
             self.ensure_application_available(application_id, "aws-s3-cloudfront")
             existing = [old for old in self.jobs.values() if (
                 old.get("application_id") == application_id

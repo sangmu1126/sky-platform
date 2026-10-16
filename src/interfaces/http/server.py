@@ -484,6 +484,8 @@ class App(GitHubDeploymentsMixin, StateRecoveryMixin, MonitoringMixin, StaticDep
             raise ValueError('서로 다른 배포 대상 2~3개를 선택하세요.')
         if not re.fullmatch(r'[a-z][a-z0-9-]{2,30}', application_id):
             raise ValueError('올바른 앱 ID가 필요합니다.')
+        with self.lock:
+            self.ensure_deployment_source_available(application_id, source)
         policy = deployment_policy(tuple(targets), public)
         profile = inspect_infrastructure(project)
         digest = source_digest(project)
@@ -537,6 +539,7 @@ class App(GitHubDeploymentsMixin, StateRecoveryMixin, MonitoringMixin, StaticDep
                     job['github_source'] = source
                 jobs.append(job)
             with self.lock:
+                self.ensure_deployment_source_available(application_id, source)
                 for target in targets:
                     self.ensure_application_available(application_id, target)
                 for job in jobs:
@@ -2395,6 +2398,8 @@ def handler_for(app: App):
                     if not self.require_access(app.application_access(
                             self.principal, application_id, Action.DEPLOY)):
                         return
+                    with app.lock:
+                        app.ensure_deployment_source_available(application_id)
                     postgres_flag = self.headers.get('X-Postgres-Existing', 'false')
                     if postgres_flag not in {'true', 'false'}:
                         raise ValueError('기존 PostgreSQL 선택 값이 올바르지 않습니다.')
@@ -2589,6 +2594,7 @@ def handler_for(app: App):
                             data_migration=sqlite_conversion is not None,
                         )
                         with app.lock:
+                            app.ensure_deployment_source_available(application_id)
                             app.ensure_application_available(application_id, target)
                             if local_sqlite_binding is not None and any(
                                 old.get('application_id') == application_id
