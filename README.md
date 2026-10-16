@@ -122,6 +122,13 @@ Sky 호스팅 리소스는 `sky-infra`가 관리합니다. 사용자 앱 리소�
 .venv/bin/ruff format --check .
 ```
 
+Docker 엔진이 실행되는 호스트에서 이전 로컬 배포 정리를 실제 컨테이너 두 개로 검증할 수 있습니다.
+
+```sh
+python -m tests.live.smoke_github_cleanup_retry
+```
+
+이 검증은 Python 베이스 이미지를 받을 수 있으며, 전용 컨테이너·이미지는 종료 시 정리하고 Docker 빌드 캐시는 보존합니다.
 PostgreSQL·Docker 통합 테스트에는 별도 실행 환경이 필요합니다. 실계정·실모델 테스트는 수동으로 실행합니다.
 GitHub Actions에는 코드 검사, UI 테스트, 서비스 이미지 검증과 ECR 게시 흐름이 정의돼 있습니다.
 개인 fork에서는 워크플로 실행 허용과 OIDC·ECR 설정을 별도로 확인해야 합니다. 코드만 복사해도 AWS 게시 권한이 생기는 것은 아닙니다.
