@@ -23,4 +23,4 @@ jobs:
       - name: Prepare fixture base image
         run: docker pull --platform linux/amd64 node:22-bookworm-slim
       - name: Verify remote build boundaries and actual image round trip
-        run: pytest -q -rs tests/unit/test_remote_build.py
+        run: pytest -q -rs tests/unit/test_remote_build.py tests/unit/test_remote_build_publish.py

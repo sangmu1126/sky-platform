@@ -147,58 +147,68 @@ def publish(directory, output):
     registry = f"{settings.account_id}.dkr.ecr.{settings.region}.amazonaws.com"
     auth = ecr.get_authorization_token(registryIds=[settings.account_id])["authorizationData"][0]
     username, password = base64.b64decode(auth["authorizationToken"]).decode().split(":", 1)
-    login = subprocess.run(
-        ["docker", "login", "--username", username, "--password-stdin", registry],
-        check=False,
-        input=password,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if login.returncode:
-        raise OSError("Builder registry login failed")
-    tag = "build-" + request["build_id"]
     try:
-        found = ecr.describe_images(
-            registryId=settings.account_id, repositoryName="sky-managed", imageIds=[{"imageTag": tag}]
+        login = subprocess.run(
+            ["docker", "login", "--username", username, "--password-stdin", registry],
+            check=False,
+            input=password,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
-    except ClientError as error:
-        if error.response.get("Error", {}).get("Code") != "ImageNotFoundException":
-            raise
-        found = None
-    if found is not None:
-        # Crash after push: never overwrite an existing tag with a potentially different rebuild.
-        raise ValueError("Existing image without result requires explicit reconciliation")
-    local = "sky-build:" + request["build_id"]
-    command(["docker", "load", "-i", str(output / "image.tar")])
-    if (
-        command(["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", local]).strip()
-        != "linux/amd64"
-    ):
-        raise ValueError("Unexpected image architecture")
-    destination = registry + "/sky-managed:" + tag
-    command(["docker", "tag", local, destination])
-    command(["docker", "push", destination], timeout=300)
-    image_digest = ecr.describe_images(
-        registryId=settings.account_id, repositoryName="sky-managed", imageIds=[{"imageTag": tag}]
-    )["imageDetails"][0]["imageDigest"]
-    result = {
-        "version": 1,
-        "build_id": request["build_id"],
-        "request_digest": digest(request),
-        "source_digest": request["source_digest"],
-        "plan_digest": request["plan_digest"],
-        "platform": "linux/amd64",
-        "repository": request["repository"],
-        "workflow_sha": request["workflow_sha"],
-        "platform_code_sha": request["platform_code_sha"],
-        "run_id": int(os.environ["GITHUB_RUN_ID"]),
-        "image_digest": image_digest,
-        "image": registry + "/sky-managed@" + image_digest,
-    }
-    validate_result(result, request, result["run_id"])
-    objects.put(result_key, result)
-    command(["docker", "logout", registry], timeout=30)
+        if login.returncode:
+            raise OSError("Builder registry login failed")
+        tag = "build-" + request["build_id"]
+        try:
+            found = ecr.describe_images(
+                registryId=settings.account_id, repositoryName="sky-managed", imageIds=[{"imageTag": tag}]
+            )
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") != "ImageNotFoundException":
+                raise
+            found = None
+        if found is not None:
+            # Crash after push: never overwrite an existing tag with a potentially different rebuild.
+            raise ValueError("Existing image without result requires explicit reconciliation")
+        local = "sky-build:" + request["build_id"]
+        command(["docker", "load", "-i", str(output / "image.tar")])
+        if (
+            command(["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", local]).strip()
+            != "linux/amd64"
+        ):
+            raise ValueError("Unexpected image architecture")
+        destination = registry + "/sky-managed:" + tag
+        command(["docker", "tag", local, destination])
+        command(["docker", "push", destination], timeout=300)
+        image_digest = ecr.describe_images(
+            registryId=settings.account_id, repositoryName="sky-managed", imageIds=[{"imageTag": tag}]
+        )["imageDetails"][0]["imageDigest"]
+        result = {
+            "version": 1,
+            "build_id": request["build_id"],
+            "request_digest": digest(request),
+            "source_digest": request["source_digest"],
+            "plan_digest": request["plan_digest"],
+            "platform": "linux/amd64",
+            "repository": request["repository"],
+            "workflow_sha": request["workflow_sha"],
+            "platform_code_sha": request["platform_code_sha"],
+            "run_id": int(os.environ["GITHUB_RUN_ID"]),
+            "image_digest": image_digest,
+            "image": registry + "/sky-managed@" + image_digest,
+        }
+        validate_result(result, request, result["run_id"])
+        objects.put(result_key, result)
+    finally:
+        # Always attempt registry credential cleanup, including partial login failures.
+        # Preserve the original failure if cleanup also fails; a cleanup-only
+        # failure still fails the job rather than reporting complete success.
+        failed = sys.exc_info()[0] is not None
+        try:
+            command(["docker", "logout", registry], timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            if not failed:
+                raise
 
 
 def main():
