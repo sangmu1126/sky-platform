@@ -35,7 +35,7 @@ from engine.architecture_decision import architecture_decision
 from engine.aws_backend_assessment import with_aws_backend_options
 from engine.compilation import compile_decision
 from engine.candidates import compare_targets
-from engine.deployment_policy import deployment_policy
+from engine.deployment_policy import deployment_policy, policy_from_record
 from engine.github_release_scope import same_github_release_scope
 from engine.static_site import assess_static_site
 from domain.access import AccessResult, Action, ResourceOwner, owner_from_record, record_access
@@ -376,7 +376,7 @@ class GitHubDeploymentsMixin:
         public: bool,
         subscription_id: str | None = None,
         owner: ResourceOwner | None = None,
-        *, public_url_required: bool = False,
+        *, public_url_required: bool = False, expected_source_digest: str | None = None,
     ) -> tuple[dict, list[str]]:
         self._validate_github_request(
             application_id, targets, public, public_url_required=public_url_required)
@@ -393,6 +393,11 @@ class GitHubDeploymentsMixin:
             archive = root / "source.zip"
             download_revision(repository, commit, archive)
             project = extract_project(archive, root / "extracted")
+            if expected_source_digest is not None and (
+                    not isinstance(expected_source_digest, str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", expected_source_digest)
+                    or source_digest(project) != expected_source_digest):
+                raise ValueError("동일 커밋의 소스가 이전 작업 기록과 다릅니다. 재시도를 중단합니다.")
             if len(targets) == 1:
                 job = self._reserve_single_github_job(project, application_id, targets[0], public, source)
                 return job, [job["id"]]
@@ -500,7 +505,8 @@ class GitHubDeploymentsMixin:
             item = self.github_sources.get(source_id)
             if not item or not item["enabled"]:
                 raise ValueError("활성 GitHub 자동 배포 연결을 찾을 수 없습니다.")
-            snapshot = dict(item)
+            snapshot = json.loads(json.dumps(item))
+        expected_source_digest = None
         repository = parse_repository_url(snapshot["repository_url"])
         try:
             branch, commit = resolve_revision(repository, snapshot["branch"])
@@ -519,6 +525,37 @@ class GitHubDeploymentsMixin:
                     )
                 ):
                     raise ValueError("다시 시도할 실패한 GitHub 배포가 없습니다.")
+                retry_owner = owner_from_record(snapshot)
+                owner_record = retry_owner.record() if retry_owner else {}
+                expected_scope = {
+                    "application_id": snapshot["application_id"],
+                    "github_source": {"repository_url": repository.url, "branch": snapshot["branch"],
+                                      "subscription_id": source_id,
+                                      **owner_record},
+                    **owner_record,
+                }
+                expected_policy = deployment_policy(
+                    snapshot["targets"][0] if len(snapshot["targets"]) == 1 else tuple(snapshot["targets"]),
+                    snapshot["public"], public_url_required=snapshot.get("public_url_required", False)).as_dict()
+                with self.lock:
+                    attempts = [self.jobs[job_id] for job_id in snapshot["last_job_ids"]]
+                    try:
+                        same_policy = all(policy_from_record(job.get("deployment_policy")).as_dict() == expected_policy
+                                          for job in attempts)
+                    except (TypeError, ValueError):
+                        same_policy = False
+                    if not same_policy:
+                        raise ValueError("이전 작업과 재시도 구독의 배포 정책이 다릅니다. 새 배포 요청이 필요합니다.")
+                    if any(not same_github_release_scope(job, expected_scope)
+                           or (job.get("github_source") or {}).get("commit") != snapshot["last_revision"]
+                           or not isinstance(job.get("source_digest"), str)
+                           or not re.fullmatch(r"[a-f0-9]{64}", job["source_digest"])
+                           for job in attempts):
+                        raise ValueError("재시도 원본의 소스·커밋·소유권 근거를 확인하지 못했습니다.")
+                    digests = {job["source_digest"] for job in attempts}
+                if len(digests) != 1:
+                    raise ValueError("재시도 작업들의 소스 해시가 일치하지 않습니다.")
+                expected_source_digest = digests.pop()
             if commit != snapshot["last_revision"] or retry_failed:
                 with self.lock:
                     pending = any(
@@ -543,14 +580,18 @@ class GitHubDeploymentsMixin:
                     source_id,
                     owner_from_record(snapshot),
                     public_url_required=snapshot.get("public_url_required", False),
+                    expected_source_digest=expected_source_digest,
                 )
+                published = False
                 try:
                     with self.lock:
                         current = self.github_sources.get(source_id)
                         if (
                             not current
                             or not current["enabled"]
-                            or current["last_revision"] != snapshot["last_revision"]
+                            or any(current.get(field) != snapshot.get(field) for field in (
+                                "repository_url", "branch", "application_id", "targets", "public",
+                                "public_url_required", "organization_id", "created_by", "last_revision", "last_job_ids"))
                         ):
                             raise ValueError("GitHub 자동 배포 설정이 변경됐습니다. 작업 상태를 확인하세요.")
                         current.update(
@@ -559,11 +600,13 @@ class GitHubDeploymentsMixin:
                             last_error=None,
                             checked_at=datetime.now(timezone.utc).isoformat(),
                         )
+                        published = True
                         self.save_github_sources()
                 except Exception:
                     with self.lock:
                         current = self.github_sources.get(source_id)
-                        if current:
+                        if (published and current and current.get("last_revision") == commit
+                                and current.get("last_job_ids") == job_ids):
                             current.update(
                                 last_revision=snapshot["last_revision"],
                                 last_job_ids=snapshot["last_job_ids"],
