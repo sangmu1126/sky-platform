@@ -159,7 +159,7 @@ test('GitHub link deploy sends a pinned-source request with auto deploy opt-in',
   const elements = {deploy: {}, application: {value: 'demo-app'}, error: {textContent: ''},
     repositoryUrl: {value: 'https://github.com/team/demo'}, repositoryBranch: {value: 'main'},
     githubAutoDeploy: {checked: true}, multiMode: {checked: false}, target: {value: 'local-docker'},
-    public: {checked: false}, jobSection: {hidden: false}, groupSection: {hidden: false}};
+    public: {checked: false}, publicRequired: {checked: false}, jobSection: {hidden: false}, groupSection: {hidden: false}};
   const calls = [];
   const context = {el: id => elements[id], Error, String, JSON, githubMode: true,
     selectedUploadBody: () => { throw Error('file upload should not run'); },
@@ -169,18 +169,21 @@ test('GitHub link deploy sends a pinned-source request with auto deploy opt-in',
       calls.push([path, options]);
       return {deployment: {id: 'b'.repeat(16)}};
     }};
-  runInNewContext(html.slice(start, end), context);
+  const payloadStart = html.indexOf('function githubDeploymentPayload(application,targets){');
+  const payloadEnd = html.indexOf('function selectedUploadBody()', payloadStart);
+  assert.ok(payloadStart >= 0 && payloadEnd > payloadStart);
+  runInNewContext(html.slice(payloadStart, payloadEnd) + html.slice(start, end), context);
   await elements.deploy.onclick();
   assert.equal(calls[0][0], '/api/github/deployments');
   assert.deepEqual(JSON.parse(calls[0][1].body), {
     repository_url: 'https://github.com/team/demo', branch: 'main',
-    application_id: 'demo-app', targets: ['local-docker'], public: false, auto_deploy: true,
+    application_id: 'demo-app', targets: ['local-docker'], public: false, auto_deploy: true, public_url_required: false,
   });
   assert.deepEqual(calls[1], ['follow', 'b'.repeat(16)]);
 });
 
 test('failed GitHub deployment is labeled as failed and exposes manual retry', async () => {
-  const start = html.indexOf('async function refreshGithubSources(){');
+  const start = html.indexOf('function githubActionMessage(action,result){');
   const end = html.indexOf("el('resumePostgres').onclick", start);
   assert.ok(start >= 0 && end > start);
   const elements = new Map();
@@ -206,7 +209,7 @@ test('failed GitHub deployment is labeled as failed and exposes manual retry', a
   await retry.onclick();
   assert.equal(calls[1][0], '/api/github/sources/' + source.id + '/retry');
   assert.equal(calls[1][1].method, 'POST');
-  assert.equal(el('githubSourceInfo').textContent, '배포를 다시 시작했습니다.');
+  assert.equal(el('githubSourceInfo').textContent, '같은 커밋의 새 배포 작업을 접수했습니다.');
 });
 
 test('running deployment can be cancelled only before its first attempt', () => {
