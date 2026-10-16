@@ -1,9 +1,17 @@
-"""Trusted sky-builder runner. User code executes only in the credential-free build job."""
+"""Trusted sky-builder runner; user code runs in the credential-free build job.
+
+Transfer the entire output directory (image.tar AND build.json) to publish.
+Legacy image-only artifacts fail closed and require a fresh build. The receipt
+checks request/archive/image consistency; it is not a signature and depends on
+the trusted workflow and artifact transport for authenticity.
+"""
 
 import argparse
 import base64
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import fields
@@ -121,6 +129,47 @@ def build(directory, output):
         ImageBuilder(command, lambda *_: None).build(project, plan, image, platform="linux/amd64")
     output.mkdir(parents=True, exist_ok=True)
     command(["docker", "save", "-o", str(output / "image.tar"), image])
+    image_id = command(["docker", "image", "inspect", "--format", "{{.Id}}", image]).strip()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+        raise ValueError("Invalid built image identity")
+    (output / "build.json").write_bytes(
+        canonical(
+            {
+                "version": 1,
+                "request_digest": digest(request),
+                "image_id": image_id,
+                "archive_digest": archive_digest(output / "image.tar"),
+            }
+        )
+    )
+
+
+def archive_digest(path):
+    with path.open("rb") as archive:
+        return hashlib.file_digest(archive, "sha256").hexdigest()
+
+
+def verified_build(request, output):
+    """Check transport integrity, not a signature against a malicious builder."""
+    path = output / "build.json"
+    with path.open("rb") as source:
+        raw = source.read(4097)
+    if len(raw) > 4096:
+        raise ValueError("Oversized build receipt")
+    receipt = json.loads(raw)
+    if (
+        raw != canonical(receipt)
+        or not isinstance(receipt, dict)
+        or set(receipt) != {"version", "request_digest", "image_id", "archive_digest"}
+        or type(receipt["version"]) is not int
+        or receipt["version"] != 1
+        or receipt["request_digest"] != digest(request)
+        or not isinstance(receipt["image_id"], str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", receipt["image_id"])
+        or receipt["archive_digest"] != archive_digest(output / "image.tar")
+    ):
+        raise ValueError("Build artifact identity mismatch")
+    return receipt["image_id"]
 
 
 def publish(directory, output):
@@ -128,6 +177,7 @@ def publish(directory, output):
     from botocore.exceptions import ClientError
 
     request, _, _ = inputs(directory)
+    image_id = verified_build(request, output)
     settings = S3ArtifactSettings(
         os.environ["SKY_ARTIFACTS_BUCKET"], os.environ["AWS_REGION"], os.environ["SKY_AWS_ACCOUNT_ID"]
     )
@@ -172,13 +222,16 @@ def publish(directory, output):
             raise ValueError("Existing image without result requires explicit reconciliation")
         local = "sky-build:" + request["build_id"]
         command(["docker", "load", "-i", str(output / "image.tar")])
+        loaded_id = command(["docker", "image", "inspect", "--format", "{{.Id}}", local]).strip()
+        if loaded_id != image_id:
+            raise ValueError("Loaded image identity mismatch")
         if (
-            command(["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", local]).strip()
+            command(["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", image_id]).strip()
             != "linux/amd64"
         ):
             raise ValueError("Unexpected image architecture")
         destination = registry + "/sky-managed:" + tag
-        command(["docker", "tag", local, destination])
+        command(["docker", "tag", image_id, destination])
         command(["docker", "push", destination], timeout=300)
         image_digest = ecr.describe_images(
             registryId=settings.account_id, repositoryName="sky-managed", imageIds=[{"imageTag": tag}]

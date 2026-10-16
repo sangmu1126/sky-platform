@@ -7,9 +7,11 @@ from unittest.mock import Mock, patch
 import pytest
 from botocore.exceptions import ClientError
 
+from ports.remote_builds import canonical, digest
+
 
 @pytest.fixture
-def publisher(monkeypatch):
+def publisher(monkeypatch, tmp_path):
     from scripts import remote_builder
 
     request = {
@@ -23,6 +25,17 @@ def publisher(monkeypatch):
         "workflow_sha": "c" * 40,
         "platform_code_sha": "d" * 40,
     }
+    (tmp_path / "image.tar").write_bytes(b"fixture archive")
+    (tmp_path / "build.json").write_bytes(
+        canonical(
+            {
+                "version": 1,
+                "request_digest": digest(request),
+                "image_id": "sha256:" + "f" * 64,
+                "archive_digest": remote_builder.archive_digest(tmp_path / "image.tar"),
+            }
+        )
+    )
     for name, value in {
         "SKY_ARTIFACTS_BUCKET": request["bucket"],
         "SKY_AWS_ACCOUNT_ID": request["account_id"],
@@ -45,8 +58,9 @@ def publisher(monkeypatch):
         patch("boto3.client", side_effect=lambda service, **_: {"sts": sts, "ecr": ecr}[service]),
         patch.object(remote_builder, "S3BuildObjects", return_value=objects),
         patch.object(remote_builder.subprocess, "run", return_value=Mock(returncode=0)),
-        patch.object(remote_builder, "command", return_value="linux/amd64\n") as command,
+        patch.object(remote_builder, "command") as command,
     ):
+        command.side_effect = lambda args, **_: "sha256:" + "f" * 64 if "{{.Id}}" in args else "linux/amd64"
         yield remote_builder, ecr, objects, command
 
 
@@ -69,6 +83,8 @@ def test_publish_failure_logs_out_and_does_not_publish_result(publisher, tmp_pat
     def execute(args, **_):
         if args[1] == stage:
             raise OSError("injected failure")
+        if "{{.Id}}" in args:
+            return "sha256:" + "f" * 64
         return "linux/arm64" if stage == "architecture" else "linux/amd64"
 
     command.side_effect = execute
@@ -104,6 +120,8 @@ def test_publish_success_records_digest_reference_then_logs_out(publisher, tmp_p
     result = objects.put.call_args.args[1]
     assert result["image"].endswith("/sky-managed@sha256:" + "e" * 64)
     assert result["run_id"] == 42
+    tagged = [call for call in command.call_args_list if call.args[0][1] == "tag"]
+    assert tagged[0].args[0][2] == "sha256:" + "f" * 64
     assert command.call_args.args[0][1] == "logout"
 
 
@@ -113,6 +131,8 @@ def test_publish_cleanup_only_failure_fails_job(publisher, tmp_path):
     def execute(args, **_):
         if args[1] == "logout":
             raise OSError("logout failed")
+        if "{{.Id}}" in args:
+            return "sha256:" + "f" * 64
         return "linux/amd64"
 
     command.side_effect = execute
@@ -134,3 +154,38 @@ def test_partial_login_failure_still_attempts_logout(publisher, tmp_path, failur
     objects.put.assert_not_called()
     assert len(command.call_args_list) == 1
     assert command.call_args.args[0][1] == "logout"
+
+
+@pytest.mark.parametrize("change", ["archive", "request", "missing", "duplicate", "oversized"])
+def test_altered_artifact_is_rejected_before_cloud_or_docker(publisher, tmp_path, change):
+    builder, ecr, objects, command = publisher
+    receipt = tmp_path / "build.json"
+    if change == "archive":
+        (tmp_path / "image.tar").write_bytes(b"replaced archive")
+    elif change == "request":
+        import json
+
+        data = json.loads(receipt.read_bytes())
+        data["request_digest"] = "0" * 64
+        receipt.write_bytes(canonical(data))
+    elif change == "missing":
+        receipt.unlink()
+    elif change == "duplicate":
+        receipt.write_bytes(b'{"version":1,' + receipt.read_bytes()[1:])
+    else:
+        receipt.write_bytes(b" " * 4097)
+    with patch("boto3.client") as clients, pytest.raises((ValueError, OSError)):
+        builder.publish(tmp_path, tmp_path)
+    clients.assert_not_called()
+    command.assert_not_called()
+    objects.put.assert_not_called()
+    ecr.get_authorization_token.assert_not_called()
+
+
+def test_loaded_tag_must_match_receipt(publisher, tmp_path):
+    builder, _, objects, command = publisher
+    command.side_effect = lambda args, **_: "sha256:" + "0" * 64 if "{{.Id}}" in args else "linux/amd64"
+    with pytest.raises(ValueError, match="Loaded image identity mismatch"):
+        builder.publish(tmp_path, tmp_path)
+    assert not any(call.args[0][1] in {"tag", "push"} for call in command.call_args_list)
+    objects.put.assert_not_called()

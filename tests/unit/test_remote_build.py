@@ -347,7 +347,7 @@ def test_builder_runs_verified_source_in_real_local_docker(build_request, tmp_pa
     from application.deployment_core import source_digest
     from application.source_artifacts import SourceArtifactService
     from domain.access import LoginSource, Principal, Role
-    from scripts.remote_builder import build
+    from scripts.remote_builder import build, verified_build
 
     if not shutil.which("docker"):
         pytest.skip("Docker unavailable")
@@ -417,6 +417,9 @@ def test_builder_runs_verified_source_in_real_local_docker(build_request, tmp_pa
             ).stdout
         )[0]
         image_id = inspected["Id"]
+        assert verified_build(value, tmp_path / "output") == image_id
+        with pytest.raises(ValueError, match="Build artifact identity mismatch"):
+            verified_build({**value, "build_id": str(uuid4())}, tmp_path / "output")
         assert (inspected["Os"], inspected["Architecture"], inspected["Config"]["User"]) == (
             "linux",
             "amd64",
