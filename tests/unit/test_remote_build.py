@@ -18,6 +18,14 @@ from ports.artifacts import SourceArtifact
 from ports.operations import Operation
 from ports.remote_builds import BuildSettings, canonical, digest, request_for, request_key
 
+BUILD_CREDENTIAL_ENV = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+)
+
 
 @pytest.fixture
 def settings():
@@ -254,17 +262,22 @@ def test_github_app_jwt_signs_and_scopes_installation_token(settings):
     assert api.call_args.args[2]["permissions"] == {"actions": "write", "contents": "read"}
 
 
-def test_build_job_refuses_cloud_credentials_before_docker(build_request, tmp_path, monkeypatch):
+@pytest.mark.parametrize("credential_name", BUILD_CREDENTIAL_ENV)
+def test_build_job_refuses_cloud_credentials_before_docker(
+    build_request, tmp_path, monkeypatch, credential_name
+):
     from scripts.remote_builder import build
 
     (tmp_path / "request.json").write_bytes(canonical(build_request))
+    for name in BUILD_CREDENTIAL_ENV:
+        monkeypatch.delenv(name, raising=False)
     for name, value in {
         "REQUEST_DIGEST": digest(build_request),
         "BUILD_ID": build_request["build_id"],
         "GITHUB_REPOSITORY": build_request["repository"],
         "GITHUB_SHA": build_request["workflow_sha"],
         "SKY_PLATFORM_CODE_SHA": build_request["platform_code_sha"],
-        "AWS_ACCESS_KEY_ID": "private",
+        credential_name: "private",
     }.items():
         monkeypatch.setenv(name, value)
     with patch("scripts.remote_builder.command") as command, pytest.raises(ValueError):
@@ -380,13 +393,7 @@ def test_builder_runs_verified_source_in_real_local_docker(build_request, tmp_pa
     }
     (tmp_path / "request.json").write_bytes(canonical(value))
     (tmp_path / "source.zip").write_bytes(objects.data)
-    for name in (
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
-        "ACTIONS_ID_TOKEN_REQUEST_URL",
-    ):
+    for name in BUILD_CREDENTIAL_ENV:
         monkeypatch.delenv(name, raising=False)
     for name, setting in {
         "BUILD_ID": value["build_id"],
@@ -399,9 +406,47 @@ def test_builder_runs_verified_source_in_real_local_docker(build_request, tmp_pa
     image = "sky-build:" + value["build_id"]
     try:
         build(tmp_path, tmp_path / "output")
-        assert (tmp_path / "output/image.tar").stat().st_size > 0
+        saved = tmp_path / "output/image.tar"
+        assert saved.stat().st_size > 0
+        inspected = json.loads(
+            subprocess.run(
+                ["docker", "image", "inspect", image],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        )[0]
+        image_id = inspected["Id"]
+        assert (inspected["Os"], inspected["Architecture"], inspected["Config"]["User"]) == (
+            "linux",
+            "amd64",
+            "node",
+        )
+        subprocess.run(["docker", "image", "rm", image], check=True, capture_output=True)
+        subprocess.run(["docker", "load", "-i", str(saved)], check=True, capture_output=True, timeout=60)
+        reloaded_id = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert reloaded_id == image_id
         result = subprocess.run(
-            ["docker", "run", "--rm", "--network", "none", image],
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--platform",
+                "linux/amd64",
+                "--network",
+                "none",
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                image_id,
+            ],
             check=False,
             capture_output=True,
             text=True,
