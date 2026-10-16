@@ -701,19 +701,9 @@ class App(GitHubDeploymentsMixin, StateRecoveryMixin, MonitoringMixin, StaticDep
             result = DeploymentAgent(self.agent_factory(self.ai_settings), tools,
                                      steps=job.get("steps", 0),
                                      max_steps=40 if job.get('sqlite_conversion') else 24).run()
-            checkpoint(status="succeeded", result=result, missing_environment=[], deployment_state="active")
-            if job.get('replaces_job_id'):
-                with self.lock:
-                    previous = self.jobs.get(job['replaces_job_id'])
-                    if previous and previous.get('deployment_state', 'active') == 'active':
-                        if (target == 'aws-ecs-express' and result.get('previous_task_definition_arn')
-                                and previous.get('result')):
-                            previous['result']['task_definition_arn'] = result['previous_task_definition_arn']
-                        previous['deployment_state'] = 'superseded'
-                        self.save(previous['id'])
+            checkpoint(status="succeeded", result=result, missing_environment=[], deployment_state="active",
+                       finalization_state="pending" if job.get('replaces_job_id') or job.get('git_replaces_local_job_id') else "not_required")
             self.event(job_id, "succeeded", "실제 HTTP 응답 확인 완료")
-            if target == 'local-docker' and job.get('git_replaces_local_job_id'):
-                self.retire_replaced_github_local(job_id)
         except DeploymentCancelled:
             checkpoint(status="cancelled", missing_environment=[], cancel_requested=False)
             self.event(job_id, "cancelled", "배포 시도 전에 사용자가 작업을 취소했습니다.")
@@ -758,6 +748,33 @@ class App(GitHubDeploymentsMixin, StateRecoveryMixin, MonitoringMixin, StaticDep
                     if previous and previous.get('deployment_state', 'active') == 'active':
                         previous['deployment_state'] = 'needs_attention'
                         self.save(previous['id'])
+        else:
+            # Deployment was verified and persisted. Cleanup/bookkeeping is a separate outcome.
+            try:
+                if job.get('replaces_job_id'):
+                    with self.lock:
+                        previous = self.jobs.get(job['replaces_job_id'])
+                        if not previous:
+                            raise ValueError('이전 배포 기록을 확인하지 못했습니다.')
+                        if previous and previous.get('deployment_state', 'active') == 'active':
+                            if (target == 'aws-ecs-express' and result.get('previous_task_definition_arn')
+                                    and previous.get('result')):
+                                previous['result']['task_definition_arn'] = result['previous_task_definition_arn']
+                            previous['deployment_state'] = 'superseded'
+                            self.save(previous['id'])
+                if target == 'local-docker' and job.get('git_replaces_local_job_id'):
+                    self.retire_replaced_github_local(job_id)
+                    with self.lock:
+                        previous = self.jobs.get(job['git_replaces_local_job_id'])
+                        if not previous or previous.get('deployment_state') != 'deleted':
+                            job['finalization_state'] = 'needs_attention'
+                            self.save(job_id)
+                if self.jobs[job_id].get('finalization_state') == 'pending':
+                    checkpoint(finalization_state="complete")
+            except Exception:
+                checkpoint(finalization_state="needs_attention")
+                self.event(job_id, "finalization_warning",
+                           "새 배포의 HTTP 검증은 완료됐지만 이전 배포의 상태 갱신·정리를 확인해야 합니다.")
         finally:
             environment.clear()
             if tools is not None:

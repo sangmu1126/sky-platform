@@ -148,6 +148,9 @@ class StateRecoveryMixin:
                     raise ValueError('Invalid PostgreSQL creation binding')
                 if job["status"] not in {"planned", "provisioning", "running", "waiting_input", "succeeded", "failed", "interrupted", "cancelled"}:
                     raise ValueError("Invalid job status")
+                if 'finalization_state' in job and job['finalization_state'] not in {
+                        'pending', 'complete', 'needs_attention', 'not_required'}:
+                    raise ValueError('Invalid finalization state')
                 attempts = job.get('attempts', 0)
                 if type(attempts) is not int or not 0 <= attempts <= 3:
                     raise ValueError('Invalid deployment attempt count')
@@ -173,6 +176,12 @@ class StateRecoveryMixin:
                         self.health_history[job_id] = history
                 except (OSError, ValueError, TypeError):
                     self.recovery_warnings.append(f"상태 확인 기록을 불러오지 못했습니다: {job_id}")
+                if job['status'] == 'succeeded' and job.get('finalization_state') == 'pending':
+                    job['finalization_state'] = 'needs_attention'
+                    job['events'].append({'time': datetime.now(timezone.utc).isoformat(),
+                        'stage': 'finalization_warning',
+                        'message': '서버가 재시작되어 이전 배포의 상태 갱신·정리 완료를 확인해야 합니다. 자동 정리하지 않습니다.'})
+                    self.save(job_id)
                 if job["status"] == "running":
                     job["status"] = "cancelled" if job.get('cancel_requested') and not job.get('attempts') else "interrupted"
                     if job.get('aws_update_submitted') and not job.get('aws_update_failed_at'):

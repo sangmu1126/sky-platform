@@ -94,3 +94,36 @@ test('public URL requirement is visible in GitHub auto mode and cleared for fixe
   assert.equal(elements.publicRequiredOption.hidden, true);
   assert.equal(elements.publicRequired.checked, false);
 });
+
+test('verified deployment and follow-up cleanup warning are displayed separately', () => {
+  const start = html.indexOf('function renderInfrastructure(job){');
+  const end = html.indexOf('\nfunction ', start);
+  assert.ok(start >= 0 && end > start);
+  const elements = {infrastructure: {}, sourceInfo: {}};
+  const renderJob = vm.runInNewContext(html.slice(start, end) + '\nrenderInfrastructure;', {
+    el: id => elements[id],
+  });
+  const job = {status: 'succeeded', finalization_state: 'needs_attention'};
+  renderJob(job);
+  assert.match(elements.infrastructure.textContent, /배포 완료, 이전 배포의 상태 갱신·정리 확인 필요/);
+  assert.equal(job.status, 'succeeded');
+  renderJob({status: 'succeeded'});
+  assert.doesNotMatch(elements.infrastructure.textContent, /정리 확인 필요/);
+});
+
+test('following a verified job keeps polling while predecessor cleanup is pending', async () => {
+  const start = html.indexOf('async function follow(id){');
+  const end = html.indexOf('\nfunction ', start);
+  const shown = [];
+  let calls = 0;
+  const follow = vm.runInNewContext(html.slice(start, end) + '\nfollow;', {
+    selected: 'job', readOnly: false,
+    api: async () => ({status: 'succeeded', finalization_state: ++calls === 1 ? 'pending' : 'complete'}),
+    show: job => shown.push(job), el: () => ({open: false}), setTimeout: callback => callback(),
+  });
+  const result = await follow('job');
+  assert.equal(calls, 2);
+  assert.equal(shown[0].status, 'succeeded');
+  assert.equal(shown[0].finalization_state, 'pending');
+  assert.equal(result.finalization_state, 'complete');
+});

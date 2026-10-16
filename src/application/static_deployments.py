@@ -123,6 +123,7 @@ class StaticDeploymentsMixin:
                     or previous.get("target") != "aws-s3-cloudfront"
                     or current.get("application_id") != previous.get("application_id")
                     or (previous.get("github_source") or {}).get("subscription_id") != subscription
+                    or not same_github_release_scope(previous, current)
                     or previous.get("status") != "succeeded"
                     or previous.get("deployment_state") != "active"
                     or not previous.get("static_stack_id")):
