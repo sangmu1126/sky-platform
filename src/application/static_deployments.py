@@ -13,6 +13,7 @@ from application.analysis import redact
 from application.deployment_core import source_digest
 from application.static_compilation import static_compilation, verify_static_compilation
 from domain.access import ResourceOwner
+from engine.github_release_scope import same_github_release_scope
 
 
 class StaticDeploymentsMixin:
@@ -42,7 +43,10 @@ class StaticDeploymentsMixin:
                         and existing[0].get("status") == "succeeded"
                         and existing[0].get("deployment_state") == "active"
                         and existing[0].get("static_stack_id")
-                        and existing[0].get("github_source", {}).get("subscription_id") == subscription_id):
+                        and same_github_release_scope(existing[0], {
+                            "application_id": application_id, "github_source": source,
+                            **(owner.record() if owner else {}),
+                        })):
                     replacement = existing[0]["id"]
                 else:
                     raise ValueError("기존 정적 사이트 릴리스를 종료한 뒤 새 배포를 시작하세요.")

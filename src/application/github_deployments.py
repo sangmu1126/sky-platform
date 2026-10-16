@@ -34,6 +34,7 @@ from engine.aws_backend_assessment import with_aws_backend_options
 from engine.compilation import compile_decision
 from engine.candidates import compare_targets
 from engine.deployment_policy import deployment_policy
+from engine.github_release_scope import same_github_release_scope
 from engine.static_site import assess_static_site
 from domain.access import AccessResult, Action, ResourceOwner, owner_from_record, record_access
 
@@ -305,7 +306,12 @@ class GitHubDeploymentsMixin:
                     and old.get("result")
                 ]
                 if target == "aws-ecs-express" and previous:
-                    latest = max(previous, key=lambda item: item.get("created_at", ""))
+                    matching = [old for old in previous if same_github_release_scope(old, job)]
+                    if not matching:
+                        raise ValueError(
+                            "기존 AWS 배포의 GitHub 소스·구독·소유권이 다릅니다. "
+                            "기존 배포를 유지하며 수동 확인이 필요합니다.")
+                    latest = max(matching, key=lambda item: item.get("created_at", ""))
                     if latest["result"].get("database") is not None:
                         raise ValueError(
                             "기존 PostgreSQL 서비스는 GitHub 자동 배포로 업데이트할 수 없습니다."
@@ -316,7 +322,7 @@ class GitHubDeploymentsMixin:
                     matching = [
                         old
                         for old in previous
-                        if old.get("github_source", {}).get("subscription_id") == source["subscription_id"]
+                        if same_github_release_scope(old, job)
                     ]
                     if matching:
                         job["git_replaces_local_job_id"] = max(
@@ -602,7 +608,16 @@ class GitHubDeploymentsMixin:
             previous = self.jobs.get(current.get("git_replaces_local_job_id")) if current else None
             if not current or not previous or current.get("status") != "succeeded":
                 return
+            valid_scope = (
+                current.get("target") == previous.get("target") == "local-docker"
+                and previous.get("status") == "succeeded"
+                and previous.get("deployment_state", "active") == "active"
+                and same_github_release_scope(previous, current)
+            )
             snapshot = dict(previous)
+        if not valid_scope:
+            self.event(job_id, "previous_local_cleanup_blocked", "이전 배포의 GitHub 소스·구독·소유권이 다릅니다.")
+            return
         try:
             LocalDockerAdapter(lambda *_: None).retire(snapshot["result"], snapshot["id"])
         except Exception as exc:
