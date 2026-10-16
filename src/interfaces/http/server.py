@@ -1425,7 +1425,24 @@ class App(GitHubDeploymentsMixin, StateRecoveryMixin, MonitoringMixin, StaticDep
             current.pop('release_rollback_verification', None)
             current.pop('release_rollback_failed_at', None)
             self.save(job_id)
-        threading.Thread(target=self.run_release_rollback, args=(job_id,), daemon=True).start()
+        try:
+            threading.Thread(target=self.run_release_rollback, args=(job_id,), daemon=True).start()
+        except Exception:
+            with self.lock:
+                latest = self.jobs.get(job_id)
+                if (latest and latest.get('release_rollback_state') == 'running'
+                        and latest.get('release_rollback_target_id') == target_job_id):
+                    submitted = bool(latest.get('release_rollback_submitted'))
+                    latest['release_rollback_state'] = 'needs_attention' if submitted else 'failed'
+                    latest['release_rollback_failed_at'] = datetime.now(timezone.utc).isoformat()
+                    if submitted:
+                        latest['deployment_state'] = 'needs_attention'
+                    latest.setdefault('events', []).append({
+                        'time': datetime.now(timezone.utc).isoformat(),
+                        'stage': 'release_rollback_start_failed',
+                        'message': '롤백 실행기를 시작하지 못했습니다. 현재 앱의 상태를 확인한 뒤 다시 요청하세요.'})
+                    self.save(job_id)
+            raise ValueError('롤백 실행기를 시작하지 못했습니다. 작업 상태를 확인하세요.') from None
 
     def finish_release_rollback(self, job_id, previous_id, verification=None):
         with self.lock:
