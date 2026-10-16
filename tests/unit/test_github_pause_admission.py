@@ -103,7 +103,14 @@ def test_admitted_job_is_not_cancelled_by_polling_pause(tmp_path):
 def test_group_checks_pause_before_each_target(tmp_path):
     app = make_app(tmp_path)
     source_id = "a" * 16
-    app.github_sources[source_id] = {"enabled": True}
+    app.github_sources[source_id] = {
+        "enabled": True,
+        "application_id": "demo-app",
+        "repository_url": "https://github.com/team/demo",
+        "branch": "main",
+        "last_revision": FIRST,
+        "last_job_ids": ["0" * 16, "1" * 16],
+    }
     for order in range(2):
         job_id = str(order) * 16
         app.jobs[job_id] = {
@@ -113,7 +120,13 @@ def test_group_checks_pause_before_each_target(tmp_path):
             "target": "local-docker",
             "status": "planned",
             "events": [],
-            "github_source": {"subscription_id": source_id},
+            "application_id": "demo-app",
+            "github_source": {
+                "subscription_id": source_id,
+                "repository_url": "https://github.com/team/demo",
+                "branch": "main",
+                "commit": FIRST,
+            },
             "github_dispatch_generation": 0,
         }
 

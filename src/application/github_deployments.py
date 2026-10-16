@@ -48,6 +48,17 @@ def validate_github_public_requirement(targets, public, required):
         raise ValueError("공개 URL 필수 조건은 인터넷 공개를 허용한 단일 자동 선택에서 사용할 수 있습니다.")
 
 
+def _github_subscription_scope(source, source_id):
+    # Preserve partial ownership claims so the lineage validator can reject them.
+    owner = {key: source[key] for key in ("organization_id", "created_by") if key in source}
+    return {
+        "application_id": source.get("application_id"),
+        "github_source": {"repository_url": source.get("repository_url"),
+                          "branch": source.get("branch"), "subscription_id": source_id, **owner},
+        **owner,
+    }
+
+
 def _active_subscription_backend(jobs, application_id, subscription_id):
     """Read under the app lock; only this subscription's successful active jobs count."""
     if not subscription_id:
@@ -426,9 +437,16 @@ class GitHubDeploymentsMixin:
         source_id = (job.get("github_source") or {}).get("subscription_id")
         source = self.github_sources.get(source_id)
         if (source and source["enabled"]
-                and source.get("dispatch_generation", 0) == job["github_dispatch_generation"]):
+                and source.get("dispatch_generation", 0) == job["github_dispatch_generation"]
+                and same_github_release_scope(job, _github_subscription_scope(source, source_id))
+                and job_id in source.get("last_job_ids", [])
+                and (job.get("github_source") or {}).get("commit") == source.get("last_revision")):
             job["github_dispatch_admitted"] = True
-            self.save(job_id)
+            try:
+                self.save(job_id)
+            except Exception:
+                job.pop("github_dispatch_admitted", None)
+                raise
             return True
         job["status"] = "interrupted"
         job["github_dispatch_blocked"] = True
@@ -561,15 +579,7 @@ class GitHubDeploymentsMixin:
                     )
                 ):
                     raise ValueError("다시 시도할 실패한 GitHub 배포가 없습니다.")
-                retry_owner = owner_from_record(snapshot)
-                owner_record = retry_owner.record() if retry_owner else {}
-                expected_scope = {
-                    "application_id": snapshot["application_id"],
-                    "github_source": {"repository_url": repository.url, "branch": snapshot["branch"],
-                                      "subscription_id": source_id,
-                                      **owner_record},
-                    **owner_record,
-                }
+                expected_scope = _github_subscription_scope(snapshot, source_id)
                 expected_policy = deployment_policy(
                     snapshot["targets"][0] if len(snapshot["targets"]) == 1 else tuple(snapshot["targets"]),
                     snapshot["public"], public_url_required=snapshot.get("public_url_required", False)).as_dict()
