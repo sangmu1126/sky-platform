@@ -17,6 +17,23 @@ from domain.access import owner_from_record
 JOB_RECORD_VERSION = 1
 
 
+def validate_github_dispatch_record(job):
+    fields = {"github_dispatch_generation", "github_dispatch_admitted", "github_dispatch_blocked"}
+    if not fields.intersection(job):
+        return
+    generation = job.get("github_dispatch_generation")
+    source = job.get("github_source")
+    if (type(generation) is not int or generation < 0 or not isinstance(source, dict)
+            or not isinstance(source.get("subscription_id"), str)
+            or not re.fullmatch(r"[a-f0-9]{16}", source["subscription_id"])):
+        raise ValueError("Invalid GitHub dispatch identity")
+    for field in ("github_dispatch_admitted", "github_dispatch_blocked"):
+        if field in job and type(job[field]) is not bool:
+            raise ValueError("Invalid GitHub dispatch flag")
+    if job.get("github_dispatch_admitted") and job.get("github_dispatch_blocked"):
+        raise ValueError("Conflicting GitHub dispatch flags")
+
+
 def postgres_request_from_job(job: dict) -> PostgresRequest | CloudSqlRequest | None:
     if job.get('cloud_sql') is not None:
         if job.get('postgres') is not None or job.get('target') != 'cloud-run':
@@ -115,6 +132,7 @@ class StateRecoveryMixin:
                 if ("organization_id" in job or "created_by" in job) and owner is None:
                     raise ValueError("Invalid job owner")
                 source = job.get("github_source")
+                validate_github_dispatch_record(job)
                 if isinstance(source, dict) and ("organization_id" in source or "created_by" in source):
                     if owner_from_record(source) != owner:
                         raise ValueError("GitHub source owner does not match job owner")
@@ -181,6 +199,16 @@ class StateRecoveryMixin:
                     job['events'].append({'time': datetime.now(timezone.utc).isoformat(),
                         'stage': 'finalization_warning',
                         'message': '서버가 재시작되어 이전 배포의 상태 갱신·정리 완료를 확인해야 합니다. 자동 정리하지 않습니다.'})
+                    self.save(job_id)
+                if (job["status"] == "planned" and isinstance(source, dict)
+                        and isinstance(source.get("subscription_id"), str)
+                        and re.fullmatch(r"[a-f0-9]{16}", source["subscription_id"])):
+                    job["status"] = "interrupted"
+                    if "github_dispatch_generation" in job and not job.get("github_dispatch_admitted"):
+                        job["github_dispatch_blocked"] = True
+                    job["events"].append({"time": datetime.now(timezone.utc).isoformat(),
+                        "stage": "interrupted",
+                        "message": "서버 재시작으로 GitHub 대기 배포를 중단했습니다. 자동 실행하지 않으며 명시적으로 재시도해야 합니다."})
                     self.save(job_id)
                 if job["status"] == "running":
                     job["status"] = "cancelled" if job.get('cancel_requested') and not job.get('attempts') else "interrupted"

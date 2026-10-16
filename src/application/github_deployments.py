@@ -432,6 +432,8 @@ class GitHubDeploymentsMixin:
     def _admit_github_job_locked(self, job_id):
         """Linearize pause against execution admission, before any external effects."""
         job = self.jobs[job_id]
+        if job.get("github_dispatch_blocked") is True:
+            return False
         if "github_dispatch_generation" not in job or job.get("github_dispatch_admitted"):
             return True
         source_id = (job.get("github_source") or {}).get("subscription_id")
