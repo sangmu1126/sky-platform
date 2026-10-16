@@ -100,3 +100,23 @@ def test_existing_role_privilege_escalation_is_rejected(access):
         db.execute(sql.SQL("ALTER ROLE {} CREATEDB").format(sql.Identifier(receipt["login_role"])))
     with pytest.raises(ValueError, match="privileges"):
         prepare(adapter, binding)
+
+
+def test_unrelated_database_public_connect_is_rejected_without_publishing_app_role(access):
+    import os
+    from uuid import uuid4
+
+    from psycopg import sql
+
+    adapter, binding, admin, _ = access
+    role, _ = access_identity(binding)
+    unrelated = "unrelated_" + uuid4().hex[:12]
+    with psycopg.connect(os.environ["SKY_TEST_PROMOTION_POSTGRES_DSN"], autocommit=True) as root:
+        root.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(unrelated)))
+        try:
+            with pytest.raises(ValueError, match="Application role can connect to another database"):
+                prepare(adapter, binding)
+            with admin() as db:
+                assert db.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (role,)).fetchone() is None
+        finally:
+            root.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(unrelated)))
