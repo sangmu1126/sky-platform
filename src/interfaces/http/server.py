@@ -72,6 +72,7 @@ from adapters.state.directory import StateDirectoryLock
 from adapters.state.records import DirectoryDeploymentRecordStore
 from ports.state import DeploymentRecordStore
 from application.state_recovery import StateRecoveryMixin, postgres_request_from_job
+from engine.release_scope import same_release_scope
 from domain.access import AccessResult, Action, LoginSource, ResourceOwner, Role, permitted, record_access
 from interfaces.http.alb_identity import AlbRequestAuthenticator
 from interfaces.http.auth import LocalTokenAuthenticator, RequestAuthenticator
@@ -1401,6 +1402,7 @@ class App(GitHubDeploymentsMixin, StateRecoveryMixin, MonitoringMixin, StaticDep
                     or current.get('deployment_state', 'active') != 'active'
                     or current.get('release_rollback_state') == 'running'
                     or not previous or previous.get('status') != 'succeeded'
+                    or not same_release_scope(previous, current)
                     or previous.get('deployment_state') != 'superseded'
                     or previous.get('application_id') != current.get('application_id')
                     or previous.get('target') != 'aws-ecs-express'
@@ -1429,6 +1431,8 @@ class App(GitHubDeploymentsMixin, StateRecoveryMixin, MonitoringMixin, StaticDep
         with self.lock:
             current = self.jobs[job_id]
             previous = self.jobs[previous_id]
+            if not same_release_scope(previous, current):
+                raise ValueError('롤백 완료 기록의 소유권 또는 배포 소스가 변경됐습니다.')
             if verification is not None:
                 current['release_rollback_verification'] = verification
             current['release_rollback_state'] = 'succeeded'
@@ -1453,6 +1457,8 @@ class App(GitHubDeploymentsMixin, StateRecoveryMixin, MonitoringMixin, StaticDep
                 self.jobs[job_id].update(updates)
                 self.save(job_id)
         try:
+            if not same_release_scope(previous, current):
+                raise ValueError('롤백 대상의 소유권 또는 배포 소스가 변경됐습니다.')
             adapter = AwsExpressAdapter(lambda stage, message: self.event(job_id, stage, message),
                                         AwsSettings(**current['aws']))
             outcome = adapter.rollback_release(current['result'], previous['result'],
@@ -1486,6 +1492,7 @@ class App(GitHubDeploymentsMixin, StateRecoveryMixin, MonitoringMixin, StaticDep
             previous = self.jobs.get(current.get('release_rollback_target_id')) if current else None
             if (not current or current.get('release_rollback_state') != 'needs_attention'
                     or not current.get('release_rollback_submitted') or not previous
+                    or not same_release_scope(previous, current)
                     or current.get('deployment_state') != 'needs_attention'
                     or previous.get('deployment_state') != 'superseded'):
                 raise ValueError('재확인할 이전 릴리스 롤백이 아닙니다.')
@@ -2027,6 +2034,11 @@ def handler_for(app: App):
                     job_id = self.path.split('/')[3]
                     if int(self.headers.get('Content-Length', '0')) != 0:
                         raise ValueError('릴리스 롤백 재확인 요청에는 본문을 넣을 수 없습니다.')
+                    with app.lock:
+                        current = app.jobs.get(job_id) or {}
+                        previous = app.jobs.get(current.get('release_rollback_target_id'))
+                    if not self.require_access(record_access(self.principal, Action.DEPLOY, previous)):
+                        return
                     self.json_response(200, app.reconcile_release_rollback(job_id))
                     return
                 if re.fullmatch(r"/api/jobs/[a-f0-9]{16}/rollback-release", self.path):
@@ -2040,6 +2052,11 @@ def handler_for(app: App):
                                 (not isinstance(payload['target_job_id'], str)
                                  or not re.fullmatch(r'[a-f0-9]{16}', payload['target_job_id'])))):
                         raise ValueError('롤백 대상 작업 ID가 올바르지 않습니다.')
+                    with app.lock:
+                        current = app.jobs.get(job_id) or {}
+                        previous = app.jobs.get(payload.get('target_job_id') or current.get('replaces_job_id'))
+                    if not self.require_access(record_access(self.principal, Action.DEPLOY, previous)):
+                        return
                     app.start_release_rollback(job_id, payload.get('target_job_id'))
                     self.json_response(202, {'id': job_id, 'release_rollback_state': 'running'})
                     return
