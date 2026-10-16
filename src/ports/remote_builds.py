@@ -85,7 +85,8 @@ class BuildSettings:
                     "SKY_AWS_ACCOUNT_ID",
                     "SKY_AWS_REGION",
                 )
-            )
+            ),
+            workflow=env.get("SKY_BUILDER_WORKFLOW", "build.yml"),
         )
 
 
