@@ -129,19 +129,22 @@ class GitHubDeploymentsMixin:
                 if principal is not None and record_access(principal, Action.READ, item) is not AccessResult.GRANTED:
                     continue
                 summary = dict(item)
-                statuses = [
-                    self.jobs[job_id]["status"] if job_id in self.jobs else "missing"
-                    for job_id in item["last_job_ids"]
-                ]
+                jobs = [self.jobs.get(job_id, {}) for job_id in item["last_job_ids"]]
+                statuses = [job.get("status", "missing") for job in jobs]
                 if all(status == "succeeded" for status in statuses):
                     summary["last_deployment_status"] = "succeeded"
-                elif any(status in {"failed", "cancelled", "interrupted"} for status in statuses):
-                    summary["last_deployment_status"] = "failed"
                 elif any(status == "missing" for status in statuses):
                     summary["last_deployment_status"] = "unknown"
+                elif any(job.get("github_dispatch_blocked") is True for job in jobs) and all(
+                        job.get("status") == "succeeded"
+                        or (job.get("status") == "interrupted" and job.get("github_dispatch_blocked") is True)
+                        for job in jobs):
+                    summary["last_deployment_status"] = "blocked"
+                elif any(status in {"failed", "cancelled", "interrupted"} for status in statuses):
+                    summary["last_deployment_status"] = "failed"
                 else:
                     summary["last_deployment_status"] = "running"
-                summary["retryable"] = summary["last_deployment_status"] == "failed" and all(
+                summary["retryable"] = summary["last_deployment_status"] in {"failed", "blocked"} and all(
                     status in {"succeeded", "failed", "cancelled", "interrupted"} for status in statuses
                 )
                 summaries.append(summary)
@@ -428,6 +431,7 @@ class GitHubDeploymentsMixin:
             self.save(job_id)
             return True
         job["status"] = "interrupted"
+        job["github_dispatch_blocked"] = True
         job.setdefault("events", []).append({
             "time": datetime.now(timezone.utc).isoformat(),
             "stage": "interrupted",

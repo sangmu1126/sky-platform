@@ -159,3 +159,55 @@ def test_explicit_retry_after_resume_uses_current_generation(tmp_path):
     assert app.jobs[new_id]["github_dispatch_admitted"] is True
     restored = make_app(tmp_path)
     assert restored.github_sources[source_id]["dispatch_generation"] == 2
+
+
+def test_blocked_summary_survives_restart_and_resume_requires_explicit_retry(tmp_path):
+    app = make_app(tmp_path)
+    with (
+        patch("application.github_deployments.resolve_revision", return_value=("main", FIRST)),
+        patch("application.github_deployments.download_revision", side_effect=archive),
+        patch.object(app, "start_job_worker"),
+    ):
+        source_id, job_id = create_failed(app)
+    app.set_github_source_enabled(source_id, False)
+    app.run_agent(job_id)
+    restored = make_app(tmp_path)
+    summary = restored.github_source_summaries()[0]
+    assert summary["last_deployment_status"] == "blocked"
+    assert summary["retryable"] is True
+    restored.set_github_source_enabled(source_id, True)
+    with (
+        patch("application.github_deployments.resolve_revision", return_value=("main", FIRST)),
+        patch("application.github_deployments.download_revision", side_effect=archive) as download,
+        patch.object(restored, "start_job_worker") as worker,
+    ):
+        assert restored.poll_github_source(source_id)["changed"] is False
+        download.assert_not_called()
+        worker.assert_not_called()
+        result = restored.poll_github_source(source_id, retry_failed=True)
+    assert result["changed"] is True
+    worker.assert_called_once()
+    assert restored.jobs[job_id]["status"] == "interrupted"
+    assert restored.github_source_summaries()[0]["last_deployment_status"] == "running"
+
+
+@pytest.mark.parametrize(
+    "others,expected,retryable",
+    [
+        (["succeeded"], "blocked", True),
+        (["failed"], "failed", True),
+        (["interrupted"], "failed", True),
+        (["running"], "failed", False),
+        (["missing"], "unknown", False),
+    ],
+)
+def test_blocked_group_does_not_hide_other_failure_or_unfinished_work(tmp_path, others, expected, retryable):
+    app = make_app(tmp_path)
+    ids = ["0" * 16, "1" * 16]
+    app.github_sources["source"] = {"last_job_ids": ids}
+    app.jobs[ids[0]] = {"status": "interrupted", "github_dispatch_blocked": True}
+    if others[0] != "missing":
+        app.jobs[ids[1]] = {"status": others[0]}
+    summary = app.github_source_summaries()[0]
+    assert summary["last_deployment_status"] == expected
+    assert summary["retryable"] is retryable

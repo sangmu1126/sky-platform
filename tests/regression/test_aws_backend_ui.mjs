@@ -142,3 +142,50 @@ test('cleanup retry is offered only for verified active local predecessors needi
     assert.equal(elements.finalizationRetry.hidden, true);
   }
 });
+
+test('GitHub source actions distinguish accepted, pending and duplicate requests', () => {
+  const start = html.indexOf('function githubActionMessage(action,result){');
+  const end = html.indexOf('async function refreshGithubSources(){', start);
+  assert.ok(start >= 0 && end > start);
+  const message = vm.runInNewContext(html.slice(start, end) + '\ngithubActionMessage;', {});
+  assert.match(message('retry', {changed: true}), /새 배포 작업을 접수/);
+  assert.match(message('check', {changed: true}), /새 커밋의 배포 작업을 접수/);
+  for (const action of ['retry', 'check']) {
+    assert.match(message(action, {in_progress: true}), /이미 브랜치를 확인 중/);
+    assert.match(message(action, {pending: true}), /새 배포를 시작하지 않았습니다/);
+    assert.match(message(action, {changed: false}), /새 배포를 시작하지 않았습니다/);
+  }
+  assert.match(message('resume', {}), /중단된 커밋은 자동 실행하지 않습니다/);
+  assert.match(message('pause', {}), /실행 중인 배포는 계속/);
+  assert.match(message('disconnect', {}), /실행 중인 앱은 유지/);
+});
+
+test('GitHub source cards show blocked work and offer retry only after resume', async () => {
+  const start = html.indexOf('function githubActionMessage(action,result){');
+  const end = html.indexOf("el('resumePostgres').onclick", start);
+  assert.ok(start >= 0 && end > start);
+  const element = () => ({children: [], append(child) {this.children.push(child);},
+    replaceChildren() {this.children = [];}});
+  const elements = {githubSources: element(), githubSourceInfo: {}};
+  const source = {id: 'a'.repeat(16), application_id: 'demo-app', branch: 'main',
+    repository_url: 'https://github.com/team/demo', last_revision: 'b'.repeat(40),
+    last_deployment_status: 'blocked', retryable: true, enabled: false};
+  const calls = [];
+  const render = vm.runInNewContext(html.slice(start, end) + '\nrefreshGithubSources;', {
+    el: id => elements[id], document: {createElement: element}, history: async () => {},
+    api: async (path, options) => {
+      if (options) {calls.push(path); source.enabled = true; return {enabled: true};}
+      return [source];
+    },
+  });
+  await render();
+  let card = elements.githubSources.children[0];
+  assert.ok(card.children.some(child => child.textContent?.includes('실행 전 중단')));
+  assert.ok(!card.children.some(child => child.textContent === '같은 커밋 다시 시도'));
+  await card.children.find(child => child.textContent === '자동 확인 재개').onclick();
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /\/resume$/);
+  assert.match(elements.githubSourceInfo.textContent, /자동 실행하지 않습니다/);
+  card = elements.githubSources.children[0];
+  assert.ok(card.children.some(child => child.textContent === '같은 커밋 다시 시도'));
+});

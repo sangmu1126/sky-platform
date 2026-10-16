@@ -430,24 +430,35 @@ function setSourceMode(useGitHub){githubMode=useGitHub;for(const id of ['aws-lam
 el('sourceUpload').onclick=()=>setSourceMode(false);
 el('sourceGitHub').onclick=()=>setSourceMode(true);
 el('repositoryUrl').onchange=()=>{if(!el('application').value){const match=/^https:\/\/github\.com\/[^/]+\/([^/?#]+?)(?:\.git)?\/?$/.exec(el('repositoryUrl').value.trim());if(match)el('application').value=suggestedAppId(match[1]);}};
+function githubActionMessage(action,result){
+  if(action==='check'||action==='retry'){
+    if(result.in_progress)return '이미 브랜치를 확인 중입니다.';
+    if(result.pending)return '기존 배포가 진행 중입니다. 새 배포를 시작하지 않았습니다.';
+    if(result.changed)return action==='retry'?'같은 커밋의 새 배포 작업을 접수했습니다.':'새 커밋의 배포 작업을 접수했습니다.';
+    return '새 배포를 시작하지 않았습니다. 새 커밋이 없습니다.';
+  }
+  if(action==='pause')return '자동 확인을 일시 중지했습니다. 미시작 작업은 차단하며, 실행 중인 배포는 계속 진행합니다.';
+  if(action==='resume')return '자동 확인을 재개했습니다. 중단된 커밋은 자동 실행하지 않습니다. 필요하면 같은 커밋 다시 시도를 선택하세요.';
+  return 'GitHub 연결을 해제했습니다. 실행 중인 앱은 유지됩니다.';
+}
 async function refreshGithubSources(){
   const list=el('githubSources');const sources=await api('/api/github/sources');list.replaceChildren();
   if(!sources.length){const empty=document.createElement('p');empty.textContent='연결된 저장소가 없습니다.';list.append(empty);return;}
-  const statusLabel={succeeded:'마지막 시도 성공',running:'마지막 시도 진행 중',failed:'마지막 배포 실패',unknown:'작업 상태 확인 필요'};
+  const statusLabel={succeeded:'마지막 시도 성공',running:'마지막 시도 진행 중',failed:'마지막 배포 실패',blocked:'실행 전 중단 · 재개 후 같은 커밋 재시도 가능',unknown:'작업 상태 확인 필요'};
   for(const source of sources){
     const card=document.createElement('div');card.className='github-source-card';
     const title=document.createElement('strong');title.textContent=source.application_id+' · '+source.branch;card.append(title);
     const meta=document.createElement('span');meta.textContent=source.repository_url+' · 마지막 시도 '+source.last_revision.slice(0,8)+' · '+(source.enabled?'자동 확인 중':'일시 중지')+(source.public_url_required?' · 공개 URL 필수':'');card.append(meta);
     const status=document.createElement('span');status.textContent=statusLabel[source.last_deployment_status]||'작업 상태 확인 필요';card.append(status);
     if(source.last_error){const error=document.createElement('span');error.textContent='최근 확인 오류: '+source.last_error;card.append(error);}
-    const actions=[[source.enabled?'pause':'resume',source.enabled?'일시 중지':'다시 시작'],...(source.enabled?[['check','지금 확인']]:[]),...(source.enabled&&source.retryable?[['retry','같은 커밋 다시 시도']]:[]),['disconnect','연결 해제']];
+    const actions=[[source.enabled?'pause':'resume',source.enabled?'일시 중지':'자동 확인 재개'],...(source.enabled?[['check','지금 확인']]:[]),...(source.enabled&&source.retryable?[['retry','같은 커밋 다시 시도']]:[]),['disconnect','연결 해제']];
     for(const [action,label] of actions){
       const button=document.createElement('button');button.type='button';button.textContent=label;
       button.onclick=async()=>{
         button.disabled=true;
         try{
           const result=await api('/api/github/sources/'+source.id+'/'+action,{method:'POST'});
-          el('githubSourceInfo').textContent=action==='retry'?'배포를 다시 시작했습니다.':action==='check'?(result.changed?'새 커밋을 배포 중입니다.':result.pending?'기존 배포가 끝나면 새 커밋을 확인합니다.':result.in_progress?'이미 브랜치를 확인 중입니다.':'새 커밋이 없습니다.'):(action==='pause'?'자동 배포를 일시 중지했습니다.':action==='resume'?'자동 배포를 다시 시작했습니다.':'GitHub 연결을 해제했습니다. 실행 중인 앱은 유지됩니다.');
+          el('githubSourceInfo').textContent=githubActionMessage(action,result);
           await refreshGithubSources();await history();
         }catch(error){el('githubSourceInfo').textContent=error.message;}
         finally{button.disabled=false;}
