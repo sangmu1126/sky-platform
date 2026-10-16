@@ -75,6 +75,8 @@ class StaticDeploymentsMixin:
 
     def run_static_site(self, job_id: str) -> None:
         with self.lock:
+            if not self._admit_github_job_locked(job_id):
+                return
             snapshot = json.loads(json.dumps(self.jobs[job_id]))
 
         def checkpoint(**updates):

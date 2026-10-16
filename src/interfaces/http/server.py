@@ -268,6 +268,8 @@ class App(GitHubDeploymentsMixin, StateRecoveryMixin, MonitoringMixin, StaticDep
                     return
                 if current['status'] != 'planned':
                     continue
+                if not self._admit_github_job_locked(current['id']):
+                    continue
                 current['status'] = 'running'
                 self.save(current['id'])
             try:
@@ -620,6 +622,11 @@ class App(GitHubDeploymentsMixin, StateRecoveryMixin, MonitoringMixin, StaticDep
         return True
 
     def run_agent(self, job_id, environment=None):
+        with self.lock:
+            if not self._admit_github_job_locked(job_id):
+                if environment is not None:
+                    environment.clear()
+                return
         environment = {} if environment is None else environment
         tools = None
         def checkpoint(**updates):

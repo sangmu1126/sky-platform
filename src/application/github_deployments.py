@@ -88,6 +88,8 @@ class GitHubDeploymentsMixin:
                     not re.fullmatch(r"[a-f0-9]{16}", item["id"])
                     or not branch
                     or not isinstance(item["enabled"], bool)
+                    or type(item.get("dispatch_generation", 0)) is not int
+                    or item.get("dispatch_generation", 0) < 0
                     or not re.fullmatch(r"[a-z][a-z0-9-]{2,30}", item["application_id"])
                     or not isinstance(item["targets"], list)
                     or not 1 <= len(item["targets"]) <= 3
@@ -150,12 +152,15 @@ class GitHubDeploymentsMixin:
             item = self.github_sources.get(source_id)
             if not item:
                 raise ValueError("연결된 GitHub 저장소를 찾을 수 없습니다.")
-            previous = item["enabled"]
+            previous = dict(item)
+            if item["enabled"] != enabled:
+                item["dispatch_generation"] = item.get("dispatch_generation", 0) + 1
             item["enabled"] = enabled
             try:
                 self.save_github_sources()
             except Exception:
-                item["enabled"] = previous
+                item.clear()
+                item.update(previous)
                 raise
             return dict(item)
 
@@ -405,6 +410,32 @@ class GitHubDeploymentsMixin:
                                                  source=source, owner=owner)
             return group, [child["job_id"] for child in group["targets"]]
 
+    def _stamp_github_dispatch_locked(self, job_ids, source):
+        for job_id in job_ids:
+            self.jobs[job_id]["github_dispatch_generation"] = source.get("dispatch_generation", 0)
+            self.save(job_id)
+
+    def _admit_github_job_locked(self, job_id):
+        """Linearize pause against execution admission, before any external effects."""
+        job = self.jobs[job_id]
+        if "github_dispatch_generation" not in job or job.get("github_dispatch_admitted"):
+            return True
+        source_id = (job.get("github_source") or {}).get("subscription_id")
+        source = self.github_sources.get(source_id)
+        if (source and source["enabled"]
+                and source.get("dispatch_generation", 0) == job["github_dispatch_generation"]):
+            job["github_dispatch_admitted"] = True
+            self.save(job_id)
+            return True
+        job["status"] = "interrupted"
+        job.setdefault("events", []).append({
+            "time": datetime.now(timezone.utc).isoformat(),
+            "stage": "interrupted",
+            "message": "GitHub 연결이 중지되거나 변경되어 미시작 배포를 중단했습니다. 재개 후 명시적으로 재시도하세요.",
+        })
+        self.save(job_id)
+        return False
+
     def _start_github_jobs(self, result: dict, job_ids: list[str]):
         if len(job_ids) == 1:
             with self.lock:
@@ -473,6 +504,7 @@ class GitHubDeploymentsMixin:
                         source["application_id"] == application_id for source in self.github_sources.values()
                     ):
                         raise ValueError("이 앱에는 이미 GitHub 자동 배포가 연결돼 있습니다.")
+                    self._stamp_github_dispatch_locked(job_ids, item)
                     self.github_sources[source_id] = item
                     self.save_github_sources()
             except Exception:
@@ -591,9 +623,11 @@ class GitHubDeploymentsMixin:
                             or not current["enabled"]
                             or any(current.get(field) != snapshot.get(field) for field in (
                                 "repository_url", "branch", "application_id", "targets", "public",
-                                "public_url_required", "organization_id", "created_by", "last_revision", "last_job_ids"))
+                                "public_url_required", "organization_id", "created_by", "last_revision", "last_job_ids",
+                                "dispatch_generation"))
                         ):
                             raise ValueError("GitHub 자동 배포 설정이 변경됐습니다. 작업 상태를 확인하세요.")
+                        self._stamp_github_dispatch_locked(job_ids, current)
                         current.update(
                             last_revision=commit,
                             last_job_ids=job_ids,
