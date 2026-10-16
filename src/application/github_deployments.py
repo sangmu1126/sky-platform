@@ -161,6 +161,22 @@ class GitHubDeploymentsMixin:
                 summaries.append(summary)
             return summaries
 
+    def _interrupt_unstarted_github_jobs_locked(self, source_id, reason):
+        # A dispatch generation and no admission are evidence of pre-execution work.
+        # Legacy/uncertain attempts are left for explicit recovery instead of guessed idle.
+        for job in self.jobs.values():
+            if ((job.get("github_source") or {}).get("subscription_id") != source_id
+                    or "github_dispatch_generation" not in job
+                    or job.get("github_dispatch_admitted")
+                    or job.get("status") not in {"planned", "running"}
+                    or job.get("attempts", 0) != 0):
+                continue
+            job["status"] = "interrupted"
+            job["github_dispatch_blocked"] = True
+            job.setdefault("events", []).append({
+                "time": datetime.now(timezone.utc).isoformat(), "stage": "interrupted", "message": reason})
+            self.save(job["id"])
+
     def set_github_source_enabled(self, source_id: str, enabled: bool):
         with self.lock:
             item = self.github_sources.get(source_id)
@@ -176,6 +192,9 @@ class GitHubDeploymentsMixin:
                 item.clear()
                 item.update(previous)
                 raise
+            if not enabled:
+                self._interrupt_unstarted_github_jobs_locked(
+                    source_id, "GitHub 자동 배포 일시 중지로 미시작 작업을 중단했습니다. 재개 후 명시적으로 재시도하세요.")
             return dict(item)
 
     def remove_github_source(self, source_id: str):
@@ -190,6 +209,8 @@ class GitHubDeploymentsMixin:
             except Exception:
                 self.github_sources[source_id] = item
                 raise
+            self._interrupt_unstarted_github_jobs_locked(
+                source_id, "GitHub 연결 해제로 미시작 작업을 중단했습니다. 실행 중인 앱은 유지합니다.")
             return {"id": source_id, "disconnected": True}
 
     def _validate_github_request(
