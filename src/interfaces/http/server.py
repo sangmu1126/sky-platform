@@ -246,7 +246,18 @@ class App(GitHubDeploymentsMixin, StateRecoveryMixin, MonitoringMixin, StaticDep
         except Exception:
             with self.lock:
                 self.active_groups.discard(group_id)
-            raise
+                for job in self.jobs.values():
+                    if (job.get('group_id') != group_id or job.get('status') != 'planned'
+                            or not (job.get('github_source') or {}).get('subscription_id')):
+                        continue
+                    job['status'] = 'interrupted'
+                    if 'github_dispatch_generation' in job and not job.get('github_dispatch_admitted'):
+                        job['github_dispatch_blocked'] = True
+                    job.setdefault('events', []).append({
+                        'time': datetime.now(timezone.utc).isoformat(), 'stage': 'interrupted',
+                        'message': 'GitHub 배포 묶음 실행기를 시작하지 못했습니다. 연결에서 같은 커밋을 명시적으로 재시도하세요.'})
+                    self.save(job['id'])
+            raise ValueError('배포 묶음 실행기를 시작하지 못했습니다. 작업 상태를 확인하세요.') from None
         return True
 
     def run_group(self, group_id):

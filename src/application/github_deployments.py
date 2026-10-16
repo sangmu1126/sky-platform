@@ -479,7 +479,8 @@ class GitHubDeploymentsMixin:
         if len(job_ids) == 1:
             with self.lock:
                 static_site = self.jobs[job_ids[0]].get("mode") == "static_site"
-            self.start_job_worker(job_ids[0], self.run_static_site if static_site else self.run_agent)
+            if self.start_job_worker(job_ids[0], self.run_static_site if static_site else self.run_agent) is False:
+                raise ValueError("GitHub 배포 실행기를 시작하지 못했습니다. 연결에서 같은 커밋을 다시 시도하세요.")
         else:
             self.start_group_worker(result["id"])
 

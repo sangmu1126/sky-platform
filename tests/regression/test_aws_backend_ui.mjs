@@ -181,11 +181,13 @@ test('GitHub source cards show blocked work and offer retry only after resume', 
   await render();
   let card = elements.githubSources.children[0];
   assert.ok(card.children.some(child => child.textContent?.includes('실행 전 중단')));
+  assert.ok(card.children.some(child => child.textContent?.includes('자동 확인 재개 후 재시도')));
   assert.ok(!card.children.some(child => child.textContent === '같은 커밋 다시 시도'));
   await card.children.find(child => child.textContent === '자동 확인 재개').onclick();
   assert.equal(calls.length, 1);
   assert.match(calls[0], /\/resume$/);
   assert.match(elements.githubSourceInfo.textContent, /자동 실행하지 않습니다/);
   card = elements.githubSources.children[0];
+  assert.ok(card.children.some(child => child.textContent?.includes('실행 전 중단 · 같은 커밋 재시도 가능')));
   assert.ok(card.children.some(child => child.textContent === '같은 커밋 다시 시도'));
 });
