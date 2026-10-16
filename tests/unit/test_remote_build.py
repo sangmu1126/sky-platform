@@ -341,6 +341,7 @@ def test_build_entrypoint_reports_sanitized_failure(capsys):
 
 
 def test_builder_runs_verified_source_in_real_local_docker(build_request, tmp_path, monkeypatch):
+    import os
     import shutil
     import subprocess
 
@@ -391,6 +392,13 @@ def test_builder_runs_verified_source_in_real_local_docker(build_request, tmp_pa
         "approved_plan_json": canonical(plan).decode(),
         "plan_digest": digest(plan),
     }
+    export = os.environ.get("SKY_TEST_BUILD_EXPORT_DIR")
+    if export:
+        value.update(
+            repository=os.environ["GITHUB_REPOSITORY"],
+            workflow_sha=os.environ["GITHUB_SHA"],
+            platform_code_sha=os.environ["GITHUB_SHA"],
+        )
     (tmp_path / "request.json").write_bytes(canonical(value))
     (tmp_path / "source.zip").write_bytes(objects.data)
     for name in BUILD_CREDENTIAL_ENV:
@@ -456,6 +464,13 @@ def test_builder_runs_verified_source_in_real_local_docker(build_request, tmp_pa
             timeout=20,
         )
         assert result.returncode == 0 and result.stdout.strip() == "verified-build-fixture"
+        if export:
+            from pathlib import Path
+
+            destination = Path(export)
+            destination.mkdir(parents=True, exist_ok=False)
+            shutil.copyfile(tmp_path / "request.json", destination / "request.json")
+            shutil.copytree(tmp_path / "output", destination / "output")
     finally:
         subprocess.run(["docker", "image", "rm", image], check=False, capture_output=True)
 

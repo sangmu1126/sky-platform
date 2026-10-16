@@ -24,3 +24,33 @@ jobs:
         run: docker pull --platform linux/amd64 node:22-bookworm-slim
       - name: Verify remote build boundaries and actual image round trip
         run: pytest -q -rs tests/unit/test_remote_build.py tests/unit/test_remote_build_publish.py
+        env:
+          SKY_TEST_BUILD_EXPORT_DIR: ${{ runner.temp }}/sky-builder-handoff
+      - uses: actions/upload-artifact@v4
+        with:
+          name: builder-handoff
+          path: ${{ runner.temp }}/sky-builder-handoff/
+          if-no-files-found: error
+          retention-days: 1
+
+  handoff:
+    needs: builder
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      AWS_EC2_METADATA_DISABLED: "true"
+      SKY_TEST_BUILD_EXPORT_DIR: ${{ runner.temp }}/sky-builder-handoff
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[aws-native]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: builder-handoff
+          path: ${{ runner.temp }}/sky-builder-handoff/
+      - name: Verify and execute the transferred synthetic image
+        run: python -m scripts.check_builder_handoff
