@@ -1608,7 +1608,8 @@ def handler_for(app: App):
                 if not re.fullmatch(r'[a-f0-9]{16}', identifier):
                     return self.require_access(AccessResult.NOT_FOUND)
                 if method == 'POST' and (self.path.endswith('/retire')
-                                         or self.path.endswith('/migration/cleanup')):
+                                         or self.path.endswith('/migration/cleanup')
+                                         or self.path.endswith('/finalization/retry')):
                     action = Action.RETIRE
                 with app.lock:
                     record = app.jobs.get(identifier)
@@ -2037,6 +2038,17 @@ def handler_for(app: App):
                     if int(self.headers.get('Content-Length', '0')) != 0:
                         raise ValueError('롤백 요청에는 본문을 넣을 수 없습니다.')
                     self.json_response(200, app.request_aws_update_rollback(job_id))
+                    return
+                if re.fullmatch(r"/api/jobs/[a-f0-9]{16}/finalization/retry", self.path):
+                    job_id = self.path.split('/')[3]
+                    if int(self.headers.get('Content-Length', '0')) != 0:
+                        raise ValueError('정리 재시도 요청에는 본문을 넣을 수 없습니다.')
+                    with app.lock:
+                        current = app.jobs.get(job_id) or {}
+                        previous = app.jobs.get(current.get('git_replaces_local_job_id'))
+                    if not self.require_access(record_access(self.principal, Action.RETIRE, previous)):
+                        return
+                    self.json_response(200, app.retry_github_local_cleanup(job_id))
                     return
                 if re.fullmatch(r"/api/jobs/[a-f0-9]{16}/cleanup-image", self.path):
                     job_id = self.path.split('/')[3]

@@ -127,3 +127,18 @@ test('following a verified job keeps polling while predecessor cleanup is pendin
   assert.equal(shown[0].finalization_state, 'pending');
   assert.equal(result.finalization_state, 'complete');
 });
+
+test('cleanup retry is offered only for verified active local predecessors needing attention', () => {
+  const start = html.indexOf('function renderFinalization(job){');
+  const end = html.indexOf('function renderInfrastructure(job){', start);
+  assert.ok(start >= 0 && end > start);
+  const elements = {finalizationRetry: {}, finalizationInfo: {}};
+  const render = vm.runInNewContext(html.slice(start, end) + '\nrenderFinalization;', {el: id => elements[id]});
+  const job = {target: 'local-docker', status: 'succeeded', finalization_state: 'needs_attention', git_replaces_local_job_id: 'old'};
+  render(job);
+  assert.equal(elements.finalizationRetry.hidden, false);
+  for(const changes of [{target: 'aws-ecs-express'}, {status: 'failed'}, {finalization_state: 'pending'}, {deployment_state: 'deleted'}]){
+    render({...job, ...changes});
+    assert.equal(elements.finalizationRetry.hidden, true);
+  }
+});

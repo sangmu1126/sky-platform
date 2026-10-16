@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import json
 import shutil
 import tempfile
 import threading
@@ -14,6 +15,7 @@ from pathlib import Path
 from adapters.aws.static_site import AwsStaticSiteAdapter
 from adapters.local.docker import LocalDockerAdapter
 from application.deployment_core import extract_project, source_digest
+from application.health import check_deployment
 from application.github_source import (
     GitHubRepository,
     download_revision,
@@ -601,6 +603,53 @@ class GitHubDeploymentsMixin:
                     continue
             if stop.wait(interval):
                 return
+
+    def retry_github_local_cleanup(self, job_id: str) -> dict:
+        """Explicit local-only retry; never rebuild or redeploy the verified application."""
+        with self.lock:
+            current = self.jobs.get(job_id)
+            previous = self.jobs.get((current or {}).get("git_replaces_local_job_id"))
+            if (not current or not previous or current.get("status") != "succeeded"
+                    or current.get("target") != "local-docker"
+                    or current.get("deployment_state", "active") != "active"
+                    or current.get("finalization_state") != "needs_attention"
+                    or previous.get("target") != "local-docker"
+                    or previous.get("status") != "succeeded"
+                    or previous.get("deployment_state") not in {"active", "deleted"}
+                    or not same_github_release_scope(previous, current)):
+                raise ValueError("재시도 가능한 동일 GitHub 구독의 이전 로컬 배포 정리인지 확인하세요.")
+            self.ensure_application_available(current["application_id"], "local-docker")
+            current["finalization_state"] = "pending"
+            self.save(job_id)
+            snapshot = json.loads(json.dumps(current))
+        try:
+            if previous.get("deployment_state") != "deleted":
+                if check_deployment(snapshot).get("healthy") is not True:
+                    raise ValueError("현재 로컬 서비스의 컨테이너 신원·HTTP 응답을 확인하지 못했습니다.")
+                with self.lock:
+                    latest = self.jobs.get(job_id)
+                    predecessor = self.jobs.get((latest or {}).get("git_replaces_local_job_id"))
+                    if (latest is not current or latest.get("status") != "succeeded"
+                            or latest.get("deployment_state", "active") != "active"
+                            or latest.get("finalization_state") != "pending"
+                            or latest.get("git_replaces_local_job_id") != snapshot.get("git_replaces_local_job_id")
+                            or latest.get("result") != snapshot.get("result")
+                            or latest.get("github_source") != snapshot.get("github_source")
+                            or not predecessor or not same_github_release_scope(predecessor, latest)):
+                        raise ValueError("상태 확인 중 배포 또는 소유권이 바뀌었습니다.")
+                    self.ensure_application_available(current["application_id"], "local-docker")
+                self.retire_replaced_github_local(job_id)
+            with self.lock:
+                previous = self.jobs.get(current["git_replaces_local_job_id"])
+                current["finalization_state"] = (
+                    "complete" if previous and previous.get("deployment_state") == "deleted" else "needs_attention")
+                self.save(job_id)
+        except Exception:
+            with self.lock:
+                current["finalization_state"] = "needs_attention"
+                self.save(job_id)
+            self.event(job_id, "finalization_warning", "이전 로컬 배포 정리를 확인하지 못했습니다. 기존 기록을 유지합니다.")
+        return {"id": job_id, "finalization_state": current["finalization_state"]}
 
     def retire_replaced_github_local(self, job_id: str):
         with self.lock:
