@@ -23,6 +23,7 @@ from adapters.build.image import ImageBuilder
 from application.deployment_core import DeploymentPlan
 from application.source_artifacts import SourceArtifactService
 from domain.access import LoginSource, Principal, Role
+from ports.image_manifests import MANIFEST_TYPES, verify_image_manifest
 from ports.remote_builds import canonical, digest, identity, request_key, validate_request, validate_result
 
 
@@ -236,6 +237,20 @@ def publish(directory, output):
         image_digest = ecr.describe_images(
             registryId=settings.account_id, repositoryName="sky-managed", imageIds=[{"imageTag": tag}]
         )["imageDetails"][0]["imageDigest"]
+        published = ecr.batch_get_image(
+            registryId=settings.account_id,
+            repositoryName="sky-managed",
+            imageIds=[{"imageDigest": image_digest}],
+            acceptedMediaTypes=list(MANIFEST_TYPES),
+        )
+        images = published.get("images", [])
+        if (
+            published.get("failures")
+            or len(images) != 1
+            or images[0].get("imageId", {}).get("imageDigest") != image_digest
+        ):
+            raise ValueError("Published registry image unavailable or ambiguous")
+        verify_image_manifest(images[0].get("imageManifest"), image_digest, image_id)
         result = {
             "version": 1,
             "build_id": request["build_id"],

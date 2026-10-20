@@ -23,7 +23,7 @@ jobs:
       - name: Prepare fixture base image
         run: docker pull --platform linux/amd64 node:22-bookworm-slim
       - name: Verify remote build boundaries and actual image round trip
-        run: pytest -q -rs tests/unit/test_remote_build.py tests/unit/test_remote_build_publish.py tests/unit/test_builder_connection.py
+        run: pytest -q -rs tests/unit/test_remote_build.py tests/unit/test_remote_build_publish.py tests/unit/test_builder_connection.py tests/unit/test_image_manifests.py
         env:
           SKY_TEST_BUILD_EXPORT_DIR: ${{ runner.temp }}/sky-builder-handoff
       - uses: actions/upload-artifact@v4
@@ -51,6 +51,8 @@ jobs:
         with:
           name: builder-handoff
           path: ${{ runner.temp }}/sky-builder-handoff/
+      - name: Prepare loopback-only fixture registry
+        run: docker pull registry:2.8.3
       - name: Verify and execute the transferred synthetic image
         run: python -m scripts.check_builder_handoff
         env:

@@ -1,13 +1,25 @@
 """Publish failure boundaries; AWS and Docker calls are simulated."""
 
 import base64
+import hashlib
 import subprocess
 from unittest.mock import Mock, patch
 
 import pytest
 from botocore.exceptions import ClientError
 
+from ports.image_manifests import MANIFEST_TYPES
 from ports.remote_builds import canonical, digest
+
+IMAGE_MANIFEST = canonical(
+    {
+        "schemaVersion": 2,
+        "mediaType": MANIFEST_TYPES[0],
+        "config": {"digest": "sha256:" + "f" * 64},
+        "layers": [],
+    }
+)
+REGISTRY_DIGEST = "sha256:" + hashlib.sha256(IMAGE_MANIFEST).hexdigest()
 
 
 @pytest.fixture
@@ -51,8 +63,16 @@ def publisher(monkeypatch, tmp_path):
     missing = ClientError({"Error": {"Code": "ImageNotFoundException"}}, "DescribeImages")
     ecr.describe_images.side_effect = [
         missing,
-        {"imageDetails": [{"imageDigest": "sha256:" + "e" * 64}]},
+        {"imageDetails": [{"imageDigest": REGISTRY_DIGEST}]},
     ]
+    ecr.batch_get_image.return_value = {
+        "images": [
+            {
+                "imageId": {"imageDigest": REGISTRY_DIGEST},
+                "imageManifest": IMAGE_MANIFEST.decode(),
+            }
+        ]
+    }
     with (
         patch.object(remote_builder, "inputs", return_value=(request, None, None)),
         patch("boto3.client", side_effect=lambda service, **_: {"sts": sts, "ecr": ecr}[service]),
@@ -118,7 +138,7 @@ def test_publish_success_records_digest_reference_then_logs_out(publisher, tmp_p
     builder, _, objects, command = publisher
     builder.publish(tmp_path, tmp_path)
     result = objects.put.call_args.args[1]
-    assert result["image"].endswith("/sky-managed@sha256:" + "e" * 64)
+    assert result["image"].endswith("/sky-managed@" + REGISTRY_DIGEST)
     assert result["run_id"] == 42
     tagged = [call for call in command.call_args_list if call.args[0][1] == "tag"]
     assert tagged[0].args[0][2] == "sha256:" + "f" * 64
@@ -189,3 +209,25 @@ def test_loaded_tag_must_match_receipt(publisher, tmp_path):
         builder.publish(tmp_path, tmp_path)
     assert not any(call.args[0][1] in {"tag", "push"} for call in command.call_args_list)
     objects.put.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing", "duplicate", "registry_failure", "wrong_digest", "altered_manifest"]
+)
+def test_unverified_registry_manifest_never_publishes_success(publisher, tmp_path, failure):
+    builder, ecr, objects, command = publisher
+    result = ecr.batch_get_image.return_value
+    if failure == "missing":
+        result["images"] = []
+    elif failure == "duplicate":
+        result["images"] *= 2
+    elif failure == "registry_failure":
+        result["failures"] = [{"failureCode": "ImageNotFound"}]
+    elif failure == "wrong_digest":
+        result["images"][0]["imageId"]["imageDigest"] = "sha256:" + "0" * 64
+    else:
+        result["images"][0]["imageManifest"] += " "
+    with pytest.raises(ValueError):
+        builder.publish(tmp_path, tmp_path)
+    objects.put.assert_not_called()
+    assert command.call_args.args[0][1] == "logout"
