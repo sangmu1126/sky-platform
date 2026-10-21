@@ -225,9 +225,29 @@ class OperatingReview:
             "execution_status": "unsupported_by_sky",
         }
 
-    def review(self, principal, job_id, policy, *, now):
+    def _require_automation(self, job, principal, policy, consent, now):
+        _binding(job)
+        if (
+            not isinstance(consent, dict)
+            or job.get("promotion_automation_consent") != consent
+            or consent.get("user_id") != principal.user_id
+            or self._automatic_approval(job, policy, principal, now).get("eligible") is not True
+        ):
+            raise ValueError("Automation consent or cost authorization is no longer current")
+
+    def check_automation(self, principal, job_id, policy, consent, *, now):
+        """Authorize telemetry access before a timer contacts workload resources."""
+        if not isinstance(policy, ScheduledPromotionPolicy):
+            raise TypeError("An explicit operating policy is required")
+        snapshot = self.writer.snapshot(principal, job_id)
+        self._require_automation(snapshot.record, principal, policy, consent, now)
+
+    def review(self, principal, job_id, policy, *, now, automation_consent=None):
         """Scheduled time is a review trigger, never a provisioning trigger."""
         snapshot, proposal = self._proposal(principal, job_id, policy, now)
+        if automation_consent is not None:
+            # Recheck on the exact snapshot used by the CAS write, after collection.
+            self._require_automation(snapshot.record, principal, policy, automation_consent, now)
         if proposal is None:
             return None
         previous = snapshot.record.get("operating_proposal")

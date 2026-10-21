@@ -60,13 +60,10 @@ def run_operating_review(args, parser):
             from adapters.database.workload_metrics import PostgresWorkloadMetrics
             from application.capacity_observation import CapacityObservationRecorder
 
-            audit = AwsSharedDatabaseAllocator(source)
-            # Explicit collector mode only; read exact workload master secret in
-            # the worker, never API. Account/ownership/network checked first.
-            endpoint = audit._audit()
-            user, password = audit._admin_credentials(endpoint[2])
+            audited = None
 
             def collect(principal, job_id, policy):
+                nonlocal audited
                 if policy.capacity_criteria is None:
                     return
                 if policy.target.account_id != source.pool.account_id:
@@ -80,6 +77,14 @@ def run_operating_review(args, parser):
                     or binding.get("region") != source.pool.region
                 ):
                     raise ValueError("Workload binding differs from audited pool")
+                # Lazy: no workload client, audit or Secret read until the
+                # controller has checked a current actor, consent and budget.
+                if audited is None:
+                    audit = AwsSharedDatabaseAllocator(source)
+                    endpoint = audit._audit()
+                    user, password = audit._admin_credentials(endpoint[2])
+                    audited = audit, endpoint, user, password
+                audit, endpoint, user, password = audited
                 metrics = PostgresWorkloadMetrics(
                     lambda: audit._connection(
                         endpoint[0], endpoint[1], source.pool.control_database, user, password

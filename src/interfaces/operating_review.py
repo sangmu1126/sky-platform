@@ -163,10 +163,20 @@ class OperatingReviewController:
                     consent.get("organization_id"),
                 ):
                     raise PermissionError("Consent actor membership differs")
-                self.service.writer.snapshot(principal, job_id)
+                self.service.check_automation(principal, job_id, policy, consent, now=self.clock())
                 if collect is not None:
                     collect(principal, job_id, policy)
-                proposal = self.service.review(principal, job_id, policy, now=self.clock())
+                    # A long collection must not reuse a stale membership decision.
+                    refreshed = resolve_principal(consent.get("user_id"), consent.get("organization_id"))
+                    if not isinstance(refreshed, Principal) or (
+                        refreshed.user_id,
+                        refreshed.organization_id,
+                    ) != (principal.user_id, principal.organization_id):
+                        raise PermissionError("Consent actor membership changed during collection")
+                    principal = refreshed
+                proposal = self.service.review(
+                    principal, job_id, policy, now=self.clock(), automation_consent=consent
+                )
                 report.append(
                     {
                         "job_id": job_id,
