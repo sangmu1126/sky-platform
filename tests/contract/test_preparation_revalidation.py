@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from adapters.state.operations import PostgresOperationStore
 from adapters.state.postgres import PostgresDeploymentRecordStore
 from application.database_promotion_workflow import (
     KIND,
@@ -126,6 +127,90 @@ def test_membership_outage_before_intent_requeues_without_releasing_app_scope(pr
     with pytest.raises(ApplicationBusy):
         store.admit(operation.application_id, "deploy", "during-recovery", {})
     assert count(store, database, "operations") == 1
+
+
+@pytest.mark.parametrize("change", [None, "membership", "source", "cost"])
+def test_restarted_worker_revalidates_and_completes_only_the_recovery_attempt(
+    preparation, store, database, change
+):
+    records, operation, worker, preparer, old_queue, old_consumer = preparation
+    original_binding = deepcopy(records.load_job(ID).record["workload_database_binding"])
+    revoke("unavailable", records, worker)
+    with patch("boto3.client", side_effect=AssertionError("Cloud clients forbidden")):
+        assert old_consumer.consume_once() == "interrupted"
+        recovery = store.get(operation.id)
+        assert recovery.attempt_id != operation.attempt_id
+        preparer.prepare.assert_not_called()
+
+        # Recreate every stateful worker-side object from persisted data. Neither
+        # the original delivery nor an in-memory result drives the new executor.
+        restarted = PostgresOperationStore(database, workspace=store.workspace)
+        restored_records = PostgresDeploymentRecordStore(database, workspace=store.workspace)
+        sent = []
+        transport = Mock(publish=Mock(side_effect=sent.append))
+        router = AllocationQueueRouter(restarted, None, None, promotion_queue=transport)
+        publisher = OutboxPublisher(restarted, router, "restarted-preparation-publisher")
+        assert publisher.dispatch_once().confirmed == 1
+        assert publisher.dispatch_once().confirmed == 0
+        assert len(sent) == 1
+        assert sent[0].attempt_id == recovery.attempt_id
+        assert sent[0].operation_id == operation.id
+        queue = Mock(receive=Mock(return_value=ReceivedOperation("recovery-receipt", sent[0].message())))
+        resumed_preparer = Mock()
+
+        def prepare(plan, *, operation_id, guard):
+            guard()
+            return {
+                "operation_id": operation_id,
+                "plan_id": plan["plan_id"],
+                "binding": plan["target"],
+                "status": "available",
+                "verified_scope": "rds_ownership_network_tls",
+                "encrypted": True,
+                "publicly_accessible": False,
+                "resource_id": "db-" + "A" * 26,
+            }
+
+        resumed_preparer.prepare.side_effect = prepare
+        resumed_worker = PromotionPreparationWorker(
+            restored_records,
+            restarted,
+            worker.policies,
+            resumed_preparer,
+            lambda *_: principal(),
+            owner="restarted-preparation-worker",
+            clock=lambda: NOW,
+        )
+        if change is not None:
+            revoke(change, restored_records, resumed_worker)
+        consumer = SharedDatabaseConsumer(restarted, queue, resumed_worker, kind=KIND)
+        assert consumer.consume_once() == ("failed" if change else "succeeded")
+        final = restarted.get(operation.id)
+        assert final.attempt_id == recovery.attempt_id
+        assert final.status == ("failed" if change else "succeeded")
+        assert count(restarted, database, "mutation_scopes") == 0
+        assert count(restarted, database, "operations") == 1
+        assert count(restarted, database, "outbox_events") == 2
+        if change:
+            resumed_preparer.prepare.assert_not_called()
+            assert final.external_intent is None and final.external_receipt is None
+            assert final.result == {"code": "promotion_revalidation_failed"}
+        else:
+            resumed_preparer.prepare.assert_called_once()
+            assert final.external_intent["operation_id"] == operation.id
+            assert final.external_receipt["binding"] == operation.command["proposal"]["plan"]["target"]
+            assert final.result["promotion_status"] == "not_started"
+            assert final.result["ready_to_cutover"] is False
+        # Both old and recovery messages can reappear after completion. Neither
+        # may change the result or invoke the provider a second time.
+        assert old_consumer.consume_once() == "duplicate"
+        assert consumer.consume_once() == "duplicate"
+        assert restarted.get(operation.id) == final
+    assert resumed_preparer.prepare.call_count == (0 if change else 1)
+    preparer.prepare.assert_not_called()
+    old_queue.delete.assert_called_once()
+    assert queue.delete.call_count == 2
+    assert restored_records.load_job(ID).record["workload_database_binding"] == original_binding
 
 
 @pytest.mark.parametrize("boundary", ["adapter_guard", "adapter_return"])
