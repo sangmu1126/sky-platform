@@ -53,6 +53,10 @@ def test_check_config_never_constructs_aws_or_database_clients(registered, mode,
         patch("interfaces.dedicated_database_worker.load_hosted_identity", return_value=Mock()),
         patch("boto3.client", side_effect=AssertionError("AWS call")),
         patch(
+            "interfaces.dedicated_database_worker.load_preparation_executor_identity",
+            side_effect=AssertionError("Metadata call during configuration check"),
+        ),
+        patch(
             "interfaces.dedicated_database_worker.RotatingDatabaseConnection",
             side_effect=AssertionError("DB call"),
         ),

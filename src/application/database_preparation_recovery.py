@@ -9,7 +9,9 @@ import hashlib
 import json
 import re
 
-from application.database_promotion_workflow import KIND, PromotionPreparationWorker, safe_target_receipt
+from application.database_promotion_workflow import (
+    KIND, PromotionPreparationWorker, preparation_intent, safe_target_receipt,
+)
 from application.deployment_writes import DeploymentMetadataWriter
 from domain.access import Principal, Role
 from ports.preparation_recovery import PreparationRecoveryFence
@@ -47,8 +49,8 @@ class PromotionPreparationRecovery:
         job_id = operation.command.get("job_id")
         operator = self._operator(principal, job_id)
         plan = self.validator._validate(operation)
-        intent = {"kind": KIND, "operation_id": operation.id,
-                  "plan_id": plan["plan_id"], "target": plan["target"]}
+        executor = (operation.external_intent or {}).get("executor")
+        intent = preparation_intent(plan, operation.id, executor)
         if operation.external_intent != intent:
             raise ValueError("Original preparation intent differs from the approved plan")
         if self.authority is None:

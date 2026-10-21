@@ -10,9 +10,22 @@ from contextlib import nullcontext
 
 from application.operating_review import OperatingReview, require_current_cost_estimate
 from domain.access import Principal
+from ports.preparation_executor import EcsPreparationExecutor, validate_preparation_executor
 from ports.state import RecordConflict
 
 KIND = "db_dedicated_prepare"
+
+
+def preparation_intent(plan, operation_id, executor=None):
+    intent = {"kind": KIND, "operation_id": operation_id,
+              "plan_id": plan["plan_id"], "target": plan["target"]}
+    if executor is not None:
+        intent["executor"] = validate_preparation_executor(executor)
+        target = plan["target"]
+        if not executor["task_arn"].startswith(
+                f"arn:aws:ecs:{target['region']}:{target['account_id']}:task/"):
+            raise ValueError("Executor differs from the dedicated preparation account and region")
+    return intent
 
 
 def approved_snapshot(records, principal, job_id, proposal_id, policy, now):
@@ -68,10 +81,13 @@ def safe_target_receipt(receipt, plan, operation_id):
 
 class PromotionPreparationWorker:
     def __init__(self, records, operations, policies, preparer, resolve_principal, *, owner, clock,
-                 ownership=None):
+                 ownership=None, executor=None):
+        if executor is not None and not isinstance(executor, EcsPreparationExecutor):
+            raise TypeError("Trusted preparation executor identity required")
         self.records, self.operations, self.policies = records, operations, dict(policies)
         self.preparer, self.resolve_principal = preparer, resolve_principal
         self.owner, self.clock, self.ownership = owner, clock, ownership
+        self.executor = executor
 
     def _validate(self, operation):
         command = operation.command
@@ -131,8 +147,12 @@ class PromotionPreparationWorker:
             except OSError:
                 self.operations.interrupt(lease, {"stage": "source_read_unavailable"})
                 return {"status": "interrupted"}
-            intent = {"kind": KIND, "operation_id": operation_id, "plan_id": plan["plan_id"],
-                      "target": plan["target"]}
+            # Recovery retains the original executor, never attributes an old
+            # cloud request to the replacement worker's task or attempt.
+            executor = (operation.external_intent or {}).get("executor")
+            if operation.external_intent is None and self.executor is not None:
+                executor = self.executor.record(self.owner, operation.attempt_id)
+            intent = preparation_intent(plan, operation_id, executor)
             if operation.external_receipt is not None:
                 if operation.external_intent != intent or operation.checkpoint != {"stage": "target_prepared"}:
                     held = self.operations.require_attention(lease, {"stage": "target_evidence_mismatch"})

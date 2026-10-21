@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 from adapters.aws.dedicated_database import AwsDedicatedDatabasePreparer, DedicatedDatabaseSettings
 from adapters.aws.job_queue import SqsOperationQueue
+from adapters.aws.preparation_executor import load_preparation_executor_identity
 from adapters.state.operations import PostgresOperationStore
 from adapters.state.postgres import (
     PostgresDeploymentRecordStore,
@@ -190,6 +191,11 @@ def run_dedicated_database(args, parser):
             lambda user, org: current_membership(identity, user, org),
             owner="dedicated-db-" + uuid4().hex,
             clock=lambda: datetime.now(UTC).isoformat(),
+            executor=load_preparation_executor_identity(
+                os.environ.get("ECS_CONTAINER_METADATA_URI_V4"),
+                account_id=source.pool.account_id,
+                region=state.region,
+            ),
         )
         if not queued:
             result = worker.execute(args.operation_id, args.attempt_id)

@@ -12,6 +12,7 @@ from application.outbox import OutboxPublisher
 from application.shared_database_consumer import AllocationQueueRouter, SharedDatabaseConsumer
 from domain.access import Role
 from ports.operations import ApplicationBusy
+from ports.preparation_executor import EcsPreparationExecutor
 from ports.preparation_recovery import PreparationRecoveryFence
 from ports.queue import ReceivedOperation
 from ports.state import RecordConflict
@@ -28,8 +29,9 @@ pytest_plugins = ["tests.unit.test_dedicated_database_admission"]
 
 
 @pytest.fixture
-def recovery(preparation, store):
+def recovery(preparation, store, request):
     records, operation, worker, preparer, _, consumer = preparation
+    worker.executor = getattr(request, "param", None)
     preparer.prepare.side_effect = OSError("Unknown provider outcome")
     assert consumer.consume_once() == "needs_attention"
     blocked = store.get(operation.id)
@@ -73,6 +75,11 @@ def resume(recovery):
     return service.resume(admin, blocked.id, blocked.attempt_id, blocked.row_version)
 
 
+@pytest.mark.parametrize(
+    "recovery",
+    [None, EcsPreparationExecutor("arn:aws:ecs:ap-northeast-2:111111111111:task/sky-worker/" + "a" * 32)],
+    indirect=True,
+)
 def test_trusted_observation_requeues_same_operation_and_worker_completes_without_creation(
     recovery, store, database
 ):
@@ -106,10 +113,14 @@ def test_trusted_observation_requeues_same_operation_and_worker_completes_withou
         )
         assert publisher.dispatch_once().confirmed == 1
         queue = Mock(receive=Mock(return_value=ReceivedOperation("new-receipt", sent[0].message())))
+        worker.executor = EcsPreparationExecutor(
+            "arn:aws:ecs:ap-northeast-2:111111111111:task/replacement/" + "b" * 32
+        )
         consumer = SharedDatabaseConsumer(store, queue, worker, kind=KIND)
         assert consumer.consume_once() == "succeeded"
         assert consumer.consume_once() == "duplicate"
     final = store.get(blocked.id)
+    assert final.external_intent == blocked.external_intent
     assert final.result["promotion_status"] == "not_started" and not final.result["ready_to_cutover"]
     assert count(store, database, "mutation_scopes") == 0
     preparer.prepare.assert_called_once()  # Original uncertain request only.
