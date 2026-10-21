@@ -20,6 +20,7 @@ from tests.contract.test_operation_store import database as database  # noqa: PL
 from tests.contract.test_operation_store import store as store  # noqa: PLC0414
 from tests.contract.test_preparation_revalidation import persisted as persisted  # noqa: PLC0414
 from tests.contract.test_preparation_revalidation import preparation as preparation  # noqa: PLC0414
+from tests.contract.test_preparation_revalidation import revoke
 from tests.unit.test_deployment_writes import principal
 from tests.unit.test_operating_review import ID, NOW
 
@@ -27,10 +28,18 @@ pytest_plugins = ["tests.unit.test_dedicated_database_admission"]
 
 
 @pytest.mark.parametrize(
-    "boundary",
-    ["observation_rollback", "observation_response_lost", "completion_rollback", "completion_response_lost"],
+    "boundary,change",
+    [
+        ("observation_rollback", None),
+        ("observation_response_lost", None),
+        ("completion_rollback", None),
+        ("completion_response_lost", None),
+        *(("observation_response_lost", change) for change in ("approval", "membership", "source", "cost")),
+    ],
 )
-def test_ambiguous_database_result_recovers_without_recreating_target(preparation, store, database, boundary):
+def test_ambiguous_database_result_recovers_without_recreating_target(
+    preparation, store, database, boundary, change
+):
     records, operation, worker, preparer, queue, consumer = preparation
     original_binding = records.load_job(ID).record["workload_database_binding"]
 
@@ -125,6 +134,8 @@ def test_ambiguous_database_result_recovers_without_recreating_target(preparatio
             owner="commit-recovery-worker",
             clock=lambda: NOW,
         )
+        if change is not None:
+            revoke(change, resumed_worker.records, resumed_worker)
         resumed_queue = Mock(
             receive=Mock(
                 return_value=ReceivedOperation(
@@ -133,19 +144,26 @@ def test_ambiguous_database_result_recovers_without_recreating_target(preparatio
             )
         )
         resumed = SharedDatabaseConsumer(restarted, resumed_queue, resumed_worker, kind=KIND)
-        assert resumed.consume_once() == ("succeeded" if sent else "duplicate")
+        expected = "needs_attention" if change else "succeeded"
+        assert resumed.consume_once() == (expected if sent else "duplicate")
         assert resumed.consume_once() == "duplicate"
         final = restarted.get(operation.id)
-        assert final.status == ("succeeded" if observed else "needs_attention")
-        if observed:
+        assert final.status == ("succeeded" if observed and not change else "needs_attention")
+        if observed and not change:
             assert final.result["promotion_status"] == "not_started"
             assert final.result["ready_to_cutover"] is False
             assert final.external_receipt == interrupted.external_receipt
             assert count(store, database, "mutation_scopes") == 0
         else:
-            assert final.result is None and final.external_receipt is None
+            assert final.result is None
+            assert final.external_receipt == interrupted.external_receipt
             assert final.external_intent == interrupted.external_intent
+            assert final.external_pending
             assert count(store, database, "mutation_scopes") == 1
+            with pytest.raises(ApplicationBusy):
+                restarted.admit(operation.application_id, "deploy", "unsafe-after-recovery", {})
+            if change:
+                assert final.checkpoint == {"stage": "revalidation_after_external_effect"}
         assert final.attempt_id == recovered.attempt_id
         assert count(store, database, "operations") == 1
         assert count(store, database, "outbox_events") == (2 if sent else 1)
