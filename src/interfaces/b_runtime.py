@@ -121,6 +121,7 @@ def main(argv):
             "shared-database-queue",
             "dedicated-database",
             "dedicated-database-queue",
+            "dedicated-database-admit",
             "operating-review",
         ),
         required=True,
@@ -138,6 +139,15 @@ def main(argv):
     )
     worker.add_argument("--pool-config")
     worker.add_argument("--dedicated-config")
+    worker.add_argument("--promotion-job-id", help="Explicit preparation admission: existing deployment ID")
+    worker.add_argument(
+        "--promotion-proposal-id", help="Current approved OPR identifier; never a browser plan"
+    )
+    worker.add_argument("--promotion-request-key", help="Stable idempotency key for this approved request")
+    worker.add_argument("--promotion-user-id", help="Trusted operator-selected current requester membership")
+    worker.add_argument(
+        "--promotion-organization-id", help="Requester organization for preparation admission"
+    )
     worker.add_argument("--operating-review-policy-config")
     worker.add_argument(
         "--initialize-pool",
@@ -272,6 +282,17 @@ def main(argv):
         parser.error("--interval must be between 1 and 300 seconds")
     if args.deploy_built_image and args.worker_mode != "build":
         parser.error("--deploy-built-image requires --mode build")
+    if args.worker_mode != "dedicated-database-admit" and any(
+        getattr(args, name) is not None
+        for name in (
+            "promotion_job_id",
+            "promotion_proposal_id",
+            "promotion_request_key",
+            "promotion_user_id",
+            "promotion_organization_id",
+        )
+    ):
+        parser.error("Promotion admission options require dedicated-database-admit mode")
     if args.worker_mode == "operating-review":
         from interfaces.operating_review_worker import run_operating_review
 
@@ -279,7 +300,7 @@ def main(argv):
         return
     if args.collect_capacity_metrics:
         parser.error("Capacity collection requires operating review mode")
-    if args.worker_mode in {"dedicated-database", "dedicated-database-queue"}:
+    if args.worker_mode in {"dedicated-database", "dedicated-database-queue", "dedicated-database-admit"}:
         from interfaces.dedicated_database_worker import run_dedicated_database
 
         run_dedicated_database(args, parser)

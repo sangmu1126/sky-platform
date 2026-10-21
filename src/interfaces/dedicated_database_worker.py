@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import signal
 import threading
 from datetime import UTC, datetime
@@ -17,7 +18,12 @@ from adapters.state.postgres import (
     RotatingDatabaseConnection,
 )
 from adapters.state.readiness import check_database_ready
-from application.database_promotion_workflow import KIND, PromotionPreparationWorker
+from application.database_promotion_workflow import (
+    KIND,
+    PromotionPreparationAdmission,
+    PromotionPreparationWorker,
+)
+from application.operating_review import OperatingReview
 from application.shared_database_consumer import SharedDatabaseConsumer
 from interfaces.operating_review import load_operating_policies
 from interfaces.shared_database_worker import (
@@ -84,14 +90,42 @@ def run_dedicated_database(args, parser):
         workspace = os.environ.get("SKY_STATE_WORKSPACE", "team")
         PostgresOperationStore(None, workspace=workspace)
         queued = args.worker_mode == "dedicated-database-queue"
+        admission = args.worker_mode == "dedicated-database-admit"
+        if admission:
+            fields = {
+                "promotion_job_id": r"[a-f0-9]{16}",
+                "promotion_proposal_id": r"OPR-[a-f0-9]{24}",
+                "promotion_request_key": r"[A-Za-z0-9_.:-]{1,128}",
+                "promotion_user_id": r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}",
+                "promotion_organization_id": r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}",
+            }
+            if not args.once or any(
+                not isinstance(getattr(args, name), str) or not re.fullmatch(pattern, getattr(args, name))
+                for name, pattern in fields.items()
+            ):
+                raise ValueError("Admission requires one explicit approved request and current actor")
+            policy = policies.get(args.promotion_job_id)
+            if (
+                policy is None
+                or policy.cost_quote is None
+                or not (policy.capacity_criteria is not None or policy.isolation_required)
+            ):
+                raise ValueError("Admission requires a costed capacity or isolation policy")
+            # Trusted operator command, not authentication by a browser-supplied user ID.
+            principal = current_membership(identity, args.promotion_user_id, args.promotion_organization_id)
         protection = None
-        if queued:
+        if queued or admission:
             url = os.environ.get("SKY_DEDICATED_DATABASE_QUEUE_URL", "")
             SqsOperationQueue(url, region=state.region, account_id=source.pool.account_id, client=object())
-            if url in {os.environ.get("SKY_JOB_QUEUE_URL"), os.environ.get("SKY_SHARED_DATABASE_QUEUE_URL")}:
+            if url in {
+                os.environ.get("SKY_JOB_QUEUE_URL"),
+                os.environ.get("SKY_SHARED_DATABASE_QUEUE_URL"),
+                os.environ.get("SKY_DATABASE_CUTOVER_QUEUE_URL"),
+            }:
                 raise ValueError("Dedicated queue must be separate")
             if args.operation_id or args.attempt_id:
                 raise ValueError("Queue mode cannot use explicit operation IDs")
+        if queued:
             protection_mode = os.environ.get("SKY_DEDICATED_TASK_PROTECTION", "disabled")
             if protection_mode not in {"required", "disabled"}:
                 raise ValueError("Invalid dedicated protection mode")
@@ -101,13 +135,14 @@ def run_dedicated_database(args, parser):
                 from adapters.aws.task_protection import EcsTaskProtection
 
                 protection = EcsTaskProtection()
-        elif not args.check_config:
+        elif not admission and not args.check_config:
             if any(not value or str(UUID(value)) != value for value in (args.operation_id, args.attempt_id)):
                 raise ValueError("One canonical operation and attempt required")
-    except (ValueError, TypeError, KeyError, OSError):
+    except (ValueError, TypeError, KeyError, PermissionError, OSError):
         parser.error("Invalid dedicated preparation configuration or identity")
     if args.check_config:
-        print("Configuration valid: dedicated target preparation; no AWS/DB calls", flush=True)
+        scope = "dedicated preparation admission/outbox only" if admission else "dedicated target preparation"
+        print(f"Configuration valid: {scope}; no AWS/DB calls", flush=True)
         return
     from botocore.exceptions import BotoCoreError, ClientError
 
@@ -116,6 +151,37 @@ def run_dedicated_database(args, parser):
         check_database_ready(connection, operations=True)
         records = PostgresDeploymentRecordStore(connection, workspace=workspace)
         operations = PostgresOperationStore(connection, workspace=workspace)
+        if admission:
+            binding = (
+                OperatingReview(records)
+                .writer.snapshot(principal, args.promotion_job_id)
+                .record.get("workload_database_binding", {})
+            )
+            if (
+                not isinstance(binding, dict)
+                or binding.get("role") != "shared_workload"
+                or binding.get("account_id") != source.pool.account_id
+                or binding.get("region") != source.pool.region
+                or binding.get("instance_id") != source.pool.instance_id
+            ):
+                raise ValueError("Approved source differs from the registered workload pool")
+            operation = PromotionPreparationAdmission(
+                records, operations, policies, enabled=True, clock=lambda: datetime.now(UTC).isoformat()
+            ).admit(principal, args.promotion_job_id, args.promotion_proposal_id, args.promotion_request_key)
+            print(
+                json.dumps(
+                    {
+                        "operation_id": operation.id,
+                        "attempt_id": operation.attempt_id,
+                        "status": operation.status,
+                        "kind": operation.kind,
+                        "delivery": "durable_outbox",
+                        "data_routing_changed": False,
+                    }
+                ),
+                flush=True,
+            )
+            return
         worker = PromotionPreparationWorker(
             records,
             operations,
