@@ -103,6 +103,11 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Prepare base image for actual remote-builder test
         run: docker pull --platform linux/amd64 node:22-bookworm-slim
+      - name: Locate disposable browser for preparation UI test
+        run: |
+          chrome_binary="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          test -x "$chrome_binary"
+          printf 'SKY_TEST_BROWSER_CHROME=%s\n' "$chrome_binary" >> "$GITHUB_ENV"
       - run: pytest
         env:
           SKY_TEST_K6_IMAGE: grafana/k6:2.3.0@sha256:9c2dee7f8ed74d317e4027c06a10f169b625638189de8d4555d0b3486a5aeb34

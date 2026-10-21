@@ -73,6 +73,7 @@ def serve_preparation(records, operations, policies, pool):
         finally:
             connection.close()
 
+    request.origin = app.origin
     try:
         yield request, controller
     finally:
