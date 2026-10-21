@@ -47,7 +47,7 @@ def test_real_browser_approval_ambiguous_admission_and_reload(web):
     assert len(saved) == 1 and operations.admit.call_count == 2 and len(polls) >= 4
 
 
-def run_browser(origin, operation_id):
+def run_browser(origin, operation_id, *, terminal="succeeded"):
     """Reusable real renderer; callers choose synthetic or SQL-backed API state."""
     binary = os.environ.get("SKY_TEST_BROWSER_CHROME")
     if not binary:
@@ -96,7 +96,8 @@ def run_browser(origin, operation_id):
                         port_file.read_text().splitlines()[0],
                         ID,
                         operation_id,
-                        *([output] if output else []),
+                        output or "",
+                        terminal,
                     ],
                     check=False,
                     capture_output=True,

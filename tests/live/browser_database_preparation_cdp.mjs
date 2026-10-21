@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 
-const [origin, port, job, expectedOperation, output] = process.argv.slice(2);
+const [origin, port, job, expectedOperation, output, terminal='succeeded'] = process.argv.slice(2);
+assert.ok(['succeeded','needs_attention'].includes(terminal));
 assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
 assert.match(job, /^[a-f0-9]{16}$/);
 const tabs = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
@@ -67,7 +68,7 @@ async function screenshot(name) {
   if (!output) return;
   mkdirSync(output,{recursive:true});
   const capture = await command('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});
-  writeFileSync(join(output,name),Buffer.from(capture.data,'base64'));
+  writeFileSync(join(output,terminal==='succeeded'?name:`attention-${name}`),Buffer.from(capture.data,'base64'));
 }
 try {
   await command('Page.enable');await command('Runtime.enable');await command('Network.enable');
@@ -99,8 +100,21 @@ try {
   assert.deepEqual(Object.keys(admissions[1].body).sort(),['confirm_preparation','proposal_id','request_key']);
   await reloadDocument();
   await until(`document.getElementById('status')?.textContent.includes('${operation}')`);
-  await until("document.getElementById('status').textContent.includes('전용 DB 준비 작업 완료')");
-  assert.match(await evaluate("document.getElementById('status').textContent"),/데이터 이전과 트래픽 전환은 진행하지 않았습니다/);
+  const terminalText=terminal==='succeeded'?'전용 DB 준비 작업 완료':'실제 처리 결과를 확정하지 못했습니다';
+  await until(`document.getElementById('status').textContent.includes(${JSON.stringify(terminalText)})`);
+  if(terminal==='succeeded') {
+    assert.match(await evaluate("document.getElementById('status').textContent"),/데이터 이전과 트래픽 전환은 진행하지 않았습니다/);
+  } else {
+    await reloadDocument();
+    await until(`document.getElementById('status')?.textContent.includes(${JSON.stringify(terminalText)}) && !document.getElementById('load').disabled`);
+    const status=await evaluate("document.getElementById('status').textContent");
+    assert.match(status,/운영자에게 전달/);assert.match(status,/새 준비 요청을 보내지 마세요/);
+    assert.ok(status.includes(operation));assert.doesNotMatch(status,/준비 작업 완료/);
+    assert.equal(await evaluate('state.timer'),null);
+    const before=posts.length;
+    await evaluate("document.getElementById('prepare').click()");
+    assert.equal(posts.length,before);
+  }
   assert.equal(await evaluate("document.getElementById('prepare').disabled"),true);
   await command('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
   const summary = await evaluate("document.getElementById('summary').textContent");
@@ -108,9 +122,10 @@ try {
   assert.equal(await evaluate('document.documentElement.scrollWidth<=window.innerWidth'),true);
   await evaluate(`document.getElementById('summary').textContent=${JSON.stringify(summary)}`);
   await screenshot('preparation-mobile.png');
+  assert.equal(posts.filter(item=>item.url.endsWith('/database-preparation')).length,2);
   assert.deepEqual(consoleErrors,[]);
-  const report={status:'passed',browser:'Chrome CDP',operation_id:operation,approval_separate:true,admission_posts:admissions.length,same_request_key:true,response_loss_after_server_admission:true,reload_resumes_same_operation:true,mobile_no_horizontal_overflow:true,cloud_calls:false};
-  if (output) writeFileSync(join(output,'browser-result.json'),JSON.stringify(report,null,2)+'\n');
+  const report={status:'passed',terminal,browser:'Chrome CDP',operation_id:operation,approval_separate:true,admission_posts:admissions.length,same_request_key:true,response_loss_after_server_admission:true,reload_resumes_same_operation:true,mobile_no_horizontal_overflow:true,cloud_calls:false};
+  if (output) writeFileSync(join(output,terminal==='succeeded'?'browser-result.json':'attention-browser-result.json'),JSON.stringify(report,null,2)+'\n');
   console.log(JSON.stringify(report));
 } catch (error) {
   try {
