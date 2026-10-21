@@ -140,7 +140,8 @@ def test_authorized_runtime_collection_audits_pool_lazily_once(registered, capsy
     }
     policy = Mock(target=Mock(account_id=pool.account_id), capacity_criteria=Mock(collector_id="registered"))
 
-    def review(_resolver, *, collect):
+    def review(_resolver, *, collect, coordinate):
+        assert callable(coordinate)
         collect(principal(), ID, policy)
         collect(principal(), ID, policy)
         return []

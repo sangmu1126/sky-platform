@@ -4,6 +4,7 @@ import json
 import os
 from datetime import UTC, datetime
 
+from adapters.state.operating_review_lock import PostgresOperatingReviewLocks
 from adapters.state.postgres import (
     PostgresDeploymentRecordStore,
     PostgresStateSettings,
@@ -95,8 +96,11 @@ def run_operating_review(args, parser):
                 )
                 CapacityObservationRecorder(controller.service, metrics).collect(principal, job_id, policy)
 
+        coordinator = PostgresOperatingReviewLocks(connection, workspace=workspace)
         report = controller.review_automations_once(
-            lambda user, org: current_membership(identity, user, org), collect=collect
+            lambda user, org: current_membership(identity, user, org),
+            collect=collect,
+            coordinate=coordinator.acquire,
         )
         print(json.dumps({"reviews": report, "execution_enabled": False}), flush=True)
     except (OSError, ValueError, BotoCoreError, ClientError):

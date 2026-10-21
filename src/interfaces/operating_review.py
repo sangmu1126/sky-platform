@@ -3,6 +3,7 @@
 import json
 import os
 import re
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -142,7 +143,7 @@ class OperatingReviewController:
             "automation_consent": snapshot.record.get("promotion_automation_consent"),
         }
 
-    def review_automations_once(self, resolve_principal, *, collect=None):
+    def review_automations_once(self, resolve_principal, *, collect=None, coordinate=None):
         """Bounded metadata-only pass; current consent actor is reauthorized.
 
         CAS and idempotent proposal IDs prevent duplicate approvals from two
@@ -163,27 +164,37 @@ class OperatingReviewController:
                     consent.get("organization_id"),
                 ):
                     raise PermissionError("Consent actor membership differs")
-                self.service.check_automation(principal, job_id, policy, consent, now=self.clock())
-                if collect is not None:
-                    collect(principal, job_id, policy)
-                    # A long collection must not reuse a stale membership decision.
-                    refreshed = resolve_principal(consent.get("user_id"), consent.get("organization_id"))
-                    if not isinstance(refreshed, Principal) or (
-                        refreshed.user_id,
-                        refreshed.organization_id,
-                    ) != (principal.user_id, principal.organization_id):
-                        raise PermissionError("Consent actor membership changed during collection")
-                    principal = refreshed
-                proposal = self.service.review(
-                    principal, job_id, policy, now=self.clock(), automation_consent=consent
+                context = (
+                    coordinate(principal.organization_id, record.get("application_id"))
+                    if coordinate is not None
+                    else nullcontext(lambda: None)
                 )
-                report.append(
-                    {
+                with context as guard:
+                    if guard is None:
+                        report.append({"job_id": job_id, "status": "review_in_progress"})
+                        continue
+                    self.service.check_automation(principal, job_id, policy, consent, now=self.clock())
+                    if collect is not None:
+                        guard()
+                        collect(principal, job_id, policy)
+                        # A long collection must not reuse a stale membership decision.
+                        refreshed = resolve_principal(consent.get("user_id"), consent.get("organization_id"))
+                        if not isinstance(refreshed, Principal) or (
+                            refreshed.user_id,
+                            refreshed.organization_id,
+                        ) != (principal.user_id, principal.organization_id):
+                            raise PermissionError("Consent actor membership changed during collection")
+                        principal = refreshed
+                    guard()
+                    proposal = self.service.review(
+                        principal, job_id, policy, now=self.clock(), automation_consent=consent
+                    )
+                    outcome = {
                         "job_id": job_id,
                         "status": proposal["status"] if proposal else "criteria_not_met",
                         "proposal_id": proposal["proposal_id"] if proposal else None,
                     }
-                )
+                report.append(outcome)
             except (ValueError, TypeError, PermissionError, FileNotFoundError, OSError):
                 report.append({"job_id": job_id, "status": "review_blocked"})
         return report
