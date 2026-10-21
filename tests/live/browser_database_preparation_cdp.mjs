@@ -58,6 +58,11 @@ async function until(expression, seconds=20) {
   }
   throw Error('Browser preparation check timed out: '+expression);
 }
+async function reloadDocument() {
+  const previous = await evaluate('globalThis.__skyBrowserDocument');
+  await command('Page.reload');
+  await until(`globalThis.__skyBrowserDocument && globalThis.__skyBrowserDocument!==${JSON.stringify(previous)} && document.readyState==='complete'`);
+}
 async function screenshot(name) {
   if (!output) return;
   mkdirSync(output,{recursive:true});
@@ -68,7 +73,7 @@ try {
   await command('Page.enable');await command('Runtime.enable');await command('Network.enable');
   await command('Network.setExtraHTTPHeaders',{headers:{Authorization:'deployer'}});
   // The backend fixture also uses this fixed time; production Date remains unchanged.
-  await command('Page.addScriptToEvaluateOnNewDocument',{source:"Date.now=()=>Date.parse('2026-10-11T00:00:00Z');"});
+  await command('Page.addScriptToEvaluateOnNewDocument',{source:"Date.now=()=>Date.parse('2026-10-11T00:00:00Z');globalThis.__skyBrowserDocument=Math.random().toString(36);"});
   await command('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false});
   await command('Page.navigate',{url:`${origin}/database-preparation?job=${job}`});
   await until("document.getElementById('approve') && !document.getElementById('approve').disabled");
@@ -83,14 +88,14 @@ try {
   await until("document.getElementById('status').textContent.includes('같은 요청 키') && !document.getElementById('prepare').disabled");
   assert.equal(responseLost,true);
   const firstKey = posts.filter(item=>item.url.endsWith('/database-preparation'))[0].body.request_key;
-  await command('Page.reload');
+  await reloadDocument();
   await until("document.getElementById('prepare')?.textContent==='동일 준비 요청 확인' && !document.getElementById('consent').disabled");
   await evaluate("document.getElementById('consent').click();document.getElementById('prepare').click()");
   await until(`document.getElementById('status').textContent.includes('${operation}') && !document.getElementById('load').disabled`);
   const admissions = posts.filter(item=>item.url.endsWith('/database-preparation'));
   assert.equal(admissions.length,2);assert.equal(admissions[1].body.request_key,firstKey);
   assert.deepEqual(Object.keys(admissions[1].body).sort(),['confirm_preparation','proposal_id','request_key']);
-  await command('Page.reload');
+  await reloadDocument();
   await until(`document.getElementById('status')?.textContent.includes('${operation}')`);
   await until("document.getElementById('status').textContent.includes('전용 DB 준비 작업 완료')");
   assert.match(await evaluate("document.getElementById('status').textContent"),/데이터 이전과 트래픽 전환은 진행하지 않았습니다/);
