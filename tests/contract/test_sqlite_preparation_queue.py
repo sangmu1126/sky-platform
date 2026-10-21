@@ -244,10 +244,11 @@ def test_completion_commit_ack_loss_is_not_reexecuted(pipeline):
         assert consumer.consume_once() == "duplicate"
 
 
-def test_saved_prepared_result_requires_identical_fresh_artifact(pipeline):
+@pytest.mark.parametrize("old_attempt_first", [True, False])
+def test_saved_prepared_result_requires_identical_fresh_artifact(pipeline, old_attempt_first):
     from ports.remote_builds import digest
 
-    jobs, _, _, consumer, publisher = pipeline
+    jobs, _, queue, consumer, publisher = pipeline
     receipt = submit(pipeline)
     operation = jobs.operations.get(receipt["id"])
     lease = jobs.operations.claim(operation.id, operation.attempt_id, "dead-worker")
@@ -260,10 +261,21 @@ def test_saved_prepared_result_requires_identical_fresh_artifact(pipeline):
             "result": {"forged": True},
         },
     )
-    publisher.dispatch_once()
-    # A published old attempt is discarded before the recovered attempt runs.
-    assert consumer.consume_once() == "duplicate"
-    assert consumer.consume_once() == "failed"
+    assert publisher.dispatch_once().confirmed == 2
+    assert len(queue.messages) == 2
+    # UPDATE ... RETURNING does not promise publication order. Exercise both
+    # arrival orders; neither an old attempt nor a forged checkpoint is trusted.
+    assert {delivery.message["attempt_id"] for delivery in queue.messages} == {
+        operation.attempt_id,
+        jobs.operations.get(operation.id).attempt_id,
+    }
+    queue.messages.sort(
+        key=lambda delivery: delivery.message["attempt_id"] != operation.attempt_id,
+        reverse=not old_attempt_first,
+    )
+    expected = ("duplicate", "failed") if old_attempt_first else ("failed", "duplicate")
+    assert tuple(consumer.consume_once() for _ in range(2)) == expected
+    assert len(queue.deleted) == 2
     assert jobs.detail(principal(), receipt["id"])["result"]["reason"] == "invalid_source_or_review"
 
 
