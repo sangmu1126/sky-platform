@@ -177,13 +177,43 @@ class AwsDedicatedDatabasePreparer:
                     or instance["VpcSecurityGroups"][0].get("Status") != "active"))):
             raise ValueError("Existing target is unowned or differs from approved configuration")
 
-    def prepare(self, plan, *, operation_id, guard):
-        guard()
-        target = self._preflight(plan, operation_id)
-        tags = {"sky-managed": "true", "sky-database-role": "dedicated_workload",
+    def _target_tags(self, plan, operation_id, target):
+        return {"sky-managed": "true", "sky-database-role": "dedicated_workload",
                 "sky-operation-id": operation_id, "sky-plan-id": plan["plan_id"],
                 "sky-organization-id": target.organization_id, "sky-application-id": target.application_id,
                 "sky-owner-ref": target.owner_ref, "sky-configuration-digest": self.settings.digest}
+
+    @staticmethod
+    def _target_receipt(plan, operation_id, target, instance):
+        return {"operation_id": operation_id, "plan_id": plan["plan_id"], "binding": asdict(target),
+                "status": "available", "verified_scope": "rds_ownership_network_tls",
+                "encrypted": True, "publicly_accessible": False, "resource_id": instance["DbiResourceId"]}
+
+    def observe(self, plan, *, operation_id, guard):
+        """Recheck an existing target without creation, polling or state resolution.
+
+        Absence is not proof that an earlier create cannot still finish. A receipt
+        does not fence the old executor or authorize clearing an operation's lock.
+        Trusted recovery orchestration must establish those conditions separately.
+        """
+        guard()
+        target = self._preflight(plan, operation_id)
+        guard()
+        instance = self._describe(target.instance_id)
+        if instance is None:
+            raise ValueError("Dedicated target outcome remains unverified")
+        tags = self._target_tags(plan, operation_id, target)
+        guard()
+        self._verify(instance, target, tags, available=True)
+        guard()
+        self._verify_tls(instance, target)
+        guard()
+        return self._target_receipt(plan, operation_id, target, instance)
+
+    def prepare(self, plan, *, operation_id, guard):
+        guard()
+        target = self._preflight(plan, operation_id)
+        tags = self._target_tags(plan, operation_id, target)
         instance = self._describe(target.instance_id)
         if instance is None:
             guard()
@@ -214,9 +244,7 @@ class AwsDedicatedDatabasePreparer:
         guard()
         self._verify_tls(instance, target)
         guard()
-        return {"operation_id": operation_id, "plan_id": plan["plan_id"], "binding": asdict(target),
-                "status": "available", "verified_scope": "rds_ownership_network_tls",
-                "encrypted": True, "publicly_accessible": False, "resource_id": instance["DbiResourceId"]}
+        return self._target_receipt(plan, operation_id, target, instance)
 
     def _verify_tls(self, instance, target):
         pool = self.settings.source.pool
