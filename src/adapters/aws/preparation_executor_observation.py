@@ -1,0 +1,87 @@
+"""Observe a pinned ECS executor's stopped state; never stop tasks or resolve DB state.
+
+STOPPED establishes only task state. Requests already accepted by RDS may still
+complete. This observation is deliberately not a PreparationRecoveryAuthority.
+"""
+
+import hashlib
+import json
+import re
+from datetime import UTC, datetime
+
+from ports.preparation_executor import validate_preparation_executor
+
+
+class EcsStoppedPreparationObserver:
+    def __init__(self, cluster_arn, *, workspace, session=None, clock=lambda: datetime.now(UTC)):
+        match = re.fullmatch(
+            r"arn:aws:ecs:([a-z]{2}(?:-[a-z]+)+-\d+):(\d{12}):cluster/([A-Za-z0-9_-]{1,255})",
+            cluster_arn if isinstance(cluster_arn, str) else "",
+        )
+        if not match or not isinstance(workspace, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", workspace):
+            raise ValueError("Registered ECS cluster and workspace required")
+        self.region, self.account_id, self.cluster_name = match.groups()
+        self.cluster_arn, self.workspace, self.clock = cluster_arn, workspace, clock
+        if session is None:
+            import boto3
+
+            session = boto3.Session(region_name=self.region)
+        self.ecs = session.client("ecs", region_name=self.region)
+        self.sts = session.client("sts", region_name=self.region)
+
+    def observe(self, operation, *, guard):
+        guard()
+        intent = operation.external_intent
+        if (operation.kind != "db_dedicated_prepare" or operation.status != "needs_attention"
+                or operation.external_pending is not True
+                or not isinstance(intent, dict) or intent.get("operation_id") != operation.id
+                or intent.get("kind") != operation.kind):
+            raise ValueError("Original blocked preparation intent required")
+        executor = validate_preparation_executor(intent.get("executor"))
+        prefix = f"arn:aws:ecs:{self.region}:{self.account_id}:task/{self.cluster_name}/"
+        if not executor["task_arn"].startswith(prefix):
+            raise ValueError("Original executor differs from the registered cluster")
+        if self.ecs.meta.region_name != self.region or self.sts.meta.region_name != self.region:
+            raise ValueError("Executor observation client region mismatch")
+        try:
+            identity = self.sts.get_caller_identity()
+        except Exception:
+            raise OSError("Executor observation identity unavailable") from None
+        if not isinstance(identity, dict) or identity.get("Account") != self.account_id:
+            raise ValueError("Executor observation caller account mismatch")
+        guard()
+        try:
+            response = self.ecs.describe_tasks(cluster=self.cluster_arn, tasks=[executor["task_arn"]])
+        except Exception:
+            raise OSError("Original executor state unavailable") from None
+        guard()
+        if not isinstance(response, dict):
+            raise ValueError("Executor response cannot establish stopped state")
+        tasks, failures = response.get("tasks"), response.get("failures", [])
+        if not isinstance(failures, list) or failures or not isinstance(tasks, list) or len(tasks) != 1:
+            raise ValueError("Missing or ambiguous executor state is not stopped evidence")
+        task = tasks[0]
+        if (not isinstance(task, dict) or task.get("taskArn") != executor["task_arn"]
+                or task.get("clusterArn") != self.cluster_arn
+                or task.get("lastStatus") != "STOPPED" or task.get("desiredStatus") != "STOPPED"):
+            raise ValueError("Original executor has not been verified stopped")
+        containers = task.get("containers")
+        if (not isinstance(containers, list) or not containers
+                or any(not isinstance(item, dict) or item.get("lastStatus") != "STOPPED"
+                    or item.get("taskArn") != executor["task_arn"] for item in containers)):
+            raise ValueError("All original task containers must be verified stopped")
+        now, stopped = self.clock(), task.get("stoppedAt")
+        if (not isinstance(now, datetime) or now.tzinfo is None
+                or not isinstance(stopped, datetime) or stopped.tzinfo is None or stopped > now):
+            raise ValueError("Verified executor stop time required")
+        result = {
+            "workspace": self.workspace, "operation_id": operation.id,
+            "attempt_id": operation.attempt_id, "operation_version": operation.row_version,
+            "executor": executor, "scope": "ecs_executor_stopped_only",
+            "stopped_at": stopped.isoformat(), "observed_at": now.isoformat(),
+            "provider_requests_settled": False, "recovery_authorized": False,
+        }
+        digest = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        result["evidence_ref"] = "evidence:ecs-stopped/" + digest
+        guard()
+        return result
