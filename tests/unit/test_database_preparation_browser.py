@@ -23,12 +23,6 @@ pytest_plugins = ["tests.unit.test_database_preparation_http"]
 
 
 def test_real_browser_approval_ambiguous_admission_and_reload(web):
-    binary = os.environ.get("SKY_TEST_BROWSER_CHROME")
-    if not binary:
-        pytest.skip("Explicit disposable Chrome executable required")
-    chrome_path = Path(binary)
-    assert chrome_path.is_file(), "Configured Chrome executable must exist"
-    assert shutil.which("node"), "Node 22+ required for native CDP WebSocket"
     request, _controller, records, operations, _body, operation = web
     records.job["operating_proposal"]["status"] = "pending_approval"
     records.job["operating_proposal"].pop("approval")
@@ -48,6 +42,19 @@ def test_real_browser_approval_ambiguous_admission_and_reload(web):
         return replace(saved[0], status="succeeded" if len(polls) >= 4 else "queued")
 
     operations.admit.side_effect, operations.get.side_effect = admit, get
+    report = run_browser(request.origin, operation.id)
+    assert report["status"] == "passed"
+    assert len(saved) == 1 and operations.admit.call_count == 2 and len(polls) >= 4
+
+
+def run_browser(origin, operation_id):
+    """Reusable real renderer; callers choose synthetic or SQL-backed API state."""
+    binary = os.environ.get("SKY_TEST_BROWSER_CHROME")
+    if not binary:
+        pytest.skip("Explicit disposable Chrome executable required")
+    chrome_path = Path(binary)
+    assert chrome_path.is_file(), "Configured Chrome executable must exist"
+    assert shutil.which("node"), "Node 22+ required for native CDP WebSocket"
     driver = Path(__file__).resolve().parents[1] / "live/browser_database_preparation_cdp.mjs"
     output = os.environ.get("SKY_TEST_BROWSER_OUTPUT_DIR")
     with (
@@ -85,10 +92,10 @@ def test_real_browser_approval_ambiguous_admission_and_reload(web):
                     [
                         "node",
                         str(driver),
-                        request.origin,
+                        origin,
                         port_file.read_text().splitlines()[0],
                         ID,
-                        operation.id,
+                        operation_id,
                         *([output] if output else []),
                     ],
                     check=False,
@@ -129,4 +136,4 @@ def test_real_browser_approval_ambiguous_admission_and_reload(web):
                         if time.monotonic() >= deadline:
                             raise
                         time.sleep(0.1)
-    assert len(saved) == 1 and operations.admit.call_count == 2 and len(polls) >= 4
+    return report

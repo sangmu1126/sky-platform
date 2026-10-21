@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 
-const [origin, port, job, operation, output] = process.argv.slice(2);
+const [origin, port, job, expectedOperation, output] = process.argv.slice(2);
 assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
 assert.match(job, /^[a-f0-9]{16}$/);
 const tabs = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
@@ -16,7 +16,7 @@ await new Promise((resolve, reject) => {
   socket.addEventListener('error', reject, {once: true});
 });
 const pending = new Map(), posts = [], consoleErrors = [];
-let serial = 0, responseLost = false, interceptionError;
+let serial = 0, responseLost = false, interceptionError, operation;
 function command(method, params = {}) {
   const id = ++serial;
   return new Promise((resolve, reject) => {
@@ -91,7 +91,9 @@ try {
   await reloadDocument();
   await until("document.getElementById('prepare')?.textContent==='동일 준비 요청 확인' && !document.getElementById('consent').disabled");
   await evaluate("document.getElementById('consent').click();document.getElementById('prepare').click()");
-  await until(`document.getElementById('status').textContent.includes('${operation}') && !document.getElementById('load').disabled`);
+  operation = await until("state.request?.operation_id && !document.getElementById('load').disabled ? state.request.operation_id : null");
+  assert.match(operation, /^[a-f0-9-]{36}$/);
+  if (expectedOperation !== 'auto') assert.equal(operation, expectedOperation);
   const admissions = posts.filter(item=>item.url.endsWith('/database-preparation'));
   assert.equal(admissions.length,2);assert.equal(admissions[1].body.request_key,firstKey);
   assert.deepEqual(Object.keys(admissions[1].body).sort(),['confirm_preparation','proposal_id','request_key']);
@@ -107,7 +109,7 @@ try {
   await evaluate(`document.getElementById('summary').textContent=${JSON.stringify(summary)}`);
   await screenshot('preparation-mobile.png');
   assert.deepEqual(consoleErrors,[]);
-  const report={status:'passed',browser:'Chrome CDP',approval_separate:true,admission_posts:admissions.length,same_request_key:true,response_loss_after_server_admission:true,reload_resumes_same_operation:true,mobile_no_horizontal_overflow:true,cloud_calls:false};
+  const report={status:'passed',browser:'Chrome CDP',operation_id:operation,approval_separate:true,admission_posts:admissions.length,same_request_key:true,response_loss_after_server_admission:true,reload_resumes_same_operation:true,mobile_no_horizontal_overflow:true,cloud_calls:false};
   if (output) writeFileSync(join(output,'browser-result.json'),JSON.stringify(report,null,2)+'\n');
   console.log(JSON.stringify(report));
 } catch (error) {
