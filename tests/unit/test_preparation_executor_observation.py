@@ -8,7 +8,7 @@ import pytest
 
 from adapters.aws.preparation_executor_observation import EcsStoppedPreparationObserver
 from application.database_promotion_workflow import preparation_intent
-from ports.preparation_executor import EcsPreparationExecutor
+from ports.preparation_executor import CreateOnlyPreparationProfile, EcsPreparationExecutor
 
 pytest_plugins = ["tests.unit.test_database_promotion_workflow"]
 
@@ -146,3 +146,55 @@ def test_malformed_task_responses_are_not_evidence(observed, response):
     clients["ecs"].describe_tasks.return_value = response
     with pytest.raises(ValueError):
         observer.observe(operation, guard=Mock())
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        None,
+        "definition",
+        "digest",
+        "missing_digest",
+        "extra_container",
+        "command_override",
+        "environment_override",
+        "role_override",
+    ],
+)
+def test_audited_profile_requires_exact_task_revision_and_every_image_digest(observed, change):
+    observer, operation, _, task = observed
+    profile = CreateOnlyPreparationProfile(
+        "arn:aws:ecs:ap-northeast-2:111111111111:task-definition/sky-worker:7",
+        (("worker", "sha256:" + "c" * 64),),
+    )
+    observer.profile = profile
+    task["overrides"] = {"containerOverrides": [{"name": "worker"}]}
+    task["taskDefinitionArn"] = profile.task_definition_arn
+    task["containers"][0].update(name="worker", imageDigest="sha256:" + "c" * 64)
+    if change == "definition":
+        task["taskDefinitionArn"] = profile.task_definition_arn[:-1] + "8"
+    elif change == "digest":
+        task["containers"][0]["imageDigest"] = "sha256:" + "d" * 64
+    elif change == "missing_digest":
+        task["containers"][0].pop("imageDigest")
+    elif change == "extra_container":
+        task["containers"].append({"lastStatus": "STOPPED", "taskArn": TASK, "name": "sidecar"})
+    elif change in {"command_override", "environment_override"}:
+        task["overrides"]["containerOverrides"][0][
+            "command" if change == "command_override" else "environment"
+        ] = ["unreviewed"]
+    elif change == "role_override":
+        task["overrides"]["taskRoleArn"] = "unreviewed"
+    if change:
+        with pytest.raises(ValueError, match="audited create-only"):
+            observer.observe(operation, guard=Mock())
+    else:
+        assert observer.observe(operation, guard=Mock())["execution_profile"] == profile.record()
+
+
+@pytest.mark.parametrize("images", [(), (("worker", "latest"),), (("worker", "sha256:" + "a" * 64),) * 2])
+def test_profile_cannot_use_empty_mutable_or_duplicate_images(images):
+    with pytest.raises(ValueError):
+        CreateOnlyPreparationProfile(
+            "arn:aws:ecs:ap-northeast-2:111111111111:task-definition/worker:1", images
+        )

@@ -9,11 +9,11 @@ import json
 import re
 from datetime import UTC, datetime
 
-from ports.preparation_executor import validate_preparation_executor
+from ports.preparation_executor import CreateOnlyPreparationProfile, validate_preparation_executor
 
 
 class EcsStoppedPreparationObserver:
-    def __init__(self, cluster_arn, *, workspace, session=None, clock=lambda: datetime.now(UTC)):
+    def __init__(self, cluster_arn, *, workspace, session=None, clock=lambda: datetime.now(UTC), profile=None):
         match = re.fullmatch(
             r"arn:aws:ecs:([a-z]{2}(?:-[a-z]+)+-\d+):(\d{12}):cluster/([A-Za-z0-9_-]{1,255})",
             cluster_arn if isinstance(cluster_arn, str) else "",
@@ -22,6 +22,11 @@ class EcsStoppedPreparationObserver:
             raise ValueError("Registered ECS cluster and workspace required")
         self.region, self.account_id, self.cluster_name = match.groups()
         self.cluster_arn, self.workspace, self.clock = cluster_arn, workspace, clock
+        if profile is not None and (not isinstance(profile, CreateOnlyPreparationProfile)
+                or not profile.task_definition_arn.startswith(
+                    f"arn:aws:ecs:{self.region}:{self.account_id}:task-definition/")):
+            raise ValueError("Registered execution profile scope mismatch")
+        self.profile = profile
         if session is None:
             import boto3
 
@@ -70,6 +75,18 @@ class EcsStoppedPreparationObserver:
                 or any(not isinstance(item, dict) or item.get("lastStatus") != "STOPPED"
                     or item.get("taskArn") != executor["task_arn"] for item in containers)):
             raise ValueError("All original task containers must be verified stopped")
+        if self.profile is not None:
+            images = {item.get("name"): item.get("imageDigest") for item in containers}
+            overrides = task.get("overrides", {})
+            override_containers = overrides.get("containerOverrides", []) if isinstance(overrides, dict) else None
+            safe_overrides = (isinstance(overrides, dict) and set(overrides) <= {"containerOverrides"}
+                and isinstance(override_containers, list)
+                and all(isinstance(item, dict) and set(item) == {"name"}
+                    and item["name"] in dict(self.profile.images) for item in override_containers))
+            if (task.get("taskDefinitionArn") != self.profile.task_definition_arn
+                    or len(images) != len(containers) or images != dict(self.profile.images)
+                    or not safe_overrides):
+                raise ValueError("Original executor code differs from the audited create-only profile")
         now, stopped = self.clock(), task.get("stoppedAt")
         if (not isinstance(now, datetime) or now.tzinfo is None
                 or not isinstance(stopped, datetime) or stopped.tzinfo is None or stopped > now):
@@ -81,6 +98,8 @@ class EcsStoppedPreparationObserver:
             "stopped_at": stopped.isoformat(), "observed_at": now.isoformat(),
             "provider_requests_settled": False, "recovery_authorized": False,
         }
+        if self.profile is not None:
+            result["execution_profile"] = self.profile.record()
         digest = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         result["evidence_ref"] = "evidence:ecs-stopped/" + digest
         guard()
