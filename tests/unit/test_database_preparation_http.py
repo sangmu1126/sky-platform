@@ -205,6 +205,43 @@ def test_preparation_idempotency_key_is_scoped_to_authenticated_actor(web):
     assert operations.admit.call_args.args[2] != first
 
 
+@pytest.mark.parametrize(
+    "status,stage,result,reason",
+    [
+        ("needs_attention", "revalidation_after_external_effect", None, "approval_changed_after_preparation"),
+        ("needs_attention", "target_evidence_mismatch", None, "target_evidence_mismatch"),
+        ("needs_attention", "target_outcome_uncertain", None, "outcome_uncertain"),
+        ("needs_attention", "untrusted-detail", None, "outcome_uncertain"),
+        (
+            "failed",
+            "untrusted-detail",
+            {"code": "promotion_revalidation_failed"},
+            "preparation_conditions_changed",
+        ),
+        ("queued", "source_read_unavailable", None, "validation_retry_pending"),
+        ("succeeded", "target_evidence_mismatch", None, None),
+        ("failed", "target_outcome_uncertain", {"code": "untrusted-detail"}, None),
+    ],
+)
+def test_status_exposes_fixed_reason_without_execution_details(web, status, stage, result, reason):
+    request, _, _, operations, body, operation = web
+    assert request(body=body)[0] == 202
+    operations.get.return_value = replace(
+        operations.get.return_value,
+        status=status,
+        checkpoint={"stage": stage, "secret": "private-execution-detail"},
+        result=result,
+        external_receipt={"password": "private-execution-detail"},
+    )
+    code, value = request(method="GET", suffix="/" + operation.id, headers={"Authorization": "viewer"})
+    assert code == 200 and value["reason_code"] == reason
+    assert value["requires_attention"] is (status == "needs_attention")
+    assert "private-execution-detail" not in json.dumps(value)
+    assert "untrusted-detail" not in json.dumps(value)
+    assert not {"checkpoint", "result", "external_receipt", "command"} & value.keys()
+    assert request.response_headers["Cache-Control"] == "no-store"
+
+
 def test_preparation_configuration_requires_explicit_opt_in_and_separate_queue(
     admission_setup, registered, monkeypatch
 ):

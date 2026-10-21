@@ -92,11 +92,27 @@ class DatabasePreparationController:
 
     @staticmethod
     def _receipt(operation, job_id):
+        # Publish only fixed reason codes, never arbitrary checkpoints, provider
+        # errors, receipts or credentials from the durable execution record.
+        reason = None
+        if operation.status == "needs_attention":
+            reason = {
+                "revalidation_after_external_effect": "approval_changed_after_preparation",
+                "target_evidence_mismatch": "target_evidence_mismatch",
+            }.get(operation.checkpoint.get("stage"), "outcome_uncertain")
+        elif (
+            operation.status == "failed"
+            and (operation.result or {}).get("code") == "promotion_revalidation_failed"
+        ):
+            reason = "preparation_conditions_changed"
+        elif operation.status == "queued" and operation.checkpoint.get("stage") == "source_read_unavailable":
+            reason = "validation_retry_pending"
         return {
             "job_id": job_id,
             "operation_id": operation.id,
             "status": operation.status,
             "requires_attention": operation.status == "needs_attention",
+            "reason_code": reason,
             "status_url": f"/api/jobs/{job_id}/database-preparation/{operation.id}",
             "scope": "dedicated_target_preparation_only",
             "data_routing_changed": False,

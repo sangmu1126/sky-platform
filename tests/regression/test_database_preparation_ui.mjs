@@ -93,3 +93,27 @@ test('browser back-forward cache restores polling instead of retaining a disable
  const c=await load(context({storage}));c.getState().busy=true;c.events.pagehide();await c.events.pageshow({persisted:true});
  assert.equal(c.getState().busy,false);assert.equal(c.element('load').disabled,false);assert.equal(c.timers.size,1);assert.equal(c.element('prepare').disabled,true);
 });
+
+test('attention explains changed approval and retains the existing request',async()=>{
+ const c=await load(context());const saved={job_id:job,proposal_id:proposalId,request_key:requestKey,operation_id:operation};
+ c.getState().request=saved;c.fetch=async()=>({ok:true,json:async()=>({...receipt('needs_attention'),reason_code:'approval_changed_after_preparation'})});
+ await c.pollOperation();c.render();
+ assert.match(c.element('status').textContent,/승인·권한 또는 배포 조건이 변경/);
+ assert.match(c.element('status').textContent,/운영자에게 전달/);
+ assert.match(c.element('status').textContent,/새 준비 요청을 보내지 마세요/);
+ assert.match(c.element('status').textContent,new RegExp(operation));
+ assert.equal(c.getState().request,saved);assert.equal(c.timers.size,0);assert.equal(c.element('prepare').disabled,true);
+});
+test('reason codes only render fixed guidance for their matching status',async()=>{
+ const c=await load(context());c.getState().request={job_id:job,proposal_id:proposalId,request_key:requestKey,operation_id:operation};
+ c.fetch=async()=>({ok:true,json:async()=>({...receipt('succeeded'),reason_code:'target_evidence_mismatch'})});await c.pollOperation();
+ assert.match(c.element('status').textContent,/준비 작업 완료/);assert.doesNotMatch(c.element('status').textContent,/일치하는지|운영자에게 전달/);
+ c.fetch=async()=>({ok:true,json:async()=>({...receipt('needs_attention'),reason_code:'<script>private error</script>'})});await c.pollOperation();
+ assert.doesNotMatch(c.element('status').textContent,/script|private error/);assert.match(c.element('status').textContent,/운영자에게 전달/);
+});
+test('temporary validation failure keeps polling the existing operation',async()=>{
+ const c=await load(context());c.getState().request={job_id:job,proposal_id:proposalId,request_key:requestKey,operation_id:operation};
+ c.fetch=async()=>({ok:true,json:async()=>({...receipt('queued'),reason_code:'validation_retry_pending'})});await c.pollOperation();c.render();
+ assert.match(c.element('status').textContent,/같은 작업의 재시도/);assert.equal(c.timers.size,1);assert.equal(c.element('prepare').disabled,true);
+ assert.equal(c.calls.filter(call=>call.options.method==='POST').length,0);
+});
