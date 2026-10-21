@@ -6,13 +6,14 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from application.available_target_preparation_recovery import AvailableTargetPreparationRecoveryAuthority
 from application.database_preparation_recovery import PromotionPreparationRecovery
 from application.database_promotion_workflow import KIND
 from application.outbox import OutboxPublisher
 from application.shared_database_consumer import AllocationQueueRouter, SharedDatabaseConsumer
 from domain.access import Role
 from ports.operations import ApplicationBusy
-from ports.preparation_executor import EcsPreparationExecutor
+from ports.preparation_executor import CreateOnlyPreparationProfile, EcsPreparationExecutor
 from ports.preparation_recovery import PreparationRecoveryFence
 from ports.queue import ReceivedOperation
 from ports.state import RecordConflict
@@ -203,3 +204,120 @@ def test_resolution_commit_response_loss_does_not_repeat_observation_or_enqueue(
     assert count(store, database, "outbox_events") == 2
     assert count(store, database, "mutation_scopes") == 1
     observer.observe.assert_called_once()
+
+
+ECS_EXECUTOR = EcsPreparationExecutor("arn:aws:ecs:ap-northeast-2:111111111111:task/sky-worker/" + "a" * 32)
+
+
+def available_authority(recovery, store):
+    service, _, blocked, _, observer, _, _ = recovery
+    profile = CreateOnlyPreparationProfile(
+        "arn:aws:ecs:ap-northeast-2:111111111111:task-definition/sky-worker:7",
+        (("worker", "sha256:" + "c" * 64),),
+    )
+    stopped = Mock(workspace=store.workspace, profile=profile)
+    stopped.observe.return_value = {
+        "workspace": store.workspace,
+        "operation_id": blocked.id,
+        "attempt_id": blocked.attempt_id,
+        "operation_version": blocked.row_version,
+        "executor": blocked.external_intent["executor"],
+        "execution_profile": profile.record(),
+        "scope": "ecs_executor_stopped_only",
+        "evidence_ref": "evidence:ecs-stopped/" + "d" * 64,
+        "stopped_at": "2026-10-10T23:59:00+00:00",
+    }
+    clock = [0]
+    authority = AvailableTargetPreparationRecoveryAuthority(
+        store, stopped, observer, monotonic=lambda: clock[0]
+    )
+    service.authority = authority
+    return authority, stopped, observer, clock
+
+
+@pytest.mark.parametrize("recovery", [ECS_EXECUTOR], indirect=True)
+def test_available_target_authority_requeues_with_auditable_evidence_and_no_creation(
+    recovery, store, database
+):
+    _, _, blocked, _, _, worker, preparer = recovery
+    _, stopped, target, _ = available_authority(recovery, store)
+    with patch("boto3.client", side_effect=AssertionError("Cloud clients forbidden")):
+        assert resume(recovery)["status"] == "queued"
+        queued = store.get(blocked.id)
+        proof = queued.external_receipt["observation"]["executor_exclusion_evidence"]
+        assert proof["policy_id"] == "stopped-create-only-existing-protected-target-v1"
+        assert proof["execution_profile"] == stopped.profile.record()
+        assert proof["requests_cancelled"] is False
+        assert proof["target_resource_id"] == target.observe.return_value["resource_id"]
+        assert count(store, database, "mutation_scopes") == 1
+        assert count(store, database, "outbox_events") == 2
+        assert worker.execute(queued.id, queued.attempt_id)["status"] == "succeeded"
+    preparer.prepare.assert_called_once()  # Original failed preparation only.
+    assert count(store, database, "mutation_scopes") == 0
+    assert store.get(blocked.id).external_intent == blocked.external_intent
+
+
+@pytest.mark.parametrize("recovery", [ECS_EXECUTOR], indirect=True)
+@pytest.mark.parametrize(
+    "change",
+    [
+        "absent",
+        "replaced",
+        "expired",
+        "task_scope",
+        "profile",
+        "approval",
+        "profile_revoked",
+        "observation_mismatch",
+    ],
+)
+def test_available_target_recovery_requires_stable_target_and_current_approval(
+    recovery, store, database, change
+):
+    service, _, blocked, _, _, _, _ = recovery
+    _, stopped, target, clock = available_authority(recovery, store)
+    original = dict(target.observe.return_value)
+    if change == "absent":
+        target.observe.side_effect = ValueError("Target not available")
+    elif change == "replaced":
+        target.observe.side_effect = [original, {**original, "resource_id": "db-" + "B" * 26}]
+    elif change == "task_scope":
+        stopped.observe.return_value["workspace"] = "other"
+    elif change == "profile":
+        stopped.observe.return_value["execution_profile"] = {"untrusted": True}
+    elif change == "observation_mismatch":
+        service.observer = Mock(observe=Mock(return_value={**original, "resource_id": "db-" + "B" * 26}))
+    else:
+        calls = []
+
+        def observe(_plan, *, operation_id, guard):
+            guard()
+            calls.append(True)
+            if len(calls) == 1:
+                if change == "expired":
+                    clock[0] = 120
+                elif change == "profile_revoked":
+                    stopped.profile = CreateOnlyPreparationProfile(
+                        stopped.profile.task_definition_arn[:-1] + "8", stopped.profile.images
+                    )
+                else:
+                    revoke("approval", service.validator.records, service.validator)
+            return original
+
+        target.observe.side_effect = observe
+    with pytest.raises((ValueError, OSError)):
+        resume(recovery)
+    assert store.get(blocked.id) == blocked
+    assert count(store, database, "mutation_scopes") == 1
+    assert count(store, database, "outbox_events") == 1
+
+
+@pytest.mark.parametrize("recovery", [ECS_EXECUTOR], indirect=True)
+def test_available_target_fence_cannot_be_reused_after_context_exit(recovery, store):
+    _, _, blocked, *_ = recovery
+    authority, _, _, _ = available_authority(recovery, store)
+    with authority.hold(blocked) as fence:
+        fence.check()
+    with pytest.raises(OSError, match="expired"):
+        fence.check()
+    assert store.get(blocked.id) == blocked

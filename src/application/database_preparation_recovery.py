@@ -14,7 +14,7 @@ from application.database_promotion_workflow import (
 )
 from application.deployment_writes import DeploymentMetadataWriter
 from domain.access import Principal, Role
-from ports.preparation_recovery import PreparationRecoveryFence
+from ports.preparation_recovery import AvailableTargetRecoveryEvidence, PreparationRecoveryFence
 from ports.state import RecordConflict
 
 
@@ -80,11 +80,18 @@ class PromotionPreparationRecovery:
             actor = {"organization_id": operator.organization_id, "user_id": operator.user_id}
             resolver = "recovery-" + hashlib.sha256(
                 json.dumps(actor, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            evidence = {}
+            if fence.evidence is not None:
+                if not isinstance(fence.evidence, AvailableTargetRecoveryEvidence):
+                    raise ValueError("Typed recovery evidence required")
+                if fence.evidence.target_resource_id != safe["resource_id"]:
+                    raise ValueError("Recovery evidence and observed target identity differ")
+                evidence["executor_exclusion_evidence"] = fence.evidence.record()
             # CAS atomically retains scope and records a new attempt/outbox. A
             # lost commit response propagates: do not repeat observer or mutation.
             saved = self.operations.resolve_attention(
                 operation.id, operation.attempt_id, operation.row_version, intent,
-                {**safe, "executor_exclusion_evidence_ref": fence.evidence_ref, "recovery_operator": actor},
+                {**safe, "executor_exclusion_evidence_ref": fence.evidence_ref, "recovery_operator": actor, **evidence},
                 {"stage": "target_prepared"},
                 resolver=resolver, outcome="resume",
             )
