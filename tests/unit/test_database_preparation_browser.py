@@ -6,6 +6,7 @@ This tests DOM/network/storage and HTTP composition, not ALB, SQL durability or 
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -72,7 +73,7 @@ def test_real_browser_approval_ambiguous_admission_and_reload(web):
             if sys.platform.startswith("linux"):
                 # Disposable CI renderer only: trusted fixture, no user code or credentials.
                 flags.insert(1, "--no-sandbox")
-            chrome = subprocess.Popen(flags, stdout=log, stderr=subprocess.STDOUT)
+            chrome = subprocess.Popen(flags, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             try:
                 deadline = time.monotonic() + 30
                 port_file = profile / "DevToolsActivePort"
@@ -99,10 +100,33 @@ def test_real_browser_approval_ambiguous_admission_and_reload(web):
                 report = json.loads(result.stdout.strip())
                 assert report["status"] == "passed" and report["same_request_key"] is True
             finally:
-                chrome.terminate()
+                # Chrome can leave profile-writing children after its parent exits.
+                # This group belongs only to our start_new_session test process.
+                try:
+                    os.killpg(chrome.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
                 try:
                     chrome.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    chrome.kill()
+                    os.killpg(chrome.pid, signal.SIGKILL)
                     chrome.wait(timeout=10)
+                finally:
+                    try:
+                        os.killpg(chrome.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                # Wait for killed writers to stop before TemporaryDirectory runs
+                # its strict cleanup; never suppress a final cleanup failure.
+                deadline = time.monotonic() + 3
+                while True:
+                    try:
+                        shutil.rmtree(profile)
+                        break
+                    except FileNotFoundError:
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise
+                        time.sleep(0.1)
     assert len(saved) == 1 and operations.admit.call_count == 2 and len(polls) >= 4
