@@ -14,6 +14,7 @@ button:disabled{background:#aab5c5;cursor:default}#summary,#status{white-space:p
 </style>
 <main>
 <h1>공유 DB 준비</h1>
+<p><a id="dedicatedPage" href="/database-preparation" hidden>전용 DB 준비 요청과 상태 확인</a></p>
 <p>분석이 끝난 PostgreSQL 앱을 기존 공유 DB 풀에 연결할 준비를 합니다. 앱마다 별도 데이터베이스와 접속 계정을 할당합니다.</p>
 <p>여기서 완료되는 단계는 DB 할당입니다. 스키마 이전, 앱의 비밀값 접근 권한, 실행과 HTTP 확인은 이후 배포 단계에서 검증해야 합니다.</p>
 <form id="form">
@@ -64,6 +65,9 @@ el('revoke').addEventListener('click',async()=>{
   try{await api('/api/shared-database-reviews/'+review.id+'/revoke',{});reset();el('status').textContent='선택을 취소했습니다.'}
   catch(error){el('status').textContent=error.message;el('revoke').disabled=false}
 });
+api('/api/config').then(config=>{
+  if(config.database_preparation_page==='/database-preparation')el('dedicatedPage').hidden=false;
+}).catch(()=>{});
 window.addEventListener('pagehide',stop);
 </script>
 </html>

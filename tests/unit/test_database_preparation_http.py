@@ -39,6 +39,7 @@ def serve_preparation(records, operations, policies, pool):
         authenticator=Mock(authenticate_request=lambda h: identities.get(h.get("Authorization"))),
         origin="http://127.0.0.1",
     )
+    app.database_preparation_page = "/database-preparation"
     reviews = OperatingReviewController(records, policies, clock=lambda: NOW)
     admission = PromotionPreparationAdmission(records, operations, policies, enabled=True, clock=lambda: NOW)
     controller = DatabasePreparationController(reviews, admission, pool)
@@ -61,7 +62,14 @@ def serve_preparation(records, operations, policies, pool):
                 method, path or f"/api/jobs/{ID}/database-preparation{suffix}", json.dumps(body or {}), values
             )
             response = connection.getresponse()
-            return response.status, json.loads(response.read())
+            request.response_headers = dict(response.getheaders())
+            payload = response.read()
+            value = (
+                payload.decode()
+                if response.getheader("Content-Type", "").startswith("text/html")
+                else json.loads(payload)
+            )
+            return response.status, value
         finally:
             connection.close()
 
@@ -272,3 +280,27 @@ def test_hosted_api_opt_in_configuration_check_is_offline(admission_setup, monke
     ):
         run_shared_database_api(args, parser)
     assert "no AWS/DB calls" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("suffix", ["", "?job=" + ID])
+def test_preparation_page_is_authenticated_and_never_cached(web, suffix):
+    request, _, _, operations, _, _ = web
+    status, page = request(method="GET", path="/database-preparation" + suffix)
+    assert status == 200 and "전용 DB 준비" in page
+    assert "confirm_preparation:true" in page and "데이터 이전·트래픽 전환 요청은 포함하지 않습니다" in page
+    assert request.response_headers["Cache-Control"] == "no-store"
+    operations.admit.assert_not_called()
+
+
+def test_preparation_page_requires_authentication(web):
+    request, _, _, operations, _, _ = web
+    status, body = request(method="GET", path="/database-preparation", headers={"Authorization": "invalid"})
+    assert status == 403 and "error" in body
+    operations.admit.assert_not_called()
+
+
+def test_enabled_page_is_discoverable_through_authenticated_config(web):
+    request, _, _, operations, _, _ = web
+    status, config = request(method="GET", path="/api/config")
+    assert status == 200 and config["database_preparation_page"] == "/database-preparation"
+    operations.admit.assert_not_called()

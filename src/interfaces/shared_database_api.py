@@ -75,6 +75,7 @@ def run_shared_database_api(args, parser):
             controller = OperatingReviewController(records, policies)
             handler = handler_for_operating_review(app, controller)
             if preparation is not None:
+                app.database_preparation_page = "/database-preparation"
                 from application.database_promotion_workflow import PromotionPreparationAdmission
                 from interfaces.http.database_preparation import handler_for_database_preparation
 

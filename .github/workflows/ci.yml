@@ -88,6 +88,7 @@ jobs:
               'ports/shared_database_reviews.py', 'adapters/state/shared_database_reviews.py',
               'interfaces/shared_database_api.py', 'interfaces/http/shared_database.py',
               'interfaces/http/mutation_requests.py', 'assets/static/shared-database.html',
+              'assets/static/database-preparation.html',
           }
           assert required <= files, sorted(required - files)
           PY
@@ -110,6 +111,7 @@ jobs:
           node tests/regression/test_postgres_ui.mjs
           node tests/regression/test_aws_backend_ui.mjs
           node tests/regression/test_deployment_read_ui.mjs
+          node tests/regression/test_database_preparation_ui.mjs
           node tests/regression/test_postgres_migrator.js
           node tests/regression/test_postgres_restore_verifier.mjs
 

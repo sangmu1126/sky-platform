@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sky · 전용 DB 준비</title>
+<style>
+body{margin:0;background:#f5f6f8;color:#202733;font:16px system-ui,sans-serif}main{max-width:720px;margin:48px auto;padding:32px;background:#fff;border-radius:24px}h1{font-size:28px}p{line-height:1.65;color:#536071}label{display:block;margin-top:20px}input[type=text]{box-sizing:border-box;width:100%;padding:12px;margin-top:8px;border:1px solid #d9dfe7;border-radius:10px;font:inherit}button{margin:16px 8px 0 0;padding:12px 18px;background:#3182f6;border:0;border-radius:10px;color:#fff;font:inherit;cursor:pointer}button:disabled{background:#aab5c5;cursor:default}.panel{background:#f5f6f8;border-radius:16px;padding:20px;margin-top:24px}#summary,#status{white-space:pre-wrap;line-height:1.65}a{color:#2469c8}input[type=checkbox]{margin-right:8px}@media(max-width:760px){main{margin:16px;padding:24px}}
+</style>
+</head>
+<body><main>
+<a href="/shared-database">공유 DB 준비</a>
+<h1>전용 DB 준비</h1>
+<p>공유 DB를 사용하는 앱의 운영 제안과 추가 비용을 확인하고, 전용 RDS 준비를 요청합니다.</p>
+<p><strong>이 단계는 전용 DB 준비까지입니다.</strong> 데이터 복사와 Blue → Green 트래픽 전환은 별도 승인·검증이 필요합니다. 기존 앱의 연결과 트래픽은 바꾸지 않습니다.</p>
+<form id="form">
+<label for="job">배포 작업 ID</label><input id="job" type="text" pattern="[0-9a-f]{16}" minlength="16" maxlength="16" required autocomplete="off">
+<button id="load" type="submit">운영 제안 확인</button>
+<button id="review" type="button" disabled>검토 갱신</button>
+</form>
+<section class="panel" aria-label="운영 제안">
+<div id="summary" aria-live="polite">배포 작업을 선택해 주세요.</div>
+<button id="approve" type="button" disabled>운영 제안 승인</button>
+<label><input id="consent" type="checkbox" disabled>표시된 추가 비용으로 전용 DB 준비를 요청합니다. 데이터 이전·트래픽 전환 요청은 포함하지 않습니다.</label>
+<button id="prepare" type="button" disabled>전용 DB 준비 요청</button>
+</section>
+<p id="status" role="status" aria-live="polite"></p>
+</main>
+<script>
+const el=id=>document.getElementById(id);
+const state={epoch:0,job:null,proposal:null,enabled:false,busy:false,request:null,timer:null,storageError:false};
+const jobPattern=/^[a-f0-9]{16}$/,proposalPattern=/^OPR-[a-f0-9]{24}$/;
+const uuidPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const labels={queued:'준비 요청 접수 · 실행 대기 중',running:'전용 DB 준비 중',succeeded:'전용 DB 준비 작업 완료 · 데이터 이전과 트래픽 전환은 진행하지 않았습니다.',failed:'준비 작업 실패 · 운영자가 기록을 확인한 뒤 다시 검토해야 합니다.',needs_attention:'결과 확인 필요 · 자동 재실행이 중단됐습니다.'};
+function base(job=state.job){return '/api/jobs/'+job+'/database-preparation'}
+function storageKey(job){return 'sky.databasePreparation.v1.'+job}
+function stop(){clearTimeout(state.timer);state.timer=null}
+function current(epoch){return epoch===state.epoch}
+async function api(path,body){
+ const options={credentials:'same-origin',cache:'no-store'};
+ if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json'};options.body=JSON.stringify(body)}
+ const response=await fetch(path,options),value=await response.json();
+ if(!response.ok)throw Error(value.error||'요청을 처리할 수 없습니다.');
+ return value;
+}
+function readRequest(job){
+ const raw=sessionStorage.getItem(storageKey(job));if(raw===null)return null;
+ const value=JSON.parse(raw);
+ if(!value||value.job_id!==job||typeof value.proposal_id!=='string'||!proposalPattern.test(value.proposal_id)||typeof value.request_key!=='string'||!uuidPattern.test(value.request_key)||
+   Object.keys(value).some(key=>!['job_id','proposal_id','request_key','operation_id'].includes(key))||
+   (value.operation_id!==undefined&&(typeof value.operation_id!=='string'||!uuidPattern.test(value.operation_id))))throw Error('저장된 준비 요청을 확인할 수 없습니다. 운영자가 작업 기록을 확인해 주세요.');
+ return value;
+}
+function saveRequest(value){sessionStorage.setItem(storageKey(value.job_id),JSON.stringify(value));state.request=value}
+function quoteReady(){const q=state.proposal?.plan?.cost_estimate;return q&&q.currency==='USD'&&Number.isSafeInteger(q.incremental_monthly_cents)&&q.incremental_monthly_cents>=0&&typeof q.evidence_ref==='string'&&q.evidence_ref.length>0&&Date.parse(q.valid_until)>Date.now()}
+function render(){
+ const p=state.proposal,operation=state.request?.operation_id;
+ el('load').disabled=state.busy;el('job').disabled=state.busy;
+ el('review').disabled=!state.job||state.busy||!!state.request||state.storageError;
+ el('approve').disabled=state.busy||!p||p.status!=='pending_approval'||!!state.request||!quoteReady();
+ const allowed=state.enabled&&p?.status==='approved'&&quoteReady()&&!operation&&!state.storageError&&(!state.request||state.request.proposal_id===p.proposal_id);
+ el('consent').disabled=state.busy||!allowed;
+ el('prepare').disabled=state.busy||!allowed||!el('consent').checked;
+ el('prepare').textContent=state.request&&!operation?'동일 준비 요청 확인':'전용 DB 준비 요청';
+ if(!p){el('summary').textContent=state.job?'현재 저장된 운영 제안이 없습니다. 검토를 갱신해 주세요.':'배포 작업을 선택해 주세요.';return}
+ const target=p.plan?.target||{},quote=p.plan?.cost_estimate;
+ const cost=quote&&Number.isSafeInteger(quote.incremental_monthly_cents)&&quote.currency==='USD'?
+   '추가 월 비용 견적: USD '+(quote.incremental_monthly_cents/100).toFixed(2)+'\n견적 근거: '+String(quote.evidence_ref||'없음')+'\n견적 유효 시간: '+String(quote.valid_until||'없음'):'유효한 비용 견적이 없습니다.';
+ el('summary').textContent='앱: '+String(p.binding?.application_id||'확인 필요')+'\n제안: '+p.proposal_id+'\n승인 상태: '+(p.status==='approved'?'승인됨':'승인 필요')+'\n대상 리전: '+String(target.region||'확인 필요')+'\n전용 DB: '+String(target.instance_id||'확인 필요')+'\n'+cost+'\n'+(quoteReady()?'':'견적이 만료되었거나 검증되지 않아 새 요청을 보낼 수 없습니다.\n')+(state.enabled?'':'현재 서버에서 전용 DB 준비 접수가 비활성입니다.');
+}
+function acceptProposal(value){
+ if(value!==null&&(!value||!proposalPattern.test(value.proposal_id)||!['approved','pending_approval'].includes(value.status)))throw Error('운영 제안 응답을 확인할 수 없습니다.');
+ state.proposal=value;
+}
+async function loadReview(){
+ if(state.busy)return;const job=el('job').value.trim();if(!jobPattern.test(job)){el('status').textContent='16자리 배포 작업 ID를 확인해 주세요.';return}
+ stop();const epoch=++state.epoch;state.job=job;state.proposal=null;state.request=null;state.enabled=false;state.storageError=false;state.busy=true;el('consent').checked=false;render();el('status').textContent='운영 제안과 접수 설정을 확인하고 있습니다.';
+ try{
+  try{state.request=readRequest(job)}catch(error){state.storageError=true;throw error}
+  const [review,settings]=await Promise.all([api('/api/jobs/'+job+'/operating-review'),api(base(job))]);
+  if(!current(epoch))return;
+  if(review.job_id!==job||settings.job_id!==job||settings.scope!=='dedicated_target_preparation_only')throw Error('작업 응답 범위가 다릅니다.');
+  acceptProposal(review.proposal);state.enabled=settings.admission_enabled===true;
+  el('status').textContent=state.request?'저장된 요청을 확인합니다. 새 요청 키를 만들지 않습니다.':'제안과 비용을 확인한 뒤 승인·준비 요청을 진행해 주세요.';
+  if(state.request&&state.request.proposal_id!==state.proposal?.proposal_id&&!state.request.operation_id)el('status').textContent='이전 제안의 접수 결과를 운영자가 확인해야 합니다. 새 요청을 보내지 않습니다.';
+  if(state.request?.operation_id)await pollOperation(epoch);
+ }catch(error){if(current(epoch))el('status').textContent=error.message}
+ finally{if(current(epoch)){state.busy=false;render()}}
+}
+async function updateReview(approve=false){
+ if(state.busy||!state.job||state.request)return;const epoch=state.epoch,job=state.job;state.busy=true;el('consent').checked=false;render();
+ try{
+  const action=approve?'approve':'review',body=approve?{proposal_id:state.proposal.proposal_id,confirm_review:true}:{};
+  const value=await api('/api/jobs/'+job+'/operating-review/'+action,body);if(!current(epoch))return;
+  acceptProposal(value.proposal);el('status').textContent=approve?'운영 제안을 승인했습니다. 전용 DB 준비는 아래에서 별도로 요청해 주세요.':'운영 제안을 갱신했습니다.';
+ }catch(error){if(current(epoch))el('status').textContent=error.message}
+ finally{if(current(epoch)){state.busy=false;render()}}
+}
+function validReceipt(value,job,operation){return value&&value.job_id===job&&typeof value.operation_id==='string'&&uuidPattern.test(value.operation_id)&&(!operation||value.operation_id===operation)&&value.scope==='dedicated_target_preparation_only'&&value.data_routing_changed===false&&typeof value.status==='string'&&Object.hasOwn(labels,value.status)}
+async function pollOperation(epoch=state.epoch){
+ const request=state.request;if(!request?.operation_id||!current(epoch))return;
+ try{
+  const value=await api(base(request.job_id)+'/'+request.operation_id);if(!current(epoch))return;
+  if(!validReceipt(value,request.job_id,request.operation_id))throw Error('준비 작업의 상태 범위를 확인할 수 없습니다.');
+  el('status').textContent=labels[value.status]+'\n작업 ID: '+request.operation_id;
+  if(['queued','running'].includes(value.status))state.timer=setTimeout(()=>pollOperation(epoch),2000);
+ }catch(error){if(current(epoch))el('status').textContent=error.message+' 작업 기록을 확인하거나 같은 작업을 다시 조회해 주세요.'}
+}
+async function submitPreparation(){
+ render();if(el('prepare').disabled)return;
+ const epoch=state.epoch,job=state.job,proposal=state.proposal;state.busy=true;render();
+ try{
+  if(!state.request)saveRequest({job_id:job,proposal_id:proposal.proposal_id,request_key:crypto.randomUUID()});
+  const value=await api(base(job),{proposal_id:proposal.proposal_id,request_key:state.request.request_key,confirm_preparation:true});if(!current(epoch))return;
+  if(!validReceipt(value,job))throw Error('준비 요청의 결과를 확인할 수 없습니다.');
+  saveRequest({...state.request,operation_id:value.operation_id});el('consent').checked=false;await pollOperation(epoch);
+ }catch(error){if(current(epoch))el('status').textContent=error.message+' 같은 요청 키로 결과를 다시 확인해 주세요.'}
+ finally{if(current(epoch)){state.busy=false;render()}}
+}
+el('form').addEventListener('submit',event=>{event.preventDefault();loadReview()});
+el('review').addEventListener('click',()=>updateReview(false));el('approve').addEventListener('click',()=>updateReview(true));
+el('consent').addEventListener('change',render);el('prepare').addEventListener('click',submitPreparation);
+window.addEventListener('pagehide',()=>{stop();state.epoch++});
+window.addEventListener('pageshow',async event=>{if(event.persisted){state.busy=false;await loadReview()}});
+const initial=new URLSearchParams(window.location.search).get('job');if(initial&&jobPattern.test(initial)){el('job').value=initial;loadReview()}
+</script>
+</body></html>

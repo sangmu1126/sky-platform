@@ -45,6 +45,11 @@ def handler_for_shared_database(app: SharedDatabaseApp):
                             "read_only": True,
                             "shared_database_review": True,
                             "shared_database_page": "/shared-database",
+                            **(
+                                {"database_preparation_page": app.database_preparation_page}
+                                if getattr(app, "database_preparation_page", None)
+                                else {}
+                            ),
                             "upload_enabled": False,
                             "targets": [],
                         },

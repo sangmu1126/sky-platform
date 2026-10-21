@@ -2,6 +2,8 @@
 
 import re
 
+from assets import ASSET_ROOT
+
 from interfaces.http.mutation_requests import read_json_object
 from interfaces.http.operating_review import handler_for_operating_review
 from interfaces.http.shared_database import _UUID
@@ -10,6 +12,16 @@ from interfaces.http.shared_database import _UUID
 def handler_for_database_preparation(app, reviews, controller, *, base_handler=None):
     class Handler(base_handler or handler_for_operating_review(app, reviews)):
         def do_GET(self):
+            if self.path.split("?", 1)[0] == "/database-preparation":
+                if self.authenticate_api():
+                    payload = (ASSET_ROOT / "static/database-preparation.html").read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(payload)
+                return
             route = re.fullmatch(
                 r"/api/jobs/([a-f0-9]{16})/database-preparation(?:/(" + _UUID + r"))?", self.path
             )
