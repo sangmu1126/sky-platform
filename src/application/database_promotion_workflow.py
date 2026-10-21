@@ -8,7 +8,7 @@ IDs; only the persisted, approved and revalidated plan may reach the preparer.
 import re
 from contextlib import nullcontext
 
-from application.operating_review import OperatingReview
+from application.operating_review import OperatingReview, require_current_cost_estimate
 from domain.access import Principal
 from ports.state import RecordConflict
 
@@ -29,6 +29,7 @@ def approved_snapshot(records, principal, job_id, proposal_id, policy, now):
             or approval["organization_id"] != principal.organization_id
             or approval["proposal_id"] != proposal_id):
         raise ValueError("Promotion approval changed; review again")
+    require_current_cost_estimate(expected, policy, now)
     return snapshot, stored
 
 
@@ -100,6 +101,8 @@ class PromotionPreparationWorker:
                 or approver.organization_id != approval["organization_id"]):
             raise PermissionError("Approver membership changed")
         OperatingReview(self.records).writer.snapshot(approver, command["job_id"])
+        # Membership/state reads may have taken the quote past its deadline.
+        require_current_cost_estimate(proposal, self.policies[command["job_id"]], self.clock())
         return proposal["plan"]
 
     def execute(self, operation_id, attempt_id):

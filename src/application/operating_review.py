@@ -36,6 +36,18 @@ def _digest(value):
     ).hexdigest()
 
 
+def require_current_cost_estimate(proposal, policy, now):
+    """Recheck quote lifetime at approval and every preparation boundary.
+
+    Capacity/isolation decisions require cost evidence. Legacy time-only reviews
+    retain their existing contract; this does not authorize their execution.
+    """
+    if proposal.get("decision") and (
+        policy.cost_quote is None or _time(policy.cost_quote.valid_until) <= _time(now)
+    ):
+        raise ValueError("A current referenced cost estimate is required before preparation or approval")
+
+
 def deployment_observation_binding(job):
     """Bind a probe to its snapshot, including prepared plan and runtime identity."""
     return {
@@ -265,10 +277,7 @@ class OperatingReview:
             or previous != candidate
         ):
             raise ValueError("Proposal changed, expired, or was already approved; review again")
-        if candidate.get("decision") and (
-            policy.cost_quote is None or _time(policy.cost_quote.valid_until) <= _time(now)
-        ):
-            raise ValueError("A current referenced cost estimate is required before approval")
+        require_current_cost_estimate(candidate, policy, now)
         approved = {
             **candidate,
             "status": "approved",
