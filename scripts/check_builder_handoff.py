@@ -1,6 +1,7 @@
 """CI-only check of a trusted synthetic fixture transferred between fresh jobs.
 
-No AWS clients or registry login. This is not a general user-image runner.
+No AWS clients or real registry credentials: login uses synthetic fixture values
+against a loopback registry. This is not a general user-image runner.
 """
 
 import json
@@ -14,7 +15,7 @@ from uuid import uuid4
 
 from ports.image_manifests import MANIFEST_TYPES, verify_image_manifest
 from ports.remote_builds import validate_request
-from scripts.remote_builder import command, verified_build
+from scripts.remote_builder import command, isolated_docker_config, verified_build
 
 
 def registry_roundtrip(image_id):
@@ -40,18 +41,38 @@ def registry_roundtrip(image_id):
             time.sleep(0.2)
         else:
             raise OSError("Fixture registry unavailable")
-        destination = address + "/fixture:verified"
-        command(["docker", "tag", image_id, destination])
-        command(["docker", "push", destination], timeout=120)
-        request = urllib.request.Request(
-            "http://" + address + "/v2/fixture/manifests/verified",
-            headers={"Accept": ", ".join(MANIFEST_TYPES)},
-        )
-        with opener.open(request, timeout=10) as response:
-            manifest = response.read(4 * 1024 * 1024 + 1)
-            image_digest = response.headers["Docker-Content-Digest"]
-        verify_image_manifest(manifest, image_digest, image_id)
-        print("PASS: actual registry push manifest digest and built image config ID agree")
+        with isolated_docker_config() as docker_environment:
+            login = subprocess.run(
+                ["docker", "login", "--username", "fixture", "--password-stdin", address],
+                input="synthetic-fixture-only",
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                env=docker_environment,
+            )
+            if login.returncode:
+                raise OSError("Fixture registry login failed")
+            auth_directory = Path(docker_environment["DOCKER_CONFIG"])
+            config = json.loads((auth_directory / "config.json").read_bytes())
+            if not config.get("auths", {}).get(address, {}).get("auth"):
+                raise ValueError("Fixture registry auth was not written to the isolated config")
+            destination = address + "/fixture:verified"
+            command(["docker", "tag", image_id, destination], env=docker_environment)
+            command(["docker", "push", destination], timeout=120, env=docker_environment)
+            request = urllib.request.Request(
+                "http://" + address + "/v2/fixture/manifests/verified",
+                headers={"Accept": ", ".join(MANIFEST_TYPES)},
+            )
+            with opener.open(request, timeout=10) as response:
+                manifest = response.read(4 * 1024 * 1024 + 1)
+                image_digest = response.headers["Docker-Content-Digest"]
+            verify_image_manifest(manifest, image_digest, image_id)
+            print("PASS: actual registry push manifest digest and built image config ID agree")
+        # Do not logout: verify context cleanup removes the real CLI auth file anyway.
+        if auth_directory.exists():
+            raise ValueError("Fixture registry auth directory was not removed")
+        print("PASS: actual Docker login auth file removed without relying on logout")
     finally:
         if destination:
             subprocess.run(

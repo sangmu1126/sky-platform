@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import subprocess
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
@@ -231,3 +232,66 @@ def test_unverified_registry_manifest_never_publishes_success(publisher, tmp_pat
         builder.publish(tmp_path, tmp_path)
     objects.put.assert_not_called()
     assert command.call_args.args[0][1] == "logout"
+
+
+@pytest.mark.parametrize("failure", [None, "login", "login_timeout", "push", "result", "logout"])
+def test_publish_auth_is_private_and_removed_on_every_exit(publisher, tmp_path, monkeypatch, failure):
+    builder, _, objects, command = publisher
+    caller = tmp_path / "caller-config"
+    caller.mkdir()
+    sentinel = b'{"credsStore":"caller-helper"}'
+    (caller / "config.json").write_bytes(sentinel)
+    monkeypatch.setenv("DOCKER_CONFIG", str(caller))
+    captured = []
+
+    def login(args, **kwargs):
+        environment = kwargs["env"]
+        directory = Path(environment["DOCKER_CONFIG"])
+        captured.append(directory)
+        assert directory != caller and directory.is_dir()
+        assert directory.stat().st_mode & 0o077 == 0
+        (directory / "config.json").write_text('{"auths":{"registry":{"auth":"dummy"}}}')
+        if failure == "login_timeout":
+            raise subprocess.TimeoutExpired("docker", 30)
+        return Mock(returncode=1 if failure == "login" else 0)
+
+    def execute(args, **kwargs):
+        assert kwargs["env"]["DOCKER_CONFIG"] == str(captured[0])
+        if args[1] == failure:
+            raise OSError("injected failure")
+        return "sha256:" + "f" * 64 if "{{.Id}}" in args else "linux/amd64"
+
+    builder.subprocess.run.side_effect = login
+    command.side_effect = execute
+    if failure == "result":
+        objects.put.side_effect = OSError("result write failure")
+    if failure:
+        with pytest.raises((OSError, subprocess.TimeoutExpired)):
+            builder.publish(tmp_path, tmp_path)
+    else:
+        builder.publish(tmp_path, tmp_path)
+    assert len(captured) == 1 and not captured[0].exists()
+    assert (caller / "config.json").read_bytes() == sentinel
+    assert builder.os.environ["DOCKER_CONFIG"] == str(caller)
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_command_preserves_scoped_environment_on_inspect_fallback(tmp_path, fallback):
+    from scripts import remote_builder as builder
+
+    environment = {"DOCKER_CONFIG": str(tmp_path)}
+    calls = []
+
+    def execute(args, **kwargs):
+        calls.append((args, kwargs["env"]))
+        fail = fallback and len(calls) == 1
+        kwargs["stdout"].write("unknown flag: --platform" if fail else "linux/amd64")
+        return Mock(returncode=1 if fail else 0)
+
+    with patch.object(builder.subprocess, "run", side_effect=execute):
+        value = builder.command(
+            ["docker", "image", "inspect", "--platform", "linux/amd64", "fixture"], env=environment
+        )
+    assert value == "linux/amd64"
+    assert len(calls) == (2 if fallback else 1)
+    assert all(selected is environment for _, selected in calls)
