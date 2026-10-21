@@ -14,6 +14,7 @@ from adapters.state.postgres import (
 from adapters.state.shared_database_reviews import PostgresSharedDatabaseReviews
 from application.deployment_reads import DeploymentReadService
 from interfaces.database_cutover import DatabaseCutoverController, load_cutover_api_configuration
+from interfaces.database_preparation import DatabasePreparationController, load_preparation_api_configuration
 from interfaces.http.mutation_requests import validate_origin
 from interfaces.http.shared_database import SharedDatabaseApp, handler_for_shared_database
 from interfaces.operating_review import OperatingReviewController, load_operating_policies
@@ -42,6 +43,7 @@ def run_shared_database_api(args, parser):
             if policy_path or "SKY_OPERATING_REVIEW_POLICIES_JSON" in os.environ
             else None
         )
+        preparation = load_preparation_api_configuration(policies=policies, source=settings)
         registrations = load_cutover_api_configuration(
             policies=policies,
             account_id=settings.pool.account_id,
@@ -72,6 +74,19 @@ def run_shared_database_api(args, parser):
             records = PostgresDeploymentRecordStore(connection, workspace=workspace)
             controller = OperatingReviewController(records, policies)
             handler = handler_for_operating_review(app, controller)
+            if preparation is not None:
+                from application.database_promotion_workflow import PromotionPreparationAdmission
+                from interfaces.http.database_preparation import handler_for_database_preparation
+
+                admission = PromotionPreparationAdmission(
+                    records, operations, policies, enabled=True, clock=lambda: datetime.now(UTC).isoformat()
+                )
+                handler = handler_for_database_preparation(
+                    app,
+                    controller,
+                    DatabasePreparationController(controller, admission, settings.pool),
+                    base_handler=handler,
+                )
             if registrations is not None:
                 from application.database_cutover_workflow import PromotionCutoverAdmission
                 from interfaces.http.database_cutover import handler_for_database_cutover
@@ -85,7 +100,7 @@ def run_shared_database_api(args, parser):
                     enabled=True,
                 )
                 handler = handler_for_database_cutover(
-                    app, controller, DatabaseCutoverController(controller, admission)
+                    app, controller, DatabaseCutoverController(controller, admission), base_handler=handler
                 )
         server = ThreadingHTTPServer((args.host, args.port), handler)
         print(f"Sky shared database review: {origin}/shared-database", flush=True)

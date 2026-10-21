@@ -210,6 +210,11 @@ def main(argv):
             )
         return
     if args.mode == "api":
+        if (
+            os.environ.get("SKY_DEDICATED_PREPARATION_ENABLED", "false") != "false"
+            and not args.shared_database_pool_config
+        ):
+            parser.error("Dedicated preparation intake requires hosted shared database API")
         if args.enable_sqlite_preparation and not args.enable_preparation:
             parser.error("--enable-sqlite-preparation requires --enable-preparation")
         if (

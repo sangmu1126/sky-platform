@@ -7,8 +7,8 @@ from interfaces.http.operating_review import handler_for_operating_review
 from interfaces.http.shared_database import _UUID
 
 
-def handler_for_database_cutover(app, reviews, controller):
-    class Handler(handler_for_operating_review(app, reviews)):
+def handler_for_database_cutover(app, reviews, controller, *, base_handler=None):
+    class Handler(base_handler or handler_for_operating_review(app, reviews)):
         def do_GET(self):
             route = re.fullmatch(r'/api/jobs/([a-f0-9]{16})/database-cutover(?:/(' + _UUID + r'))?', self.path)
             if route:
