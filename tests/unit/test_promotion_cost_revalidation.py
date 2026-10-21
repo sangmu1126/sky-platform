@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import datetime, timedelta
+from unittest.mock import Mock
 
 import pytest
 
@@ -126,3 +127,39 @@ def test_quote_expiring_during_membership_checks_blocks_preparation(costed_flow)
     assert worker.execute(operation.id, operation.attempt_id)["status"] == "failed"
     operations.begin_external.assert_not_called()
     preparer.prepare.assert_not_called()
+
+
+@pytest.mark.parametrize("boundary", ["adapter_guard", "adapter_return"])
+@pytest.mark.parametrize("change", ["cost", "requester", "approval", "source", "health", "unavailable"])
+def test_preparation_rechecks_authorization_during_and_after_adapter(costed_flow, boundary, change):
+    from domain.access import Role
+
+    worker, records, _, operations, preparer, operation, receipt = costed_flow
+    later_effects = []
+
+    def prepare(_plan, *, operation_id, guard):
+        guard()
+        if change == "cost":
+            worker.clock = lambda: later(10)
+        elif change == "requester":
+            worker.resolve_principal = lambda *_args: principal(role=Role.VIEWER)
+        elif change == "approval":
+            records.job["operating_proposal"]["approval"]["proposal_id"] = "revoked"
+        elif change == "source":
+            records.revision += 1
+        elif change == "health":
+            records.health[-1]["healthy"] = False
+        else:
+            worker.resolve_principal = Mock(side_effect=OSError("membership unavailable"))
+        if boundary == "adapter_guard":
+            guard()
+            later_effects.append("must not run")
+        return receipt
+
+    preparer.prepare.side_effect = prepare
+    assert worker.execute(operation.id, operation.attempt_id)["status"] == "needs_attention"
+    assert later_effects == []
+    operations.begin_external.assert_called_once()
+    operations.interrupt.assert_called_once()
+    operations.observe_external.assert_not_called()
+    operations.complete.assert_not_called()

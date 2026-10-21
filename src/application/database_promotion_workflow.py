@@ -152,9 +152,18 @@ class PromotionPreparationWorker:
                 guard()
                 if not self.operations.begin_external(lease, intent):
                     return {"status": "lease_lost"}
-                try:
-                    receipt = self.preparer.prepare(plan, operation_id=operation_id, guard=guard)
+
+                def preparation_guard():
+                    # A long RDS wait must not retain an expired approval or
+                    # stale membership. Never silently replace the pinned plan.
                     guard()
+                    if self._validate(operation) != plan:
+                        raise RecordConflict("Approved preparation plan changed")
+                    guard()
+
+                try:
+                    receipt = self.preparer.prepare(plan, operation_id=operation_id, guard=preparation_guard)
+                    preparation_guard()
                     safe = safe_target_receipt(receipt, plan, operation_id)
                 except Exception:  # noqa: BLE001 -- uncertain external effects require reconciliation
                     self.operations.interrupt(lease, {"stage": "target_outcome_uncertain"})
