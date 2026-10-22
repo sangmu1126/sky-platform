@@ -1,7 +1,8 @@
-"""Smoke the A-phase service image without AWS credentials or OpenAI calls.
+"""Smoke local and hosted service images without AWS credentials or OpenAI calls.
 
 --full runs on Linux with host networking and a host Docker socket. The shared
 temporary path must have the same name inside Sky and on the Docker host.
+--hosted checks the minimal image with no network, credentials, state or socket.
 """
 
 import argparse
@@ -69,8 +70,70 @@ def expect_state_rejection(*args):
         raise AssertionError("Service started without initialized persistent state")
 
 
-def smoke_b_api(image):
+def smoke_b_api(image, *, hosted=False):
     """Run an isolated read-only API without state, credentials or external network."""
+    if hosted:
+        settings = json.loads(docker("image", "inspect", image))[0]["Config"]
+        assert settings["User"] == "65534:65534", "Hosted image must default to non-root"
+        assert settings["Entrypoint"] == ["sky-service"]
+        assert "--enable-preparation" in settings["Cmd"] and "alb" in settings["Cmd"]
+        assert not settings.get("Volumes"), "Hosted image must not require host state/socket volumes"
+        inspection = """
+import os,shutil
+from pathlib import Path
+assert os.getuid()==65534 and os.getgid()==65534
+assert all(shutil.which(tool) is None for tool in ('docker','aws','git'))
+assert not Path('/var/run/docker.sock').exists() and not Path('/.sky').exists()
+try:
+    Path('/app/write-probe').write_text('unexpected')
+except OSError:
+    pass
+else:
+    raise AssertionError('Hosted root filesystem is writable')
+import boto3,psycopg
+from interfaces.b_preparation_runtime import run_preparation_api
+print('PASS: hosted non-root image; no Docker/AWS/Git CLI, socket, state volume or writable root')
+"""
+        print(
+            docker(
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--entrypoint",
+                "python",
+                image,
+                "-c",
+                inspection,
+            )
+        )
+        rejection = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                image,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert rejection.returncode == 2 and "Preparation requires ALB authentication" in rejection.stderr, (
+            "Hosted API must reject missing identity configuration"
+        )
     name = "sky-b-api-smoke-" + uuid.uuid4().hex[:12]
     try:
         docker(
@@ -148,8 +211,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default="sky-platform:smoke")
     parser.add_argument("--full", action="store_true")
+    parser.add_argument("--hosted", action="store_true", help="Only verify the minimal hosted runtime")
     options = parser.parse_args()
-    smoke_b_api(options.image)
+    if options.hosted and options.full:
+        parser.error("--hosted and --full cannot be combined")
+    smoke_b_api(options.image, hosted=options.hosted)
+    if options.hosted:
+        return
     name = "sky-service-smoke-" + uuid.uuid4().hex[:12]
     job_id = None
     with tempfile.TemporaryDirectory(prefix=name + "-") as directory:

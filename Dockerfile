@@ -24,6 +24,22 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 ENTRYPOINT ["sky-service"]
 CMD ["--host", "0.0.0.0", "--port", "8080", "--state-dir", "/.sky"]
 
+# Hosted API/publisher runtime: remote builders own image builds; no Docker socket or CLI.
+FROM docker.io/library/python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS hosted
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 AWS_PAGER=""
+WORKDIR /app
+COPY pyproject.toml ./
+COPY src ./src
+RUN pip install --no-cache-dir '.[state-postgres]' \
+    && install -m 0644 /app/src/assets/infra/rds-global-bundle.pem /etc/ssl/certs/sky-rds-global-bundle.pem
+USER 65534:65534
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+ENTRYPOINT ["sky-service"]
+# Incomplete ALB identity/origin/DB settings fail closed. No legacy state initialization.
+CMD ["api", "--host", "0.0.0.0", "--port", "8080", "--auth-mode", "alb", "--enable-preparation"]
+
 # Linux regression checks; never runs the live AWS/OpenAI test suite.
 FROM runtime AS test
 COPY tests ./tests

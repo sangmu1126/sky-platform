@@ -150,6 +150,35 @@ jobs:
           path: sky-service-image.tar.gz
           retention-days: 1
 
+  hosted-image:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build minimal hosted runtime
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: hosted
+          platforms: linux/amd64
+          load: true
+          tags: sky-hosted:${{ github.sha }}
+          cache-from: type=gha,scope=sky-hosted
+          cache-to: type=gha,mode=max,scope=sky-hosted
+      - name: Verify non-root hosted runtime without credentials or Docker socket
+        run: python scripts/smoke_service_container.py --image sky-hosted:${{ github.sha }} --hosted
+      - name: Export verified hosted image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker save sky-hosted:${{ github.sha }} | gzip > sky-hosted-image.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: sky-hosted-image
+          path: sky-hosted-image.tar.gz
+          retention-days: 1
+
   publish-service:
     outputs:
       service_image: ${{ steps.image.outputs.image }}
