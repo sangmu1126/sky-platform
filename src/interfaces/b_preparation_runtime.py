@@ -21,6 +21,22 @@ from interfaces.http.deployment_preparation import DatabasePreparationApp, handl
 
 def preparation_identity(args):
     """Accept exactly one complete identity source, matching the read-only API."""
+    private = os.environ.get("SKY_PRIVATE_OPERATOR_JSON")
+    if getattr(args, "auth_mode", "alb") == "private-operator":
+        from interfaces.http.private_operator import PrivateOperatorAuthenticator
+
+        if (
+            args.alb_trusts_file
+            or args.memberships_file
+            or "SKY_ALB_TRUSTS_JSON" in os.environ
+            or "SKY_MEMBERSHIPS_JSON" in os.environ
+        ):
+            raise ValueError("Private operator and ALB identity configuration cannot be mixed")
+        return PrivateOperatorAuthenticator.from_json(
+            private, host=args.host, port=args.port, origin=args.origin
+        )
+    if private is not None:
+        raise ValueError("Private operator configuration requires explicit private-operator mode")
     trusts = os.environ.get("SKY_ALB_TRUSTS_JSON")
     members = os.environ.get("SKY_MEMBERSHIPS_JSON")
     has_environment = trusts is not None or members is not None

@@ -87,6 +87,14 @@ def handler_for_reads(app: DatabaseReadApp):
             if app.hosted and self.principal is not None and self.principal.login_source is LoginSource.LOCAL:
                 self.principal = None
             if self.principal is None:
+                challenge = getattr(app.authenticator, "challenge", None)
+                if isinstance(challenge, str):
+                    self.send_response(401)
+                    self.send_header("WWW-Authenticate", challenge)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return False
                 self.json_response(403, {"error": "Invalid session token"})
                 return False
             return True

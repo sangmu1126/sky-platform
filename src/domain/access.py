@@ -18,6 +18,7 @@ class LoginSource(StrEnum):
     CORPORATE_SSO = "corporate_sso"
     EXTERNAL_IDP = "external_idp"
     LOCAL = "local"
+    PRIVATE_OPERATOR = "private_operator"
 
 
 class Role(StrEnum):
