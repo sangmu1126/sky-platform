@@ -87,6 +87,7 @@ class EcsStoppedPreparationObserver:
                     or len(images) != len(containers) or images != dict(self.profile.images)
                     or not safe_overrides):
                 raise ValueError("Original executor code differs from the audited create-only profile")
+            self._verify_definition(guard=guard)
         now, stopped = self.clock(), task.get("stoppedAt")
         if (not isinstance(now, datetime) or now.tzinfo is None
                 or not isinstance(stopped, datetime) or stopped.tzinfo is None or stopped > now):
@@ -104,3 +105,30 @@ class EcsStoppedPreparationObserver:
         result["evidence_ref"] = "evidence:ecs-stopped/" + digest
         guard()
         return result
+
+    def _verify_definition(self, *, guard):
+        """Confirm the registered revision runs the audited preparation mode.
+
+        Image digests still require operator code review. A matching command is
+        not proof of code behavior, IAM isolation, or settled provider requests.
+        """
+        guard()
+        try:
+            response = self.ecs.describe_task_definition(taskDefinition=self.profile.task_definition_arn)
+        except Exception:
+            raise OSError("Registered executor definition unavailable") from None
+        guard()
+        definition = response.get("taskDefinition") if isinstance(response, dict) else None
+        containers = definition.get("containerDefinitions") if isinstance(definition, dict) else None
+        if (not isinstance(definition, dict)
+                or definition.get("taskDefinitionArn") != self.profile.task_definition_arn
+                or not isinstance(containers, list) or len(containers) != len(self.profile.images)
+                or any(not isinstance(item, dict) or not isinstance(item.get("name"), str)
+                    for item in containers)):
+            raise ValueError("Task definition differs from the audited create-only execution mode")
+        names = [item["name"] for item in containers]
+        if (len(set(names)) != len(names) or set(names) != set(dict(self.profile.images))
+                or any(item.get("command") != ["worker", "--mode", "dedicated-database-queue"]
+                    or ("entryPoint" in item and item["entryPoint"] != ["sky-service"])
+                    for item in containers)):
+            raise ValueError("Task definition differs from the audited create-only execution mode")

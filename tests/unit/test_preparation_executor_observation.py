@@ -148,6 +148,31 @@ def test_malformed_task_responses_are_not_evidence(observed, response):
         observer.observe(operation, guard=Mock())
 
 
+@pytest.fixture
+def profiled(observed):
+    observer, _operation, clients, task = observed
+    profile = CreateOnlyPreparationProfile(
+        "arn:aws:ecs:ap-northeast-2:111111111111:task-definition/sky-worker:7",
+        (("worker", "sha256:" + "c" * 64),),
+    )
+    observer.profile = profile
+    clients["ecs"].describe_task_definition.return_value = {
+        "taskDefinition": {
+            "taskDefinitionArn": profile.task_definition_arn,
+            "containerDefinitions": [
+                {
+                    "name": "worker",
+                    "command": ["worker", "--mode", "dedicated-database-queue"],
+                }
+            ],
+        },
+    }
+    task["overrides"] = {"containerOverrides": [{"name": "worker"}]}
+    task["taskDefinitionArn"] = profile.task_definition_arn
+    task["containers"][0].update(name="worker", imageDigest="sha256:" + "c" * 64)
+    return observed
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -161,16 +186,9 @@ def test_malformed_task_responses_are_not_evidence(observed, response):
         "role_override",
     ],
 )
-def test_audited_profile_requires_exact_task_revision_and_every_image_digest(observed, change):
-    observer, operation, _, task = observed
-    profile = CreateOnlyPreparationProfile(
-        "arn:aws:ecs:ap-northeast-2:111111111111:task-definition/sky-worker:7",
-        (("worker", "sha256:" + "c" * 64),),
-    )
-    observer.profile = profile
-    task["overrides"] = {"containerOverrides": [{"name": "worker"}]}
-    task["taskDefinitionArn"] = profile.task_definition_arn
-    task["containers"][0].update(name="worker", imageDigest="sha256:" + "c" * 64)
+def test_audited_profile_requires_exact_task_revision_and_every_image_digest(profiled, change):
+    observer, operation, _clients, task = profiled
+    profile = observer.profile
     if change == "definition":
         task["taskDefinitionArn"] = profile.task_definition_arn[:-1] + "8"
     elif change == "digest":
@@ -198,3 +216,79 @@ def test_profile_cannot_use_empty_mutable_or_duplicate_images(images):
         CreateOnlyPreparationProfile(
             "arn:aws:ecs:ap-northeast-2:111111111111:task-definition/worker:1", images
         )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing",
+        "malformed",
+        "revision",
+        "no_containers",
+        "extra_container",
+        "unknown_container",
+        "missing_command",
+        "api",
+        "other_worker",
+        "shell",
+        "empty_entrypoint",
+        "denied",
+    ],
+)
+def test_registered_definition_must_run_preparation_only(profiled, change):
+    observer, operation, clients, _ = profiled
+    definition = clients["ecs"].describe_task_definition.return_value["taskDefinition"]
+    container = definition["containerDefinitions"][0]
+    if change == "missing":
+        clients["ecs"].describe_task_definition.return_value = {}
+    elif change == "malformed":
+        clients["ecs"].describe_task_definition.return_value = None
+    elif change == "revision":
+        definition["taskDefinitionArn"] += "0"
+    elif change == "no_containers":
+        definition["containerDefinitions"] = []
+    elif change == "extra_container":
+        definition["containerDefinitions"].append(dict(container))
+    elif change == "unknown_container":
+        container["name"] = "unregistered"
+    elif change == "missing_command":
+        container.pop("command")
+    elif change in {"api", "other_worker"}:
+        container["command"] = ["api"] if change == "api" else ["worker", "--mode", "queue"]
+    elif change in {"shell", "empty_entrypoint"}:
+        container["entryPoint"] = ["sh", "-c", "private-provider-detail"] if change == "shell" else []
+    else:
+        clients["ecs"].describe_task_definition.side_effect = OSError("private-provider-detail")
+    with pytest.raises((ValueError, OSError)) as error:
+        observer.observe(operation, guard=Mock())
+    assert "private-provider-detail" not in str(error.value)
+    clients["ecs"].describe_task_definition.assert_called_once_with(
+        taskDefinition=observer.profile.task_definition_arn
+    )
+    assert {call[0] for call in clients["ecs"].method_calls} <= {"describe_tasks", "describe_task_definition"}
+
+
+@pytest.mark.parametrize("explicit_entrypoint", [False, True])
+def test_definition_check_pins_revision_without_exposing_definition_secrets(profiled, explicit_entrypoint):
+    observer, operation, clients, _ = profiled
+    container = clients["ecs"].describe_task_definition.return_value["taskDefinition"][
+        "containerDefinitions"
+    ][0]
+    container["environment"] = [{"name": "PRIVATE", "value": "private-provider-detail"}]
+    if explicit_entrypoint:
+        container["entryPoint"] = ["sky-service"]
+    result = observer.observe(operation, guard=Mock())
+    assert result["execution_profile"] == observer.profile.record()
+    assert "private-provider-detail" not in str(result)
+    clients["ecs"].describe_task_definition.assert_called_once_with(
+        taskDefinition=observer.profile.task_definition_arn
+    )
+
+
+@pytest.mark.parametrize("boundary", [4, 5])
+def test_guard_loss_around_definition_read_never_returns_evidence(profiled, boundary):
+    observer, operation, clients, _ = profiled
+    guard = Mock(side_effect=[None] * (boundary - 1) + [OSError("Authority lost")])
+    with pytest.raises(OSError, match="Authority lost"):
+        observer.observe(operation, guard=guard)
+    assert clients["ecs"].describe_task_definition.call_count == (boundary == 5)
