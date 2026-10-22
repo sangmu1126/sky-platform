@@ -123,6 +123,7 @@ def main(argv):
             "dedicated-database-queue",
             "dedicated-database-admit",
             "dedicated-database-recover",
+            "dedicated-database-recovery-status",
             "operating-review",
         ),
         required=True,
@@ -305,7 +306,7 @@ def main(argv):
         )
     ):
         parser.error("Promotion admission options require dedicated-database-admit mode")
-    if args.worker_mode != "dedicated-database-recover" and any(
+    if args.worker_mode not in {"dedicated-database-recover", "dedicated-database-recovery-status"} and any(
         getattr(args, name) is not None
         for name in (
             "recovery_config",
@@ -315,6 +316,8 @@ def main(argv):
         )
     ):
         parser.error("Recovery options require dedicated-database-recover mode")
+    if args.recovery_config is not None and args.worker_mode != "dedicated-database-recover":
+        parser.error("Recovery registration is used only for dedicated-database-recover")
     if args.worker_mode == "operating-review":
         from interfaces.operating_review_worker import run_operating_review
 
@@ -322,6 +325,11 @@ def main(argv):
         return
     if args.collect_capacity_metrics:
         parser.error("Capacity collection requires operating review mode")
+    if args.worker_mode == "dedicated-database-recovery-status":
+        from interfaces.preparation_recovery_status import run_preparation_recovery_status
+
+        run_preparation_recovery_status(args, parser)
+        return
     if args.worker_mode == "dedicated-database-recover":
         from interfaces.dedicated_database_recovery import run_preparation_recovery
 
