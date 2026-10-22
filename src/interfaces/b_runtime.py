@@ -122,6 +122,7 @@ def main(argv):
             "dedicated-database",
             "dedicated-database-queue",
             "dedicated-database-admit",
+            "dedicated-database-recover",
             "operating-review",
         ),
         required=True,
@@ -139,6 +140,12 @@ def main(argv):
     )
     worker.add_argument("--pool-config")
     worker.add_argument("--dedicated-config")
+    worker.add_argument("--recovery-config", help="Operator-audited immutable executor profile registration")
+    worker.add_argument("--recovery-user-id", help="Current administrator requesting preparation recovery")
+    worker.add_argument("--recovery-organization-id")
+    worker.add_argument(
+        "--expected-operation-version", type=int, help="Original blocked operation CAS version"
+    )
     worker.add_argument("--promotion-job-id", help="Explicit preparation admission: existing deployment ID")
     worker.add_argument(
         "--promotion-proposal-id", help="Current approved OPR identifier; never a browser plan"
@@ -298,6 +305,16 @@ def main(argv):
         )
     ):
         parser.error("Promotion admission options require dedicated-database-admit mode")
+    if args.worker_mode != "dedicated-database-recover" and any(
+        getattr(args, name) is not None
+        for name in (
+            "recovery_config",
+            "recovery_user_id",
+            "recovery_organization_id",
+            "expected_operation_version",
+        )
+    ):
+        parser.error("Recovery options require dedicated-database-recover mode")
     if args.worker_mode == "operating-review":
         from interfaces.operating_review_worker import run_operating_review
 
@@ -305,6 +322,11 @@ def main(argv):
         return
     if args.collect_capacity_metrics:
         parser.error("Capacity collection requires operating review mode")
+    if args.worker_mode == "dedicated-database-recover":
+        from interfaces.dedicated_database_recovery import run_preparation_recovery
+
+        run_preparation_recovery(args, parser)
+        return
     if args.worker_mode in {"dedicated-database", "dedicated-database-queue", "dedicated-database-admit"}:
         from interfaces.dedicated_database_worker import run_dedicated_database
 
