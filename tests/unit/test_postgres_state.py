@@ -132,3 +132,59 @@ def test_invalid_expected_revision_does_not_open_connection(revision):
     with pytest.raises(ValueError, match="revision"):
         store.save_job("job1", {}, expected_revision=revision)
     connect.assert_not_called()
+
+
+def test_ssm_transport_keeps_real_certificate_hostname_on_both_connection_attempts():
+    from dataclasses import replace
+
+    secret = Mock()
+    secret.get_secret_value.return_value = {"SecretString": '{"username":"sky","password":"test-only"}'}
+    connect = Mock(side_effect=[psycopg.OperationalError("tunnel unavailable"), Mock()])
+    database = replace(settings(), ssm_forward_port=15432)
+    factory = RotatingDatabaseConnection(database, secrets_client=secret, connect=connect)
+    factory()
+    assert connect.call_count == 2
+    for call in connect.call_args_list:
+        assert call.kwargs["host"] == "state.example"
+        assert call.kwargs["hostaddr"] == "127.0.0.1"
+        assert call.kwargs["port"] == 15432
+        assert call.kwargs["sslmode"] == "verify-full"
+        assert call.kwargs["sslrootcert"] == "/rds-ca.pem"
+    assert database.port == 5432
+
+
+def test_normal_database_transport_does_not_inject_loopback_override():
+    secret = Mock()
+    secret.get_secret_value.return_value = {"SecretString": '{"username":"sky","password":"test-only"}'}
+    connect = Mock()
+    RotatingDatabaseConnection(settings(), secrets_client=secret, connect=connect)()
+    assert "hostaddr" not in connect.call_args.kwargs
+    assert connect.call_args.kwargs["port"] == 5432
+
+
+@pytest.mark.parametrize("port", [True, False, 0, -1, 65536, "15432", 15432.0])
+def test_direct_forward_config_rejects_invalid_values(port):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="forwarding port"):
+        replace(settings(), ssm_forward_port=port)
+
+
+@pytest.mark.parametrize("port", ["", "0", "65536", "-1", "15432 hostaddr=evil.example", " 15432", True])
+def test_environment_forward_config_rejects_invalid_or_injected_values(tmp_path, port):
+    ca = tmp_path / "ca.pem"
+    ca.write_text("test-only")
+    environment = {
+        "SKY_DATABASE_HOST": "state.example",
+        "SKY_DATABASE_NAME": "sky",
+        "SKY_DATABASE_SECRET_ARN": "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:state-api",
+        "SKY_AWS_REGION": "ap-northeast-2",
+        "SKY_DATABASE_SSLROOTCERT": str(ca),
+        "SKY_DATABASE_SSM_FORWARD_PORT": port,
+    }
+    with pytest.raises(ValueError, match="forwarding port"):
+        PostgresStateSettings.from_environment(environment)
+    environment["SKY_DATABASE_SSM_FORWARD_PORT"] = "15432"
+    configured = PostgresStateSettings.from_environment(environment)
+    assert configured.host == "state.example" and configured.port == 5432
+    assert configured.ssm_forward_port == 15432

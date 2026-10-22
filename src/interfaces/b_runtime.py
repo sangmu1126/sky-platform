@@ -82,7 +82,12 @@ def main(argv):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     modes = parser.add_subparsers(dest="mode", required=True)
     api = modes.add_parser(
-        "api", help="PostgreSQL API; preparation/admission requires explicit opt-in", allow_abbrev=False
+        "api",
+        help="PostgreSQL API; preparation/admission requires explicit opt-in",
+        epilog="For an already-open local SSM database tunnel, set SKY_DATABASE_SSM_FORWARD_PORT "
+        "to its local port. Keep SKY_DATABASE_HOST set to the real database hostname; "
+        "certificate verification remains required. This option does not open a tunnel.",
+        allow_abbrev=False,
     )
     api.add_argument("--host", default="0.0.0.0")
     api.add_argument("--port", type=int, default=8080)

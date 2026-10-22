@@ -27,6 +27,13 @@ class PostgresStateSettings:
     secret_arn: str
     region: str
     sslrootcert: str
+    ssm_forward_port: int | None = None
+
+    def __post_init__(self):
+        if self.ssm_forward_port is not None and (
+            type(self.ssm_forward_port) is not int or not 1 <= self.ssm_forward_port <= 65535
+        ):
+            raise ValueError("Invalid SSM database forwarding port")
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str] | None = None):
@@ -48,7 +55,12 @@ class PostgresStateSettings:
         ca = values.get("SKY_DATABASE_SSLROOTCERT", "/etc/ssl/certs/sky-rds-global-bundle.pem")
         if not Path(ca).is_file():
             raise ValueError("State database CA bundle is missing")
-        return cls(host, port, database, arn, region, ca)
+        forwarded = values.get("SKY_DATABASE_SSM_FORWARD_PORT")
+        if forwarded is not None:
+            if not isinstance(forwarded, str) or not re.fullmatch(r"[0-9]{1,5}", forwarded):
+                raise ValueError("Invalid SSM database forwarding port")
+            forwarded = int(forwarded)
+        return cls(host, port, database, arn, region, ca, forwarded)
 
 
 @dataclass(frozen=True)
@@ -101,12 +113,15 @@ class RotatingDatabaseConnection:
         import psycopg
 
         settings = self.settings
+        # Route through an explicitly opened local SSM tunnel, while retaining
+        # the real DB hostname for verify-full certificate hostname validation.
+        transport = {} if settings.ssm_forward_port is None else {"hostaddr": "127.0.0.1"}
         for attempt in range(2):
             credentials = self._read_credentials(refresh=bool(attempt))
             try:
                 return self.connect(
                     host=settings.host,
-                    port=settings.port,
+                    port=settings.port if settings.ssm_forward_port is None else settings.ssm_forward_port,
                     dbname=settings.database,
                     user=credentials.username,
                     password=credentials.password,
@@ -115,6 +130,7 @@ class RotatingDatabaseConnection:
                     connect_timeout=10,
                     application_name="sky-state",
                     options="-c statement_timeout=30000 -c lock_timeout=10000",
+                    **transport,
                 )
             except psycopg.OperationalError:
                 if attempt:
