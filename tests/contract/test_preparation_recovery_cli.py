@@ -1,11 +1,12 @@
-"""Explicit operator CLI -> actual PostgreSQL recovery; cloud observers are synthetic."""
+"""Explicit operator CLI -> actual PostgreSQL recovery; ECS adapter uses SDK fixtures; RDS observation is synthetic."""
 
 import json
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
+from adapters.aws.preparation_executor_observation import EcsStoppedPreparationObserver
 from interfaces.b_runtime import main
 from tests.contract.test_operation_store import count
 from tests.contract.test_operation_store import database as database  # noqa: PLC0414
@@ -21,12 +22,68 @@ pytest_plugins = ["tests.unit.test_dedicated_database_admission"]
 
 
 @pytest.mark.parametrize("recovery", [ECS_EXECUTOR], indirect=True)
-@pytest.mark.parametrize("failure", [None, "unavailable", "registration_changed"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "unavailable",
+        "registration_changed",
+        "wrong_mode",
+        "running_task",
+        "wrong_digest",
+        "definition_denied",
+    ],
+)
 def test_recovery_cli_persists_one_attempt_or_retains_blocked_evidence(
     recovery, store, database, monkeypatch, capsys, failure
 ):
     _, _, blocked, _, _, worker, preparer = recovery
-    _, stopped, target, _ = available_authority(recovery, store)
+    _, registered, target, _ = available_authority(recovery, store)
+    clients = {name: Mock() for name in ("ecs", "sts")}
+    for client in clients.values():
+        client.meta.region_name = "ap-northeast-2"
+    clients["sts"].get_caller_identity.return_value = {"Account": "111111111111"}
+    task_arn = blocked.external_intent["executor"]["task_arn"]
+    cluster = registration()["cluster_arn"]
+    task = {
+        "taskArn": task_arn,
+        "clusterArn": cluster,
+        "taskDefinitionArn": registered.profile.task_definition_arn,
+        "lastStatus": "STOPPED",
+        "desiredStatus": "STOPPED",
+        "stoppedAt": datetime.fromisoformat(NOW),
+        "containers": [
+            {
+                "name": "worker",
+                "taskArn": task_arn,
+                "lastStatus": "STOPPED",
+                "imageDigest": dict(registered.profile.images)["worker"],
+            }
+        ],
+    }
+    definition = {
+        "taskDefinitionArn": registered.profile.task_definition_arn,
+        "containerDefinitions": [
+            {"name": "worker", "command": ["worker", "--mode", "dedicated-database-queue"]}
+        ],
+    }
+    clients["ecs"].describe_tasks.return_value = {"tasks": [task], "failures": []}
+    clients["ecs"].describe_task_definition.return_value = {"taskDefinition": definition}
+    stopped = EcsStoppedPreparationObserver(
+        cluster,
+        workspace=store.workspace,
+        profile=registered.profile,
+        session=Mock(client=lambda name, **_: clients[name]),
+        clock=lambda: datetime.fromisoformat(NOW),
+    )
+    if failure == "wrong_mode":
+        definition["containerDefinitions"][0]["command"] = ["api"]
+    elif failure == "running_task":
+        task["lastStatus"] = "RUNNING"
+    elif failure == "wrong_digest":
+        task["containers"][0]["imageDigest"] = "sha256:" + "d" * 64
+    elif failure == "definition_denied":
+        clients["ecs"].describe_task_definition.side_effect = OSError("private-provider-detail")
     monkeypatch.setenv("SKY_PREPARATION_RECOVERY_JSON", json.dumps(registration()))
     if failure == "unavailable":
         target.observe.side_effect = ValueError("private-provider-detail")
@@ -90,3 +147,13 @@ def test_recovery_cli_persists_one_attempt_or_retains_blocked_evidence(
             assert count(store, database, "mutation_scopes") == 0
             assert count(store, database, "outbox_events") == 2
     preparer.prepare.assert_called_once()  # Only the original uncertain request.
+
+    assert {call[0] for call in clients["ecs"].method_calls} <= {"describe_tasks", "describe_task_definition"}
+    if failure in {"wrong_mode", "definition_denied", None}:
+        clients["ecs"].describe_task_definition.assert_called_once_with(
+            taskDefinition=registered.profile.task_definition_arn
+        )
+    if failure in {"running_task", "wrong_digest"}:
+        clients["ecs"].describe_task_definition.assert_not_called()
+    if failure in {"wrong_mode", "running_task", "wrong_digest", "definition_denied"}:
+        target.observe.assert_not_called()
