@@ -224,7 +224,7 @@ try{saved=JSON.parse(sessionStorage.getItem(storageKey)||'{}');}catch{}
 function remember(){try{sessionStorage.setItem(storageKey,JSON.stringify(saved));}catch{}}
 function lock(on){busy=on;for(const id of ['deploy','reset','file'])$(id).disabled=on;}
 function stage(text){$('jobSection').hidden=false;$('stage').textContent=text;}
-async function api(path,options={}){const r=await fetch(path,{credentials:'same-origin',...options});if(!r.headers?.get('content-type')?.includes('application/json'))throw Error('로그인이 만료됐습니다. 새로고침 후 다시 로그인하세요.');const data=await r.json();if(!r.ok)throw Error(data.error||data.blockers?.map(b=>b.message||b.code).join('\n')||'요청을 처리하지 못했습니다.');return data;}
+async function api(path,options={}){const r=await (globalThis.skyAuth?.fetch||fetch)(path,{credentials:'same-origin',...options});if(!r.headers?.get('content-type')?.includes('application/json'))throw Error('로그인이 만료됐습니다. 새로고침 후 다시 로그인하세요.');const data=await r.json();if(!r.ok)throw Error(data.error||data.blockers?.map(b=>b.message||b.code).join('\n')||'요청을 처리하지 못했습니다.');return data;}
 function json(body){return {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};}
 function safeUrl(raw){try{const u=new URL(raw);return u.protocol==='https:'&&!u.username&&!u.password?u.href:null;}catch{return null;}}
 async function refreshHistory(){try{const data=await api('/api/jobs');$('history').textContent=data.items.map(j=>(j.application_id||j.id)+' · '+j.status).join('\n')||'아직 배포 기록이 없습니다.';}catch(e){$('history').textContent=e.message;}}

@@ -68,6 +68,14 @@ def run_preparation_api(args):
     authenticator = preparation_identity(args)
     # Validate browser origin before constructing credential or AWS providers.
     DatabaseApprovalApp(None, None, authenticator=authenticator, origin=args.origin, readiness=lambda: None)
+    browser = None
+    login_domain = os.environ.get("SKY_COGNITO_LOGIN_DOMAIN")
+    if login_domain is not None:
+        if args.auth_mode != "cognito":
+            raise ValueError("Managed browser login requires explicit Cognito mode")
+        from interfaces.http.cognito_browser import CognitoBrowser
+
+        browser = CognitoBrowser(login_domain, args.origin, authenticator.settings)
     database = PostgresStateSettings.from_environment()
     artifacts = S3ArtifactSettings.from_environment()
     workspace = os.environ.get("SKY_STATE_WORKSPACE", "team")
@@ -103,6 +111,7 @@ def run_preparation_api(args):
         workspace=workspace,
         sqlite_jobs=sqlite_jobs,
     )
+    app.cognito_browser = browser
     server = ThreadingHTTPServer((args.host, args.port), handler_for_preparation(app))
     print(
         f"Sky preparation API: http://{args.host}:{args.port}/prepare; deployment consumer is not included",

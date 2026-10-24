@@ -34,7 +34,34 @@ class DatabasePreparationApp(DatabaseApprovalApp):
 
 def handler_for_preparation(app):
     class Handler(handler_for_approvals(app)):
+        def log_request(self, code="-", size="-"):
+            # OAuth authorization codes must never enter application request logs.
+            self.log_message('"%s %s" %s %s', self.command, urlsplit(self.path).path, str(code), str(size))
+
+        def _public_asset(self, name, content_type):
+            payload = (ASSET_ROOT / "static" / name).read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(payload)
+
         def do_GET(self):
+            browser = getattr(app, "cognito_browser", None)
+            path = urlsplit(self.path).path
+            if browser is not None:
+                if self.path == "/auth/config":
+                    self.json_response(200, browser.public_config())
+                    return
+                if self.path == "/auth/client.js":
+                    self._public_asset("cognito-auth.js", "text/javascript; charset=utf-8")
+                    return
+                if path == "/login":
+                    self._public_asset("cognito-login.html", "text/html; charset=utf-8")
+                    return
             if self.path == "/api/config":
                 if self.authenticate_api():
                     self.json_response(
@@ -61,14 +88,22 @@ def handler_for_preparation(app):
                     self.json_response(200, {"status": "ready", "mode": "deployment_preparation"})
                 return
             url = urlsplit(self.path)
-            if url.path in {"/", "/prepare"}:
-                if not self.authenticate_api():
+            if url.path in {"/", "/prepare"} or (browser is not None and url.path == "/auth/callback"):
+                if browser is None and not self.authenticate_api():
                     return
+                # Only the static shell is public; every data and mutation API remains authenticated.
                 payload = (ASSET_ROOT / "static/deployment-preparation.html").read_bytes()
+                if browser is not None:
+                    payload = payload.replace(
+                        b"</head>",
+                        b'<meta name="referrer" content="no-referrer"><script src="/auth/client.js"></script></head>',
+                        1,
+                    )
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(payload)))
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("Referrer-Policy", "no-referrer")
                 self.end_headers()
                 self.wfile.write(payload)
                 return
