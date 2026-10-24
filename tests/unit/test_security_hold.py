@@ -93,9 +93,11 @@ def test_lost_commit_response_is_reconciled_by_repeating_the_same_incident():
         service.place(
             principal(role=Role.ADMIN), ID, incident_id="INC-1", reason="untrusted_artifact", now=NOW
         )
+    boundary = records.job["security_review_boundary"].copy()
     result = service.place(
         principal(role=Role.ADMIN), ID, incident_id="INC-1", reason="untrusted_artifact", now=NOW
     )
+    assert records.job["security_review_boundary"] == boundary
     assert result == records.job["security_hold"]
     assert records.job["promotion_automation_consent"] is None
     assert records.save_calls == 1

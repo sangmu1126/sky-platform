@@ -8,6 +8,7 @@ must never clear it. Legacy records without a hold do not attest to safety.
 import re
 from copy import deepcopy
 from datetime import datetime
+from uuid import uuid4
 
 from application.deployment_writes import DeploymentMetadataWriter
 from domain.access import Principal, Role
@@ -69,6 +70,7 @@ class SecurityHold:
             {
                 "security_hold": hold,
                 "promotion_automation_consent": None,
+                "security_review_boundary": {"id": uuid4().hex, "recorded_at": recorded_at},
             },
         )
         return deepcopy(hold)

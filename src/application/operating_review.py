@@ -51,13 +51,26 @@ def require_current_cost_estimate(proposal, policy, now):
 
 def deployment_observation_binding(job):
     """Bind a probe to its snapshot, including prepared plan and runtime identity."""
-    return {
+    boundary = job.get("security_review_boundary")
+    if "security_review_boundary" in job:
+        if (
+            not isinstance(boundary, dict)
+            or set(boundary) != {"id", "recorded_at"}
+            or not isinstance(boundary["id"], str)
+            or not re.fullmatch(r"[a-f0-9]{32}", boundary["id"])
+        ):
+            raise ValueError("Invalid security review boundary")
+        _time(boundary["recorded_at"])
+    binding = {
         "job_id": job.get("id"),
         "application_id": job.get("application_id"),
         "source_revision": job.get("source_digest"),
         "runtime_digest": _digest(job.get("result")),
         "deployment_plan_digest": _digest(job.get("plan")),
     }
+    if boundary is not None:
+        binding["security_review_boundary"] = deepcopy(boundary)
+    return binding
 
 
 @dataclass(frozen=True)
@@ -143,6 +156,9 @@ class OperatingReview:
         if observation.get("deployment_binding") != deployment_observation_binding(job):
             raise ValueError("Health observation is not bound to the current deployment revision")
         checked = _time(observation.get("checked_at"))
+        boundary = job.get("security_review_boundary")
+        if boundary is not None and checked < _time(boundary["recorded_at"]):
+            raise ValueError("A post-incident health observation is required")
         if (
             observation.get("healthy") is not True
             or not observation.get("reason")
