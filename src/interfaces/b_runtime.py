@@ -91,7 +91,13 @@ def main(argv):
     )
     api.add_argument("--host", default="0.0.0.0")
     api.add_argument("--port", type=int, default=8080)
-    api.add_argument("--auth-mode", choices=("alb", "local", "private-operator"), default="alb")
+    api.add_argument(
+        "--auth-mode",
+        choices=("alb", "local", "private-operator", "cognito"),
+        default="alb",
+        help="Cognito preparation requires SKY_COGNITO_AUTH_JSON, SKY_MEMBERSHIPS_JSON "
+        "and an HTTPS --origin; login/TLS hosting are provisioned separately",
+    )
     api.add_argument("--alb-trusts-file")
     api.add_argument("--memberships-file")
     intake = api.add_mutually_exclusive_group()
@@ -223,6 +229,19 @@ def main(argv):
             )
         return
     if args.mode == "api":
+        if args.auth_mode == "cognito":
+            if not args.enable_preparation or args.shared_database_pool_config or not args.origin:
+                parser.error("Cognito mode requires preparation intake and an explicit HTTPS origin")
+            from urllib.parse import urlsplit
+
+            from interfaces.b_preparation_runtime import preparation_identity
+
+            try:
+                if urlsplit(args.origin).scheme != "https":
+                    raise ValueError()
+                preparation_identity(args)
+            except (ValueError, TypeError):
+                parser.error("Cognito requires exclusive identity configuration and an HTTPS origin")
         if args.auth_mode == "private-operator":
             if not args.enable_preparation or args.shared_database_pool_config:
                 parser.error("Private operator mode requires preparation intake only")
@@ -258,7 +277,7 @@ def main(argv):
         if args.enable_preparation:
             if args.check_config:
                 parser.error("--check-config currently requires --shared-database-pool-config")
-            if args.auth_mode != "private-operator" and (
+            if args.auth_mode not in {"private-operator", "cognito"} and (
                 args.auth_mode != "alb"
                 or not (
                     (args.alb_trusts_file and args.memberships_file)

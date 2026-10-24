@@ -22,6 +22,20 @@ from interfaces.http.deployment_preparation import DatabasePreparationApp, handl
 def preparation_identity(args):
     """Accept exactly one complete identity source, matching the read-only API."""
     private = os.environ.get("SKY_PRIVATE_OPERATOR_JSON")
+    cognito = os.environ.get("SKY_COGNITO_AUTH_JSON")
+    if getattr(args, "auth_mode", "alb") == "cognito":
+        from interfaces.http.cognito_identity import CognitoRequestAuthenticator
+
+        if (
+            private is not None
+            or args.alb_trusts_file
+            or args.memberships_file
+            or "SKY_ALB_TRUSTS_JSON" in os.environ
+        ):
+            raise ValueError("Cognito and other identity configuration cannot be mixed")
+        return CognitoRequestAuthenticator.from_json(cognito, os.environ.get("SKY_MEMBERSHIPS_JSON"))
+    if cognito is not None:
+        raise ValueError("Cognito configuration requires explicit cognito mode")
     if getattr(args, "auth_mode", "alb") == "private-operator":
         from interfaces.http.private_operator import PrivateOperatorAuthenticator
 
