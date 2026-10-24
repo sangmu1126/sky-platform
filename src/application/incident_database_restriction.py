@@ -68,6 +68,83 @@ class IncidentDatabaseRestriction:
             return {"phase": "needs_attention", "record_valid": False}
         return {**deepcopy(record), "record_valid": True}
 
+    def inspect(
+        self, principal, job_id, *, incident_id, expected_boundary, expected_operation_id, expected_revision
+    ):
+        """Compare live SQL with persisted intent without promoting its phase.
+
+        A matching observation does not prove an old executor has stopped and
+        grants no right to resume, release, or take over the operation.
+        """
+        started = self.clock()
+        validate_release_request(
+            incident_id, "restriction-inspection", expected_revision, expected_boundary, started
+        )
+        if not isinstance(expected_operation_id, str) or not re.fullmatch(
+            r"[a-f0-9]{32}", expected_operation_id
+        ):
+            raise ValueError("An exact restriction operation identity is required")
+        snapshot = self._scope(principal, job_id, incident_id, expected_boundary)
+        record = snapshot.record.get(FIELD)
+        if (
+            not restriction_record_is_valid(record)
+            or record["operation_id"] != expected_operation_id
+            or record["incident_id"] != incident_id
+            or record["boundary_id"] != expected_boundary
+            or record["binding"] != asdict(self.restriction.binding)
+        ):
+            raise ValueError("Current registered restriction intent required")
+        if snapshot.revision != expected_revision:
+            raise RecordConflict("Deployment changed since restriction inspection request")
+
+        def guard():
+            current = self._scope(principal, job_id, incident_id, expected_boundary)
+            if current.revision != snapshot.revision or current.record.get(FIELD) != record:
+                raise RecordConflict("Incident or restriction changed during inspection")
+
+        try:
+            guard()
+            receipt = self.restriction.inspect(guard=guard)
+            observed_at = self.clock()
+            stamp = datetime.fromisoformat(observed_at)
+            if (
+                not isinstance(receipt, dict)
+                or set(receipt) != {"binding", "login_enabled", "active_sessions", "read_only"}
+                or receipt["binding"] != record["binding"]
+                or type(receipt["login_enabled"]) is not bool
+                or type(receipt["active_sessions"]) is not int
+                or receipt["active_sessions"] < 0
+                or receipt["read_only"] is not True
+                or stamp.tzinfo is None
+                or stamp < datetime.fromisoformat(started)
+                or stamp < datetime.fromisoformat(record["requested_at"])
+            ):
+                raise ValueError("Exact read-only database observation required")
+            guard()
+        except (PermissionError, RecordConflict):
+            raise
+        except Exception:  # noqa: BLE001 -- SQL/connection errors must not disclose credentials
+            raise OSError(
+                "Database restriction inspection unavailable; no state or login change requested"
+            ) from None
+        state = (
+            "not_restricted"
+            if receipt["login_enabled"]
+            else "incomplete"
+            if receipt["active_sessions"]
+            else "restricted"
+        )
+        return {
+            "operation_id": expected_operation_id,
+            "metadata_revision": snapshot.revision,
+            "persisted_phase": record["phase"],
+            "observed_state": state,
+            "observed_at": stamp.isoformat(),
+            **deepcopy(receipt),
+            "execution_exclusion_verified": False,
+            "state_changed": False,
+        }
+
     def restrict(self, principal, job_id, *, incident_id, expected_boundary, expected_revision):
         now = self.clock()
         validate_release_request(incident_id, "restriction-intent", expected_revision, expected_boundary, now)

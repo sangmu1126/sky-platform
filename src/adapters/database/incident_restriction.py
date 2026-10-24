@@ -20,3 +20,6 @@ class PostgresIncidentRestriction:
         if receipt["binding"] != asdict(self.binding) or receipt["login_enabled"] is not False:
             raise ValueError("Application login restriction could not be verified")
         return {"binding": receipt["binding"], "login_enabled": False}
+
+    def inspect(self, *, guard):
+        return self.fence.inspect(guard=guard)

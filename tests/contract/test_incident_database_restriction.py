@@ -155,3 +155,95 @@ def test_unowned_role_is_not_modified_and_uncertainty_is_recorded(database, stor
             True,
         )
     assert service.restrict(actor, ID, **args)["phase"] == "needs_attention"
+
+
+def test_inspection_uses_readonly_transaction_and_never_changes_job_or_workload(
+    database, store, workload_apps
+):
+    params, names, _roles, held, binding, adapter = workload_apps
+    records, actor, service, args = prepare(database, store, binding, adapter)
+    result = service.restrict(actor, ID, **args)
+    saved = records.load_job(ID)
+    original = adapter.fence.connect
+    denied = []
+
+    class Proof:
+        def __init__(self, db):
+            self.db = db
+
+        def execute(self, command, *args, **kwargs):
+            if command == "SHOW transaction_read_only":
+                with pytest.raises(psycopg.errors.ReadOnlySqlTransaction), self.db.transaction():
+                    self.db.execute("INSERT INTO scores VALUES(2,99)")
+                denied.append(True)
+            return self.db.execute(command, *args, **kwargs)
+
+    @contextmanager
+    def checked():
+        with original() as db:
+            yield Proof(db)
+
+    adapter.fence.connect = checked
+    inspected = service.inspect(
+        actor,
+        ID,
+        **{**args, "expected_revision": saved.revision, "expected_operation_id": result["operation_id"]},
+    )
+    assert inspected["observed_state"] == "restricted" and inspected["read_only"] is True
+    assert inspected["active_sessions"] == 0 and inspected["login_enabled"] is False
+    assert denied == [True] and records.load_job(ID) == saved
+    assert held[1].execute("SELECT score FROM scores WHERE id=1").fetchone() == (42,)
+    with psycopg.connect(**{**params, "dbname": names[0]}) as root:
+        assert root.execute("SELECT * FROM scores").fetchall() == [(1, 42)]
+
+
+def test_applying_intent_can_be_observed_without_replaying_or_claiming_completion(
+    database, store, workload_apps
+):
+    params, names, roles, held, binding, adapter = workload_apps
+    records, actor, service, args = prepare(database, store, binding, adapter)
+    save = records.save_job
+
+    def lost(job_id, record, *, expected_revision=None):
+        save(job_id, record, expected_revision=expected_revision)
+        raise OSError("lost admission response")
+
+    records.save_job = lost
+    with pytest.raises(OSError):
+        service.restrict(actor, ID, **args)
+    saved = records.load_job(ID)
+    inspection = {
+        **args,
+        "expected_revision": saved.revision,
+        "expected_operation_id": saved.record[FIELD]["operation_id"],
+    }
+    first = service.inspect(actor, ID, **inspection)
+    assert first["observed_state"] == "not_restricted" and first["active_sessions"] == 1
+    assert held[0].execute("SELECT 1").fetchone() == (1,)
+    # Test-only external actions simulate a previously uncertain executor's progress.
+    with psycopg.connect(**{**params, "dbname": names[0]}) as root:
+        root.execute(sql.SQL("ALTER ROLE {} NOLOGIN").format(sql.Identifier(roles[0])))
+    partial = service.inspect(actor, ID, **inspection)
+    assert partial["observed_state"] == "incomplete" and partial["active_sessions"] == 1
+    assert held[0].execute("SELECT 1").fetchone() == (1,)
+    adapter.restrict(guard=lambda: None)
+    final = service.inspect(actor, ID, **inspection)
+    assert final["observed_state"] == "restricted" and final["persisted_phase"] == "applying"
+    assert final["execution_exclusion_verified"] is False and final["state_changed"] is False
+    assert records.load_job(ID) == saved
+
+
+def test_inspection_counts_its_own_connection_if_provider_uses_app_role(workload_apps):
+    params, names, roles, held, _binding, adapter = workload_apps
+
+    @contextmanager
+    def app_connection():
+        with psycopg.connect(
+            **{**params, "dbname": names[0], "user": roles[0], "password": "disposable-only"}
+        ) as db:
+            yield db
+
+    adapter.fence.connect = app_connection
+    result = adapter.inspect(guard=lambda: None)
+    assert result["login_enabled"] is True and result["active_sessions"] >= 2
+    assert held[0].execute("SELECT 1").fetchone() == (1,)
