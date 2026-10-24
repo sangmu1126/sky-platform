@@ -11,6 +11,8 @@ from tests.unit.test_operating_review import ID
 from tests.unit.test_security_hold_cli import arguments
 from tests.unit.test_security_hold_cli import configured_cli as configured_cli  # noqa: PLC0414
 
+pytest_plugins = ["tests.unit.test_operating_review"]
+
 
 def test_cli_place_repeat_and_readonly_status_persist_the_same_hold(
     configured_cli, store, database, monkeypatch, capsys
@@ -41,3 +43,38 @@ def test_cli_place_repeat_and_readonly_status_persist_the_same_hold(
         assert status["observed_only"] is True and status["hold"] == first["hold"]
         assert status["metadata_revision"] == first["metadata_revision"]
         assert status["quarantine_performed"] is False and status["credentials_revoked"] is False
+
+
+def test_cli_observation_persists_fresh_boundary_without_clearing_hold(
+    configured_cli, store, database, monkeypatch, capsys, operating_review_setup
+):
+    from datetime import UTC, datetime
+
+    monkeypatch.setenv("SKY_STATE_WORKSPACE", store.workspace)
+    records = PostgresDeploymentRecordStore(database, workspace=store.workspace)
+    memory, _, _ = operating_review_setup
+    records.save_job(ID, memory.job, expected_revision=None)
+    with (
+        patch("interfaces.security_hold.RotatingDatabaseConnection", return_value=database),
+        patch(
+            "interfaces.security_hold.check_deployment",
+            side_effect=lambda job: {
+                "healthy": True,
+                "checked_at": datetime.now(UTC).isoformat(),
+                "reason": "HTTP checked",
+            },
+        ),
+    ):
+        main(arguments("place"))
+        capsys.readouterr()
+        held = records.load_job(ID)
+        main(arguments("observe"))
+        report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "held" and report["health_observation"]["healthy"] is True
+    assert records.load_job(ID) == held
+    observation = records.load_health_record(ID).record[-1]
+    assert (
+        observation["deployment_binding"]["security_review_boundary"]
+        == held.record["security_review_boundary"]
+    )
+    assert observation["source"] == "manual"

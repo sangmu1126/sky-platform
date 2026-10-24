@@ -193,9 +193,11 @@ def main(argv):
         help="Explicitly migrate the opt-in shared DB review schema too",
     )
     security = modes.add_parser(
-        "security-hold", help="Trusted administrator: record or inspect a promotion hold", allow_abbrev=False
+        "security-hold",
+        help="Trusted administrator: record a hold, inspect it, or collect an observation",
+        allow_abbrev=False,
     )
-    security.add_argument("action", choices=("place", "status"))
+    security.add_argument("action", choices=("place", "status", "observe"))
     security.add_argument("--job-id", required=True)
     security.add_argument(
         "--user-id", required=True, help="Current operator-provisioned internal administrator"

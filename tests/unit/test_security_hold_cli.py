@@ -12,6 +12,8 @@ from interfaces.service import main as service_main
 from tests.unit.test_deployment_writes import Records, principal
 from tests.unit.test_operating_review import ID
 
+pytest_plugins = ["tests.unit.test_operating_review"]
+
 ISSUER = "https://cognito-idp.ap-northeast-2.amazonaws.com/ap-northeast-2_TestPool"
 
 
@@ -57,7 +59,7 @@ def arguments(action="status"):
     return args
 
 
-@pytest.mark.parametrize("action", ["place", "status"])
+@pytest.mark.parametrize("action", ["place", "status", "observe"])
 def test_configuration_check_does_not_create_clients_or_connect(configured_cli, action, capsys):
     with (
         patch("boto3.client", side_effect=AssertionError("Cloud")),
@@ -180,3 +182,42 @@ def test_alb_operator_configuration_remains_supported_without_token_or_cloud(
     with patch("interfaces.security_hold.RotatingDatabaseConnection", side_effect=AssertionError("Database")):
         main(arguments() + ["--auth-mode", "alb", "--check-config"])
     assert "no AWS/DB calls" in capsys.readouterr().out
+
+
+def test_observe_uses_fixed_probe_without_mutation_or_external_receipts(
+    configured_cli, capsys, operating_review_setup
+):
+    from datetime import UTC, datetime
+
+    records, _, _ = operating_review_setup
+    SecurityHold(records).place(
+        principal(role=Role.ADMIN),
+        ID,
+        incident_id="INC-1",
+        reason="suspected_compromise",
+        now=datetime.now(UTC).isoformat(),
+    )
+    previous = json.loads(json.dumps(records.job))
+    with (
+        patch("interfaces.security_hold.RotatingDatabaseConnection", return_value=Mock()),
+        patch("interfaces.security_hold.check_database_ready"),
+        patch("interfaces.security_hold.PostgresDeploymentRecordStore", return_value=records),
+        patch(
+            "interfaces.security_hold.check_deployment",
+            side_effect=lambda job: {
+                "healthy": True,
+                "checked_at": datetime.now(UTC).isoformat(),
+                "reason": "HTTP checked",
+            },
+        ) as probe,
+    ):
+        main(arguments("observe"))
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "held" and report["health_observation"]["healthy"] is True
+    assert report["quarantine_performed"] is False and report["credentials_revoked"] is False
+    assert records.job == previous
+    probe.assert_called_once()
+    assert (
+        records.health[-1]["deployment_binding"]["security_review_boundary"]
+        == previous["security_review_boundary"]
+    )

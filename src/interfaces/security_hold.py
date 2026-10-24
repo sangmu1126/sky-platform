@@ -1,7 +1,8 @@
 """Trusted CLI only: operator-selected membership is not a browser login.
 
 Requires both OS/AWS/database access and an explicit current admin membership.
-No arbitrary role flag, migrations, workload calls, queue messages or hold release.
+No arbitrary role flag, migrations, workload mutations, queue messages or hold release.
+Observe invokes the fixed ownership-checking probe; it cannot accept user URLs or receipts.
 """
 
 import json
@@ -16,6 +17,8 @@ from adapters.state.postgres import (
     RotatingDatabaseConnection,
 )
 from adapters.state.readiness import check_database_ready
+from application.deployment_observation import DeploymentObservationRecorder
+from application.health import check_deployment
 from application.security_hold import SecurityHold, validate_hold_request
 from domain.access import LoginSource, Principal, Role
 from interfaces.b_preparation_runtime import preparation_identity
@@ -51,7 +54,7 @@ def run_security_hold(args, parser):
                 raise ValueError("Explicit hold confirmation required")
             validate_hold_request(args.incident_id, args.reason, now)
         elif args.incident_id is not None or args.reason is not None or args.confirm_hold:
-            raise ValueError("Status cannot include mutation options")
+            raise ValueError("Observation/status cannot include hold mutation options")
         state = PostgresStateSettings.from_environment()
         workspace = os.environ.get("SKY_STATE_WORKSPACE", "team")
         PostgresDeploymentRecordStore(None, workspace=workspace)
@@ -74,11 +77,20 @@ def run_security_hold(args, parser):
                 yield db
 
         check_database_ready(connection)
-        service = SecurityHold(PostgresDeploymentRecordStore(connection, workspace=workspace))
+        records = PostgresDeploymentRecordStore(connection, workspace=workspace)
+        service = SecurityHold(records)
         if operator(args) != actor:
             raise PermissionError("Administrator membership changed")
         if args.action == "place":
             service.place(actor, args.job_id, incident_id=args.incident_id, reason=args.reason, now=now)
+        observation = None
+        if args.action == "observe":
+            observation = DeploymentObservationRecorder(
+                records,
+                check_deployment,
+                clock=lambda: datetime.now(UTC).isoformat(),
+                revalidate=lambda: operator(args),
+            ).collect(actor, args.job_id)
         report = service.status(actor, args.job_id)
         if operator(args) != actor:
             raise PermissionError("Administrator membership changed")
@@ -87,6 +99,7 @@ def run_security_hold(args, parser):
                 {
                     **report,
                     "observed_only": args.action == "status",
+                    **({"health_observation": observation} if observation is not None else {}),
                     "quarantine_performed": False,
                     "credentials_revoked": False,
                 }
