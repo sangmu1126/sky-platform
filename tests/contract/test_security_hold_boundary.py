@@ -1,4 +1,4 @@
-"""Persisted boundary prevents pre-incident approval reuse; no production release."""
+"""Persisted boundary prevents pre-incident approval reuse; release must rotate the review boundary."""
 
 import pytest
 
@@ -30,7 +30,7 @@ def test_persisted_incident_requires_new_observation_and_approval(database, stor
     hold.place(principal(role=Role.ADMIN), ID, incident_id="INC-1", reason="untrusted_artifact", now=NOW)
     assert records.load_job(ID).revision == held.revision
     assert held.record["promotion_automation_consent"] is None
-    # Test-only direct metadata change models a future trusted release authority.
+    # Test-only direct metadata change isolates pre-release evidence validation.
     records.save_job(ID, {**held.record, "security_hold": None}, expected_revision=held.revision)
     with pytest.raises(ValueError, match="not bound"):
         approved_snapshot(records, principal(), ID, previous["proposal_id"], policy, NOW)

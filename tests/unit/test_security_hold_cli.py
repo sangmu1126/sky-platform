@@ -221,3 +221,55 @@ def test_observe_uses_fixed_probe_without_mutation_or_external_receipts(
         records.health[-1]["deployment_binding"]["security_review_boundary"]
         == previous["security_review_boundary"]
     )
+
+
+def release_arguments(revision=1, boundary="a" * 32):
+    return arguments("release-false-positive") + [
+        "--incident-id",
+        "INC-1",
+        "--review-ref",
+        "REVIEW-1",
+        "--expected-revision",
+        str(revision),
+        "--expected-boundary",
+        boundary,
+        "--confirm-false-positive",
+    ]
+
+
+def test_false_positive_check_config_requires_explicit_review_without_clients(configured_cli, capsys):
+    with patch("interfaces.security_hold.RotatingDatabaseConnection", side_effect=AssertionError("DB")):
+        main(release_arguments() + ["--check-config"])
+    assert "no AWS/DB calls" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "--incident-id",
+        "--review-ref",
+        "--expected-revision",
+        "--expected-boundary",
+        "--confirm-false-positive",
+    ],
+)
+def test_false_positive_release_cannot_omit_review_confirmation(configured_cli, option):
+    args = release_arguments()
+    index = args.index(option)
+    del args[index : index + (1 if option == "--confirm-false-positive" else 2)]
+    with (
+        patch("interfaces.security_hold.RotatingDatabaseConnection", side_effect=AssertionError("DB")),
+        pytest.raises(SystemExit) as result,
+    ):
+        main(args + ["--check-config"])
+    assert result.value.code == 2
+
+
+@pytest.mark.parametrize("action", ["status", "observe", "place"])
+def test_release_options_cannot_be_smuggled_into_other_actions(configured_cli, action):
+    with (
+        patch("interfaces.security_hold.RotatingDatabaseConnection", side_effect=AssertionError("DB")),
+        pytest.raises(SystemExit) as result,
+    ):
+        main(arguments(action) + ["--review-ref", "REVIEW-1", "--confirm-false-positive", "--check-config"])
+    assert result.value.code == 2

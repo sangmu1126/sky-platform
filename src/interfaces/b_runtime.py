@@ -197,7 +197,7 @@ def main(argv):
         help="Trusted administrator: record a hold, inspect it, or collect an observation",
         allow_abbrev=False,
     )
-    security.add_argument("action", choices=("place", "status", "observe"))
+    security.add_argument("action", choices=("place", "status", "observe", "release-false-positive"))
     security.add_argument("--job-id", required=True)
     security.add_argument(
         "--user-id", required=True, help="Current operator-provisioned internal administrator"
@@ -214,6 +214,14 @@ def main(argv):
         "--confirm-hold",
         action="store_true",
         help="Explicitly acknowledge promotion blocking and automation-consent revocation",
+    )
+    security.add_argument("--review-ref", help="Bounded reference to the operator false-positive review")
+    security.add_argument("--expected-revision", type=int)
+    security.add_argument("--expected-boundary")
+    security.add_argument(
+        "--confirm-false-positive",
+        action="store_true",
+        help="Attest operator review; this is not automated security clearance",
     )
     security.add_argument("--check-config", action="store_true", help="Validate without AWS/DB access")
     args = parser.parse_args(argv)

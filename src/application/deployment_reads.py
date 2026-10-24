@@ -49,7 +49,11 @@ class DeploymentReadService:
         job, health = snapshot.job, snapshot.health
         return deepcopy(
             {
-                **{key: value for key, value in job.items() if key != "security_hold"},
+                **{
+                    key: value
+                    for key, value in job.items()
+                    if key not in {"security_hold", "security_hold_history"}
+                },
                 "security_status": security_hold_projection(
                     job, include_details=principal.role is Role.ADMIN
                 ),

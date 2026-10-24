@@ -78,3 +78,44 @@ def test_cli_observation_persists_fresh_boundary_without_clearing_hold(
         == held.record["security_review_boundary"]
     )
     assert observation["source"] == "manual"
+
+
+def test_false_positive_release_persists_audit_without_restoring_automation(
+    configured_cli, store, database, monkeypatch, capsys, operating_review_setup
+):
+    from datetime import UTC, datetime
+
+    from tests.unit.test_security_hold_cli import release_arguments
+
+    monkeypatch.setenv("SKY_STATE_WORKSPACE", store.workspace)
+    records = PostgresDeploymentRecordStore(database, workspace=store.workspace)
+    memory, _, _ = operating_review_setup
+    records.save_job(ID, memory.job, expected_revision=None)
+    with (
+        patch("interfaces.security_hold.RotatingDatabaseConnection", return_value=database),
+        patch(
+            "interfaces.security_hold.check_deployment",
+            side_effect=lambda job: {
+                "healthy": True,
+                "checked_at": datetime.now(UTC).isoformat(),
+                "reason": "HTTP checked",
+            },
+        ),
+    ):
+        main(arguments("place"))
+        capsys.readouterr()
+        main(arguments("observe"))
+        held = json.loads(capsys.readouterr().out)
+        args = release_arguments(held["metadata_revision"], held["review_boundary"]["id"])
+        main(args)
+        released = json.loads(capsys.readouterr().out)
+        assert released["status"] == "released_false_positive"
+        assert released["release"]["review_ref"] == "REVIEW-1"
+        assert released["review_boundary"] != held["review_boundary"]
+        saved = records.load_job(ID)
+        assert saved.record["security_hold"] is None and saved.record["promotion_automation_consent"] is None
+        assert len(saved.record["security_hold_history"]) == 1
+        main(args)
+        again = json.loads(capsys.readouterr().out)
+        assert again["metadata_revision"] == released["metadata_revision"]
+        assert records.load_job(ID) == saved

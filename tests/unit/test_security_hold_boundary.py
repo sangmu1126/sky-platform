@@ -1,4 +1,4 @@
-"""Post-incident evidence must replace pre-incident approval; no release API."""
+"""Post-incident evidence must replace pre-incident approval; ordinary approvals never release holds."""
 
 from copy import deepcopy
 
@@ -30,7 +30,7 @@ def test_hold_fences_old_evidence_and_approval_even_after_future_release(operati
     assert records.job["security_review_boundary"] == boundary
     with pytest.raises(ValueError, match="Security hold"):
         review.review(principal(), ID, policy, now=LATER)
-    # Test-only hypothetical release: production intentionally has no such API.
+    # Test-only low-level clear isolates the boundary guard from audited release.
     records.job["security_hold"] = None
     with pytest.raises(ValueError, match="not bound"):
         approved_snapshot(records, principal(), ID, old["proposal_id"], policy, LATER)
