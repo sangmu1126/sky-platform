@@ -105,3 +105,85 @@ def test_cli_failure_does_not_echo_credentials(environment, error, capsys):
     text = capsys.readouterr()
     assert "private-token" not in text.out + text.err
     assert json.loads(text.out)["status"] == "check_failed"
+
+
+def runtime_values():
+    return [
+        {"value": "123456789012"},
+        {"value": "ap-northeast-2"},
+        {"value": "sky-artifacts-test"},
+        {"value": "arn:aws:iam::123456789012:role/sky/builder"},
+    ]
+
+
+def test_runtime_settings_checks_exact_scope_using_get_only(environment):
+    get = Mock(side_effect=runtime_values())
+    checks.check_runtime_settings(BuildSettings.from_environment(environment), get)
+    assert [c.args[0].rsplit("/", 1)[-1] for c in get.call_args_list] == [
+        "AWS_ACCOUNT_ID",
+        "AWS_REGION",
+        "SKY_ARTIFACTS_BUCKET",
+        "AWS_APP_BUILDER_ROLE_ARN",
+    ]
+
+
+@pytest.mark.parametrize("index", range(4))
+def test_runtime_scope_mismatch_stops_before_further_reads(environment, index):
+    values = runtime_values()
+    values[index] = {"value": "unexpected-remote-value"}
+    get = Mock(side_effect=values)
+    with pytest.raises(checks.ReferenceMismatch) as caught:
+        checks.check_runtime_settings(BuildSettings.from_environment(environment), get)
+    assert "unexpected-remote-value" not in str(caught.value)
+    assert get.call_count == index + 1
+
+
+@pytest.mark.parametrize(
+    "role", [None, "", "arn:aws:iam::999999999999:role/builder", "arn:aws:iam::123456789012:user/admin"]
+)
+def test_runtime_rejects_missing_cross_account_or_user_role(environment, role):
+    values = runtime_values()
+    values[-1] = {"value": role}
+    with pytest.raises(checks.ReferenceMismatch):
+        checks.check_runtime_settings(BuildSettings.from_environment(environment), Mock(side_effect=values))
+
+
+def test_runtime_check_requires_explicit_github_opt_in():
+    with patch.object(checks, "github_get") as get, pytest.raises(SystemExit) as result:
+        checks.main(["--runtime-settings"])
+    assert result.value.code == 2
+    get.assert_not_called()
+
+
+def test_unreadable_role_variable_names_the_setting_without_response_data(environment):
+    get = Mock(side_effect=runtime_values()[:3] + [OSError("sensitive-response")])
+    with pytest.raises(checks.ReferenceMismatch) as caught:
+        checks.check_runtime_settings(BuildSettings.from_environment(environment), get)
+    assert "AWS_APP_BUILDER_ROLE_ARN" in str(caught.value)
+    assert "sensitive-response" not in str(caught.value)
+
+
+def test_cli_reports_runtime_stage_without_echoing_remote_errors(environment, capsys):
+    with (
+        patch.dict(checks.os.environ, environment, clear=True),
+        patch.object(checks, "check_reference"),
+        patch.object(checks, "check_runtime_settings", side_effect=OSError("sensitive-response")),
+    ):
+        assert checks.main(["--github", "--runtime-settings"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["stage"] == "github_runtime_settings"
+    assert report["runtime_settings_checked"] is True
+    assert "sensitive-response" not in json.dumps(report)
+
+
+def test_runtime_settings_success_does_not_claim_runtime_readiness(environment, capsys):
+    with (
+        patch.dict(checks.os.environ, environment, clear=True),
+        patch.object(checks, "check_reference"),
+        patch.object(checks, "check_runtime_settings") as checked,
+    ):
+        assert checks.main(["--github", "--runtime-settings"]) == 0
+    checked.assert_called_once()
+    report = json.loads(capsys.readouterr().out)
+    assert report["runtime_settings_checked"] is True
+    assert report["runtime_verified"] is False

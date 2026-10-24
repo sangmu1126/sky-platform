@@ -5,13 +5,15 @@ SKY_ARTIFACTS_BUCKET, SKY_AWS_ACCOUNT_ID and SKY_AWS_REGION configured.
 --github uses the existing gh login for GET requests only, never dispatches or
 accesses AWS. Exact file comparisons deliberately reject customized workflows;
 a mismatch calls for review and is not proof that a custom workflow is unsafe.
-This does not establish IAM/OIDC, GitHub App, S3 or ECR runtime readiness.
+--runtime-settings additionally compares the non-secret deployment variables.
+Neither mode establishes IAM/OIDC, GitHub App, S3 or ECR runtime readiness.
 """
 
 import argparse
 import base64
 import json
 import os
+import re
 import subprocess
 import urllib.parse
 from pathlib import Path
@@ -70,16 +72,51 @@ def check_reference(settings, get=github_get):
         raise ReferenceMismatch("Pinned platform builder code differs from this tested implementation")
 
 
+def check_runtime_settings(settings, get=github_get):
+    """Check non-secret repository variables, not IAM permissions or App credentials."""
+    base = "/repos/" + settings.repository + "/actions/variables/"
+
+    def read(name):
+        try:
+            return get(base + name).get("value")
+        except (OSError, subprocess.TimeoutExpired):
+            raise ReferenceMismatch("Builder runtime variable could not be read: " + name) from None
+
+    expected = {
+        "AWS_ACCOUNT_ID": settings.account_id,
+        "AWS_REGION": settings.region,
+        "SKY_ARTIFACTS_BUCKET": settings.bucket,
+    }
+    for name, value in expected.items():
+        if read(name) != value:
+            raise ReferenceMismatch("Builder runtime variable differs from configured scope: " + name)
+    role = read("AWS_APP_BUILDER_ROLE_ARN")
+    if not isinstance(role, str) or not re.fullmatch(
+        rf"arn:aws:iam::{settings.account_id}:role/[A-Za-z0-9+=,.@_/-]{{1,512}}", role
+    ):
+        raise ReferenceMismatch("Builder role ARN must name a role in the configured AWS account")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--github", action="store_true", help="Also check GitHub with read-only gh API calls")
+    parser.add_argument(
+        "--runtime-settings",
+        action="store_true",
+        help="With --github, also check account, region, artifact bucket and builder role variables",
+    )
     args = parser.parse_args(argv)
+    if args.runtime_settings and not args.github:
+        parser.error("--runtime-settings requires --github")
     stage = "configuration"
     try:
         settings = BuildSettings.from_environment(os.environ)
         if args.github:
             stage = "github_reference"
             check_reference(settings)
+        if args.runtime_settings:
+            stage = "github_runtime_settings"
+            check_runtime_settings(settings)
     except (ValueError, TypeError, KeyError, OSError, subprocess.TimeoutExpired) as error:
         # Do not echo raw API responses, subprocess stderr or environment values.
         print(
@@ -91,6 +128,7 @@ def main(argv=None):
                     if isinstance(error, ReferenceMismatch)
                     else "Configuration or GitHub read unavailable",
                     "github_checked": args.github,
+                    "runtime_settings_checked": args.runtime_settings,
                     "next": "Review builder configuration, visibility, pins and reference-template compatibility",
                 }
             )
@@ -101,6 +139,7 @@ def main(argv=None):
             {
                 "status": "reference_matches" if args.github else "configuration_valid",
                 "github_checked": args.github,
+                "runtime_settings_checked": args.runtime_settings,
                 "runtime_verified": False,
                 "remaining": [
                     "IAM/OIDC trust",
