@@ -77,30 +77,37 @@ class SecurityHold:
         if not isinstance(principal, Principal) or principal.role is not Role.ADMIN:
             raise PermissionError("Only an organization administrator may inspect a security hold")
         snapshot = self.writer.snapshot(principal, job_id)
-        hold = snapshot.record.get("security_hold")
-        value = {
+        return {
             "job_id": job_id,
             "metadata_revision": snapshot.revision,
-            "status": "not_recorded" if hold is None else "held",
-            "hold": None,
+            **security_hold_projection(snapshot.record, include_details=True),
         }
-        if hold is not None:
-            valid = isinstance(hold, dict) and set(hold) == {
-                "incident_id",
-                "reason",
-                "recorded_at",
-                "recorded_by",
-            }
-            if valid:
-                try:
-                    validate_hold_request(hold["incident_id"], hold["reason"], hold["recorded_at"])
-                    valid = (
-                        isinstance(hold["recorded_by"], str)
-                        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", hold["recorded_by"]) is not None
-                    )
-                except (ValueError, TypeError):
-                    valid = False
-            value["record_valid"] = valid
-            if valid:
-                value["hold"] = deepcopy(hold)
-        return value
+
+
+def security_hold_projection(job, *, include_details=False):
+    hold = job.get("security_hold")
+    value = {
+        "status": "not_recorded" if hold is None else "held",
+        "promotion_blocked": hold is not None,
+        "hold": None,
+    }
+    if hold is not None and include_details:
+        valid = isinstance(hold, dict) and set(hold) == {
+            "incident_id",
+            "reason",
+            "recorded_at",
+            "recorded_by",
+        }
+        if valid:
+            try:
+                validate_hold_request(hold["incident_id"], hold["reason"], hold["recorded_at"])
+                valid = (
+                    isinstance(hold["recorded_by"], str)
+                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", hold["recorded_by"]) is not None
+                )
+            except (ValueError, TypeError):
+                valid = False
+        value["record_valid"] = valid
+        if valid:
+            value["hold"] = deepcopy(hold)
+    return value

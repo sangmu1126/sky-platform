@@ -287,3 +287,27 @@ def test_read_only_entrypoint_wires_database_readiness():
         handler.do_GET()
         readiness.assert_called_once_with(connection)
         handler.json_response.assert_called_once_with(200, {"status": "ready", "mode": "read_only"})
+
+
+def test_incident_detail_is_admin_only_and_hold_state_is_readonly(http):
+    from domain.access import Role
+
+    store, app, request = http
+    identifier = "a" * 16
+    incident = {
+        "incident_id": "INC-private-1",
+        "reason": "credential_exposure",
+        "recorded_at": "2026-10-25T00:00:00+00:00",
+        "recorded_by": "security-admin",
+    }
+    store.save_job(identifier, job(identifier, security_hold=incident))
+    status, detail = request("/api/jobs/" + identifier)
+    assert status == 200 and detail["security_status"]["status"] == "held"
+    assert "INC-private-1" not in json.dumps(detail) and "security_hold" not in detail
+    assert "INC-private-1" not in json.dumps(request("/api/jobs")[1])
+    assert request("/api/jobs/" + identifier, token=False)[0] == 403
+    app.authenticator.authenticate_request = lambda _: principal(role=Role.ADMIN)
+    assert request("/api/jobs/" + identifier)[1]["security_status"]["hold"] == incident
+    app.authenticator.authenticate_request = lambda _: principal("foreign", role=Role.ADMIN)
+    assert request("/api/jobs/" + identifier)[0] == 404
+    assert store.load_job(identifier).revision == 1

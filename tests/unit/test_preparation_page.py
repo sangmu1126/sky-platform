@@ -15,7 +15,7 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const html=fs.readFileSync(process.argv[1],'utf8'),script=html.match(/<script>([\s\S]*)<\/script>/)[1];
 assert(html.includes('app-shell'));assert(!html.includes('id="approve"'));assert(!html.includes('id="submit"'));
 function setup(mode){
- const ids=['file','deploy','reset','message','jobSection','stage','visit','details','jobId','history'];
+ const ids=['file','deploy','reset','message','jobSection','stage','visit','details','jobId','history','securityNotice','refreshHistory'];
  const els=Object.fromEntries(ids.map(id=>[id,{value:'',disabled:false,hidden:false,textContent:'',files:[]}]));
  els.file.files=[{name:'web.zip',size:100,lastModified:1}];
  const saved=new Map(),calls=[],timers=[];let first=true;
@@ -24,12 +24,12 @@ function setup(mode){
  sessionStorage:{getItem:k=>saved.get(k),setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},
  setTimeout:fn=>timers.push(fn),fetch:async(path,options={})=>{
  calls.push({path,options});let data;
- if(path==='/api/jobs')data={items:[]};
+ if(path==='/api/jobs')data={items:mode==='held'?[{id:'a'.repeat(16),application_id:'app-web',status:'succeeded',security_status:{status:'held'}}]:[]};
  else if(path==='/api/deployments'){
   if(mode==='retry'&&first){first=false;throw Error('upload response lost');}data=mode==='blocked'?{status:'blocked',blockers:preview.blockers}:{status:'accepted',job_id:'a'.repeat(16)};
  }else if(path.endsWith('/approve'))data={id:'approval1'};
  else if(path.endsWith('/submit'))data={job_id:'a'.repeat(16)};
- else if(path.startsWith('/api/jobs/'))data={status:mode==='waiting'?'deploying':'succeeded',result:{url:mode==='unsafe'?'javascript:alert(1)':'https://example.com'}};
+ else if(path.startsWith('/api/jobs/'))data={security_status:mode==='held'?{status:'held',promotion_blocked:true}:{status:'not_recorded',promotion_blocked:false},status:mode==='waiting'?'deploying':'succeeded',result:{url:mode==='unsafe'?'javascript:alert(1)':'https://example.com'}};
  else throw Error('Unexpected endpoint '+path);
  return {ok:mode!=='blocked'||path!=='/api/deployments',headers:{get:()=> 'application/json'},json:async()=>data};}};
  vm.runInNewContext(script,ctx);return {els,saved,calls,timers};
@@ -41,6 +41,7 @@ function setup(mode){
  assert(!html.includes('id="port"'));assert(!html.includes('id="health"'));
  assert.equal(write[0].options.headers['X-Application-Id'],'app-web');
  assert.equal(s.els.stage.textContent,'배포 완료');assert.equal(s.els.visit.hidden,false);assert.equal(s.els.visit.href,'https://example.com/');
+ const held=setup('held');await held.els.deploy.onclick();assert.equal(held.els.securityNotice.hidden,false);assert(held.els.history.textContent.includes('보안 검토로 이전 보류'));assert(held.els.securityNotice.textContent.includes('이전 작업이 보류'));assert(held.els.securityNotice.textContent.includes('접속 차단 여부'));assert.equal(held.els.visit.hidden,false);const posts=held.calls.filter(c=>c.options.method==='POST').length;await held.els.refreshHistory.onclick();assert.equal(held.calls.filter(c=>c.options.method==='POST').length,posts);held.els.reset.onclick();assert.equal(held.els.securityNotice.hidden,true);
  const b=setup('blocked');await b.els.deploy.onclick();assert(b.els.message.textContent.includes('DB 연결 필요'));assert.equal(b.calls.filter(c=>c.options.method==='POST').length,1);
  const r=setup('retry');await r.els.deploy.onclick();assert.equal(r.els.message.textContent,'upload response lost');await r.els.deploy.onclick();
  assert.equal(r.calls.filter(c=>c.path==='/api/deployments').length,2);

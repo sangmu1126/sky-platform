@@ -8,7 +8,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 from application.diagnosis import deployment_diagnosis
-from domain.access import Action, Principal, ResourceOwner, owner_from_record, permitted
+from application.security_hold import security_hold_projection
+from domain.access import Action, Principal, ResourceOwner, Role, owner_from_record, permitted
 from engine.runtime_proposals import runtime_proposal
 from ports.deployment_reads import DeploymentReads, ReadCursor
 
@@ -48,7 +49,10 @@ class DeploymentReadService:
         job, health = snapshot.job, snapshot.health
         return deepcopy(
             {
-                **job,
+                **{key: value for key, value in job.items() if key != "security_hold"},
+                "security_status": security_hold_projection(
+                    job, include_details=principal.role is Role.ADMIN
+                ),
                 "diagnosis": deployment_diagnosis(job),
                 "health_history": health,
                 "last_health": health[-1] if health else None,
@@ -73,6 +77,7 @@ class DeploymentReadService:
                     "application_id": job.get("application_id", job["id"]),
                     "deployment_state": job.get("deployment_state", "active"),
                     "release_rollback_state": job.get("release_rollback_state"),
+                    "security_status": security_hold_projection(job),
                     "analyzer": (job.get("plan") or {}).get("analyzer", job.get("mode", "static")),
                     "result": job.get("result"),
                     "last_health": snapshot.health[-1] if snapshot.health else None,
@@ -98,6 +103,7 @@ class DeploymentReadService:
                     "result": job.get("result"),
                     "deployment_state": job.get("deployment_state", "active"),
                     "release_rollback_state": job.get("release_rollback_state"),
+                    "security_status": security_hold_projection(job),
                 }
             )
         return DeploymentPage(tuple(deepcopy(items)), page.next_cursor)

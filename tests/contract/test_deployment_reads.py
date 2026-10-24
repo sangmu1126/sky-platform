@@ -95,6 +95,7 @@ def test_projections_and_detached_history(setup):
         "application_id",
         "deployment_state",
         "release_rollback_state",
+        "security_status",
         "analyzer",
         "result",
         "last_health",
