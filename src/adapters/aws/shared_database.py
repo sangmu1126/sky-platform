@@ -111,7 +111,7 @@ class AwsSharedDatabaseAllocator:
             raise PoolAllocationError("State and workload must use separate RDS endpoints")
         guard()
         credentials = self._admin_credentials(username)
-        allocator = self._allocator((host, port), credentials)
+        allocator = self._allocator((host, port, username), credentials)
         request = allocator.existing_allocation(binding)
         guard()
 

@@ -94,3 +94,16 @@ def test_each_fence_connection_rechecks_admin_and_allocation(aws):
     with patch.object(adapter, "_connection") as connect, pytest.raises(PermissionError):
         restriction.fence.connect()
     connect.assert_not_called()
+
+
+def test_incident_resolution_uses_the_real_allocator_composition(aws):
+    """Do not replace _allocator: its endpoint tuple contract must be exercised."""
+    adapter, request, clients, _, _, _, connect = aws
+    with patch(
+        "adapters.database.shared_pool.PostgresSharedPool.existing_allocation", return_value=request
+    ) as lookup:
+        restriction = resolve(adapter, request)
+    assert restriction.binding == request.binding()
+    lookup.assert_called_once_with(request.binding())
+    connect.assert_not_called()
+    clients["secretsmanager"].create_secret.assert_not_called()
