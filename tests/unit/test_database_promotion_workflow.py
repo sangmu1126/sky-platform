@@ -199,3 +199,16 @@ def test_lost_lease_prevents_external_effect(flow):
     operations.begin_external.return_value = False
     assert run(flow)["status"] == "lease_lost"
     preparer.prepare.assert_not_called()
+
+
+@pytest.mark.parametrize("external_pending", [False, True])
+def test_security_hold_after_admission_blocks_preparer_and_preserves_unknown_effect(flow, external_pending):
+    _, records, _, operations, preparer, operation, _, _ = flow
+    records.job["security_hold"] = {"incident_id": "INC-1"}
+    operations.get.return_value = replace(operation, external_pending=external_pending)
+    assert run(flow)["status"] == ("needs_attention" if external_pending else "failed")
+    preparer.prepare.assert_not_called()
+    operations.begin_external.assert_not_called()
+    if external_pending:
+        operations.require_attention.assert_called_once()
+        operations.complete.assert_not_called()

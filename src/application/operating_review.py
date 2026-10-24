@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 
 from application.deployment_writes import DeploymentMetadataWriter
+from application.security_hold import require_no_security_hold
 from domain.database import DatabaseBinding
 from engine.database_promotion import PromotionTrigger, plan_database_promotion
 from engine.promotion_policy import CapacityPromotionCriteria, PromotionCostQuote, evaluate_capacity
@@ -97,6 +98,7 @@ class ScheduledPromotionPolicy:
 
 
 def _binding(job):
+    require_no_security_hold(job)
     if (
         job.get("status") != "succeeded"
         or job.get("deployment_state") != "active"

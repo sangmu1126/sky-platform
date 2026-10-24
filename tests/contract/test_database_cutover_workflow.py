@@ -149,3 +149,31 @@ def test_http_consent_outbox_and_consumer_share_durable_operation(persisted, sto
         server.shutdown()
         server.server_close()
         thread.join(5)
+
+
+def test_persisted_incident_hold_prevents_cutover_admission(persisted):
+    from application.security_hold import SecurityHold
+    from domain.access import Role
+
+    admission, _, records, factory, _, proposal_id = persisted
+    SecurityHold(records).place(
+        principal(role=Role.ADMIN), ID, incident_id="INC-1", reason="suspected_compromise", now=NOW
+    )
+    with pytest.raises(ValueError, match="Security hold"):
+        admission.admit(principal(), ID, proposal_id, "blocked-by-incident")
+    assert records.load_job(ID).record["security_hold"]["incident_id"] == "INC-1"
+    factory.assert_not_called()
+
+
+def test_persisted_incident_after_admission_blocks_worker_before_external_effect(persisted, store):
+    from application.security_hold import SecurityHold
+    from domain.access import Role
+
+    admission, worker, records, factory, _traffic, proposal_id = persisted
+    operation = admission.admit(principal(), ID, proposal_id, "incident-after-admission")
+    SecurityHold(records).place(
+        principal(role=Role.ADMIN), ID, incident_id="INC-1", reason="credential_exposure", now=NOW
+    )
+    assert worker.execute(operation.id, operation.attempt_id)["status"] == "failed"
+    assert store.get(operation.id).external_intent is None
+    factory.assert_not_called()

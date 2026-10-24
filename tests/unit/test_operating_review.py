@@ -220,3 +220,15 @@ def test_capacity_configuration_digest_is_approved_and_change_invalidates_consen
     changed = replace(policy, target_configuration_digest="b" * 64)
     with pytest.raises(ValueError):
         service.approve(principal(), ID, proposal["proposal_id"], changed, now=NOW)
+
+
+@pytest.mark.parametrize("hold", [{"incident_id": "INC-1"}, {}, False])
+def test_incident_hold_blocks_review_and_old_approval(operating_review_setup, hold):
+    records, policy, service = operating_review_setup
+    proposal = service.review(principal(), ID, policy, now=NOW)
+    records.job["security_hold"] = hold
+    with pytest.raises(ValueError, match="Security hold"):
+        service.review(principal(), ID, policy, now=NOW)
+    with pytest.raises(ValueError, match="Security hold"):
+        service.approve(principal(), ID, proposal["proposal_id"], policy, now=NOW)
+    assert records.save_calls == 1
