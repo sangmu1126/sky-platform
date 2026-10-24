@@ -47,6 +47,28 @@ def test_real_browser_approval_ambiguous_admission_and_reload(web):
     assert len(saved) == 1 and operations.admit.call_count == 2 and len(polls) >= 4
 
 
+def wait_for_debug_port(port_file, process, *, timeout=30):
+    """Chrome creates this file before its port and browser path are fully written."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if process.poll() is not None:
+            raise AssertionError("Disposable Chrome debugging endpoint unavailable")
+        try:
+            lines = port_file.read_text().splitlines()
+        except FileNotFoundError:
+            lines = []
+        if (
+            len(lines) >= 2
+            and lines[0].isdigit()
+            and 1 <= int(lines[0]) <= 65535
+            and lines[1].startswith("/devtools/browser/")
+        ):
+            return lines[0]
+        if time.monotonic() >= deadline:
+            raise AssertionError("Disposable Chrome debugging endpoint unavailable")
+        time.sleep(0.1)
+
+
 def run_browser(origin, operation_id, *, terminal="succeeded"):
     """Reusable real renderer; callers choose synthetic or SQL-backed API state."""
     binary = os.environ.get("SKY_TEST_BROWSER_CHROME")
@@ -82,18 +104,13 @@ def run_browser(origin, operation_id, *, terminal="succeeded"):
                 flags.insert(1, "--no-sandbox")
             chrome = subprocess.Popen(flags, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             try:
-                deadline = time.monotonic() + 30
-                port_file = profile / "DevToolsActivePort"
-                while not port_file.is_file():
-                    if chrome.poll() is not None or time.monotonic() >= deadline:
-                        raise AssertionError("Disposable Chrome debugging endpoint unavailable")
-                    time.sleep(0.1)
+                debug_port = wait_for_debug_port(profile / "DevToolsActivePort", chrome)
                 result = subprocess.run(
                     [
                         "node",
                         str(driver),
                         origin,
-                        port_file.read_text().splitlines()[0],
+                        debug_port,
                         ID,
                         operation_id,
                         output or "",
