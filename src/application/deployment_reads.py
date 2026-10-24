@@ -52,7 +52,7 @@ class DeploymentReadService:
                 **{
                     key: value
                     for key, value in job.items()
-                    if key not in {"security_hold", "security_hold_history"}
+                    if key not in {"security_hold", "security_hold_history", "security_database_restriction"}
                 },
                 "security_status": security_hold_projection(
                     job, include_details=principal.role is Role.ADMIN

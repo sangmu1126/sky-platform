@@ -19,6 +19,8 @@ REASONS = frozenset({"suspected_compromise", "credential_exposure", "untrusted_a
 def require_no_security_hold(job):
     # Malformed/non-null values also block. Absence preserves legacy behavior,
     # and is deliberately not interpreted as a clean security assessment.
+    if job.get("security_database_restriction") is not None:
+        raise ValueError("Database restriction requires dedicated incident recovery")
     if job.get("security_hold") is not None:
         raise ValueError("Security hold blocks promotion; operator incident review is required")
 
@@ -88,6 +90,10 @@ class SecurityHold:
         validate_release_request(incident_id, review_ref, expected_revision, expected_boundary, now)
         snapshot = self.writer.snapshot(principal, job_id)
         job = snapshot.record
+        if job.get("security_database_restriction") is not None:
+            raise ValueError(
+                "Database restriction requires dedicated incident recovery, not false-positive release"
+            )
         history = job.get("security_hold_history", [])
         if not isinstance(history, list) or any(not _valid_release(item) for item in history):
             raise ValueError("Invalid security hold audit history")
@@ -290,4 +296,7 @@ def security_hold_projection(job, *, include_details=False):
         value["status"] = "released_false_positive"
         if include_details:
             value["release"] = deepcopy(history[-1])
+    if job.get("security_database_restriction") is not None:
+        value["promotion_blocked"] = True
+        value["status"] = "database_restriction_review_required"
     return value
