@@ -192,7 +192,34 @@ def main(argv):
         action="store_true",
         help="Explicitly migrate the opt-in shared DB review schema too",
     )
+    security = modes.add_parser(
+        "security-hold", help="Trusted administrator: record or inspect a promotion hold", allow_abbrev=False
+    )
+    security.add_argument("action", choices=("place", "status"))
+    security.add_argument("--job-id", required=True)
+    security.add_argument(
+        "--user-id", required=True, help="Current operator-provisioned internal administrator"
+    )
+    security.add_argument("--organization-id", required=True)
+    security.add_argument("--auth-mode", choices=("cognito", "alb"), default="cognito")
+    security.add_argument("--alb-trusts-file")
+    security.add_argument("--memberships-file")
+    security.add_argument("--incident-id")
+    security.add_argument(
+        "--reason", choices=("suspected_compromise", "credential_exposure", "untrusted_artifact")
+    )
+    security.add_argument(
+        "--confirm-hold",
+        action="store_true",
+        help="Explicitly acknowledge promotion blocking and automation-consent revocation",
+    )
+    security.add_argument("--check-config", action="store_true", help="Validate without AWS/DB access")
     args = parser.parse_args(argv)
+    if args.mode == "security-hold":
+        from interfaces.security_hold import run_security_hold
+
+        run_security_hold(args, parser)
+        return
     if args.mode == "migrate":
         from botocore.exceptions import BotoCoreError, ClientError
 
