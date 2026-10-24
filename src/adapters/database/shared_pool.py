@@ -79,6 +79,52 @@ class PostgresSharedPool:
             self._registration(connection)
             self._inventory(connection)
 
+    def existing_allocation(self, binding):
+        """Read an exact ready allocation without creating roles, secrets or locks."""
+        from domain.database import DatabaseBinding
+
+        if not isinstance(binding, DatabaseBinding) or binding.role != "shared_workload":
+            raise PoolAllocationError("An existing shared workload binding is required")
+        request = PoolAllocationRequest(self.pool, binding.organization_id, binding.application_id)
+        if request.binding() != binding:
+            raise PoolAllocationError("Binding differs from the registered pool")
+        with self.connect_admin(self.pool.control_database) as connection:
+            connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            connection.execute("SET LOCAL statement_timeout='10s'")
+            if connection.execute("SELECT current_database()").fetchone() != (self.pool.control_database,):
+                raise PoolAllocationError("Pool administration database differs from registration")
+            if connection.execute("SELECT to_regnamespace('sky_state') IS NOT NULL").fetchone() != (False,):
+                raise PoolAllocationError("Workload pool must be separate from Sky state")
+            self._registration(connection)
+            row = connection.execute(
+                "SELECT request,state FROM sky_pool.allocations WHERE id=%s", (request.id,)
+            ).fetchone()
+            if not row or row[1] != "ready" or not isinstance(row[0], dict):
+                raise PoolAllocationError("An existing ready allocation is required")
+            payload = row[0]
+            limit = payload.get("connection_limit")
+            if type(limit) is not int:
+                raise PoolAllocationError("Invalid registered connection limit")
+            request = PoolAllocationRequest(self.pool, binding.organization_id, binding.application_id, limit)
+            secret = payload.get("secret_ref")
+            prefix = f"arn:aws:secretsmanager:{self.pool.region}:{self.pool.account_id}:secret:sky-pool/{self.pool.id}/{request.id}-"
+            if not isinstance(secret, str) or not re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9]{6}", secret):
+                raise PoolAllocationError("Invalid registered credential reference")
+            if payload != {
+                **asdict(request),
+                "database_name": request.database_name,
+                "login_role": request.login_role,
+                "secret_ref": secret,
+            }:
+                raise PoolAllocationError("Allocation identity differs from registration")
+            self._verify_role(connection, request)
+            if any(
+                self._marker(connection, kind, name) != (request.ownership_marker,)
+                for kind, name in (("role", request.login_role), ("database", request.database_name))
+            ):
+                raise PoolAllocationError("Allocation ownership differs from registration")
+            return request
+
     def _registration(self, connection):
         if connection.execute("SELECT to_regclass('sky_pool.identity')").fetchone()[0] is None:
             raise PoolAllocationError("Workload pool is not registered")

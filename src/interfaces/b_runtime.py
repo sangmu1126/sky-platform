@@ -197,7 +197,17 @@ def main(argv):
         help="Trusted administrator: record a hold, inspect it, or collect an observation",
         allow_abbrev=False,
     )
-    security.add_argument("action", choices=("place", "status", "observe", "release-false-positive"))
+    security.add_argument(
+        "action",
+        choices=(
+            "place",
+            "status",
+            "observe",
+            "release-false-positive",
+            "restrict-database",
+            "inspect-database",
+        ),
+    )
     security.add_argument("--job-id", required=True)
     security.add_argument(
         "--user-id", required=True, help="Current operator-provisioned internal administrator"
@@ -218,6 +228,13 @@ def main(argv):
     security.add_argument("--review-ref", help="Bounded reference to the operator false-positive review")
     security.add_argument("--expected-revision", type=int)
     security.add_argument("--expected-boundary")
+    security.add_argument("--expected-operation-id")
+    security.add_argument("--pool-config", help="Trusted server-registered workload pool configuration")
+    security.add_argument(
+        "--confirm-database-restriction",
+        action="store_true",
+        help="Acknowledge stopping this app database login and its existing sessions",
+    )
     security.add_argument(
         "--confirm-false-positive",
         action="store_true",

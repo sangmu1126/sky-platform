@@ -219,3 +219,165 @@ def test_provider_database_is_never_adopted_as_an_application_database(database)
             connection.autocommit = True
             connection.execute("DROP DATABASE rdsadmin WITH (FORCE)")
             connection.execute("DROP ROLE rdsadmin")
+
+
+def test_existing_allocation_lookup_is_read_only_and_accepts_restricted_role(database):
+    adapter, admin, _ = database
+    request = PoolAllocationRequest(adapter.pool, "team-a", "game", 7)
+    adapter.allocate(request, credentials(request))
+    with admin(adapter.pool.control_database) as connection:
+        connection.execute(sql.SQL("ALTER ROLE {} NOLOGIN").format(sql.Identifier(request.login_role)))
+        before = connection.execute("SELECT request,state FROM sky_pool.allocations").fetchall()
+    original = adapter._registration
+
+    def prove_read_only(connection):
+        assert connection.execute("SHOW transaction_read_only").fetchone() == ("on",)
+        original(connection)
+        # A write would be refused by PostgreSQL, not just by adapter convention.
+        with pytest.raises(psycopg.errors.ReadOnlySqlTransaction), connection.transaction():
+            connection.execute("UPDATE sky_pool.allocations SET state='needs_attention'")
+
+    with patch.object(adapter, "_registration", side_effect=prove_read_only):
+        assert adapter.existing_allocation(request.binding()) == request
+    with admin(adapter.pool.control_database) as connection:
+        assert connection.execute("SELECT request,state FROM sky_pool.allocations").fetchall() == before
+        assert connection.execute(
+            "SELECT rolcanlogin FROM pg_roles WHERE rolname=%s", (request.login_role,)
+        ).fetchone() == (False,)
+
+
+@pytest.mark.parametrize("change", ["missing", "pending", "payload", "role", "marker", "foreign-binding"])
+def test_existing_allocation_rejects_unregistered_or_changed_identity(database, change):
+    adapter, admin, _ = database
+    request = PoolAllocationRequest(adapter.pool, "team-a", "game")
+    binding = request.binding()
+    if change != "missing":
+        adapter.allocate(request, credentials(request))
+    with admin(adapter.pool.control_database) as connection:
+        if change == "pending":
+            connection.execute("UPDATE sky_pool.allocations SET state='provisioning'")
+        elif change == "payload":
+            connection.execute(
+                'UPDATE sky_pool.allocations SET request=request || \'{"application_id":"other"}\'::jsonb'
+            )
+        elif change == "role":
+            connection.execute(sql.SQL("ALTER ROLE {} CREATEDB").format(sql.Identifier(request.login_role)))
+        elif change == "marker":
+            connection.execute(
+                sql.SQL("COMMENT ON ROLE {} IS 'foreign'").format(sql.Identifier(request.login_role))
+            )
+        elif change == "foreign-binding":
+            binding = replace(binding, instance_id="other-instance")
+    with pytest.raises(PoolAllocationError):
+        adapter.existing_allocation(binding)
+
+
+def test_operator_cli_restricts_and_inspects_only_registered_database(
+    database, tmp_path, monkeypatch, capsys
+):
+    """Real SQL/fence + CLI; AWS identity/secret/TLS and state store are doubles here."""
+    import json
+    from dataclasses import asdict
+    from unittest.mock import Mock
+
+    from adapters.aws.shared_database import AwsSharedDatabaseAllocator
+    from application.security_hold import SecurityHold
+    from domain.access import Role
+    from interfaces.b_runtime import main
+    from interfaces.shared_database_worker import load_pool_configuration
+    from tests.unit.test_deployment_writes import Records, principal
+    from tests.unit.test_incident_database_cli import command
+    from tests.unit.test_security_hold_cli import ISSUER, arguments
+
+    allocator, admin, application = database
+    request = PoolAllocationRequest(allocator.pool, "org1", "game")
+    allocator.allocate(request, credentials(request))
+    other = PoolAllocationRequest(allocator.pool, "org2", "other")
+    allocator.allocate(other, credentials(other))
+    ca = tmp_path / "ca.pem"
+    ca.write_text("Local SQL test only; AWS/TLS clients are replaced")
+    config = {
+        "version": 1,
+        "settings": {
+            "pool": asdict(allocator.pool),
+            "resource_id": "db-TEST",
+            "vpc_id": "vpc-11111111",
+            "database_security_group": "sg-11111111",
+            "allowed_client_groups": ["sg-22222222"],
+            "admin_secret_arn": "arn:aws:secretsmanager:ap-northeast-2:111111111111:secret:admin-test01",
+            "app_secret_kms_arn": "arn:aws:kms:ap-northeast-2:111111111111:key/11111111-1111-1111-1111-111111111111",
+            "sslrootcert": str(ca),
+        },
+    }
+    path = tmp_path / "pool.json"
+    path.write_text(json.dumps(config))
+    for key, value in {
+        "SKY_DATABASE_HOST": "state.example",
+        "SKY_DATABASE_NAME": "sky_state",
+        "SKY_DATABASE_SECRET_ARN": "arn:aws:secretsmanager:ap-northeast-2:111111111111:secret:state-test01",
+        "SKY_AWS_REGION": "ap-northeast-2",
+        "SKY_DATABASE_SSLROOTCERT": str(ca),
+        "SKY_COGNITO_AUTH_JSON": json.dumps(
+            {"version": 1, "issuer": ISSUER, "client_id": "client123", "required_scopes": ["sky/deploy"]}
+        ),
+        "SKY_MEMBERSHIPS_JSON": json.dumps(
+            {
+                "version": 1,
+                "members": [
+                    {
+                        "issuer": ISSUER,
+                        "subject": "admin-sub",
+                        "user_id": "user1",
+                        "organization_id": "org1",
+                        "role": "admin",
+                        "enabled": True,
+                    }
+                ],
+            }
+        ),
+    }.items():
+        monkeypatch.setenv(key, value)
+    for key in ("SKY_ALB_TRUSTS_JSON", "SKY_PRIVATE_OPERATOR_JSON", "SKY_SHARED_DATABASE_POOL_JSON"):
+        monkeypatch.delenv(key, raising=False)
+    settings, _ = load_pool_configuration(path)
+    aws = AwsSharedDatabaseAllocator(settings, session=Mock(), connect=Mock())
+    records = Records()
+    records.job["workload_database_binding"] = asdict(request.binding())
+    SecurityHold(records).place(
+        principal(role=Role.ADMIN),
+        records.job["id"],
+        incident_id="INC-1",
+        reason="suspected_compromise",
+        now="2026-10-24T00:00:00+00:00",
+    )
+    boundary = records.job["security_review_boundary"]["id"]
+    connection = application(request.database_name, request.login_role, credentials(request).password)
+    try:
+        with (
+            patch("interfaces.security_hold.RotatingDatabaseConnection", return_value=Mock()),
+            patch("interfaces.security_hold.check_database_ready"),
+            patch("interfaces.security_hold.PostgresDeploymentRecordStore", return_value=records),
+            patch("interfaces.security_hold.AwsSharedDatabaseAllocator", return_value=aws),
+            patch.object(aws, "_audit", return_value=("pool.example", 5432, "admin")),
+            patch.object(aws, "_admin_credentials", return_value=("admin", "test-password")),
+            patch.object(aws, "_allocator", return_value=allocator),
+            patch.object(aws, "_connection", side_effect=lambda host, port, name, *auth: admin(name)),
+        ):
+            main(command(path, revision=records.revision, boundary=boundary))
+            restricted = json.loads(capsys.readouterr().out)["database_restriction"]
+            assert restricted["phase"] == "verified"
+            with pytest.raises(psycopg.OperationalError):
+                application(request.database_name, request.login_role, credentials(request).password)
+            with application(other.database_name, other.login_role, credentials(other).password) as db:
+                assert db.execute("SELECT 1").fetchone() == (1,)
+            writes = records.save_calls
+            args = command(path, "inspect-database", records.revision, boundary)
+            args[args.index("--expected-operation-id") + 1] = restricted["operation_id"]
+            main(args)
+            inspected = json.loads(capsys.readouterr().out)["database_restriction"]
+            assert inspected["observed_state"] == "restricted" and inspected["read_only"]
+            assert inspected["state_changed"] is False and records.save_calls == writes
+            main(arguments())
+            assert json.loads(capsys.readouterr().out)["database_restriction"]["phase"] == "verified"
+    finally:
+        connection.close()

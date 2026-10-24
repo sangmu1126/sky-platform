@@ -86,6 +86,51 @@ class AwsSharedDatabaseAllocator:
             for name in ("sts", "rds", "ec2", "secretsmanager")
         }
 
+    def incident_restriction(self, binding, state, *, guard, connection_guard):
+        """Resolve only a registered shared allocation; never allocate or read app secrets.
+
+        State configuration is operator-provisioned. TLS and RDS-managed admin
+        credentials are checked by the same audited connection path as allocation.
+        """
+        from adapters.database.incident_restriction import PostgresIncidentRestriction
+        from adapters.database.promotion_fence import PostgresApplicationFence
+
+        pool = self.settings.pool
+        request = PoolAllocationRequest(pool, binding.organization_id, binding.application_id)
+        if (
+            request.binding() != binding
+            or state.region != pool.region
+            or state.secret_arn.split(":")[4] != pool.account_id
+            or state.secret_arn == self.settings.admin_secret_arn
+            or state.database == pool.control_database
+        ):
+            raise PoolAllocationError("Separate registered state and workload databases required")
+        guard()
+        host, port, username = self._audit()
+        if host.lower().rstrip(".") == state.host.lower().rstrip("."):
+            raise PoolAllocationError("State and workload must use separate RDS endpoints")
+        guard()
+        credentials = self._admin_credentials(username)
+        allocator = self._allocator((host, port), credentials)
+        request = allocator.existing_allocation(binding)
+        guard()
+
+        def connect():
+            connection_guard()
+            allocator.existing_allocation(binding)
+            connection_guard()
+            return self._connection(host, port, pool.control_database, *credentials)
+
+        return PostgresIncidentRestriction(
+            PostgresApplicationFence(
+                connect,
+                binding,
+                request.login_role,
+                request.ownership_marker,
+                administrative_database=pool.control_database,
+            )
+        )
+
     def _audit(self):
         settings, pool = self.settings, self.settings.pool
         if any(client.meta.region_name != pool.region for client in self.clients.values()):

@@ -1,7 +1,8 @@
 """Trusted CLI only: operator-selected membership is not a browser login.
 
 Requires both OS/AWS/database access and an explicit current admin membership.
-No arbitrary role flag, migrations, workload mutations or queue messages.
+No arbitrary role flag, migrations, allocation, or queue messages.
+Explicitly confirmed DB restriction disables only a registered shared-app login.
 Only explicitly reviewed false positives may be released; real incident recovery is separate.
 Observe invokes the fixed ownership-checking probe; it cannot accept user URLs or receipts.
 """
@@ -12,6 +13,7 @@ import re
 from contextlib import contextmanager
 from datetime import UTC, datetime
 
+from adapters.aws.shared_database import AwsSharedDatabaseAllocator
 from adapters.state.postgres import (
     PostgresDeploymentRecordStore,
     PostgresStateSettings,
@@ -19,11 +21,14 @@ from adapters.state.postgres import (
 )
 from adapters.state.readiness import check_database_ready
 from application.deployment_observation import DeploymentObservationRecorder
+from application.deployment_writes import DeploymentMetadataWriter
 from application.health import check_deployment
+from application.incident_database_restriction import IncidentDatabaseRestriction
 from application.security_hold import SecurityHold, validate_hold_request, validate_release_request
 from domain.access import LoginSource, Principal, Role
+from domain.database import DatabaseBinding
 from interfaces.b_preparation_runtime import preparation_identity
-from interfaces.shared_database_worker import current_membership
+from interfaces.shared_database_worker import current_membership, load_pool_configuration
 from ports.state import RecordConflict
 
 
@@ -47,9 +52,26 @@ def operator(args):
 
 def run_security_hold(args, parser):
     now = datetime.now(UTC).isoformat()
+    database_action = args.action in {"restrict-database", "inspect-database"}
     try:
         if not re.fullmatch(r"[a-f0-9]{16}", args.job_id):
             raise ValueError("Invalid deployment identity")
+        if database_action:
+            validate_release_request(
+                args.incident_id, "database-operator", args.expected_revision, args.expected_boundary, now
+            )
+            if args.action == "restrict-database":
+                if not args.confirm_database_restriction or args.expected_operation_id is not None:
+                    raise ValueError("Explicit database restriction confirmation required")
+            elif args.confirm_database_restriction or not re.fullmatch(
+                r"[a-f0-9]{32}", args.expected_operation_id or ""
+            ):
+                raise ValueError("Exact restriction operation required for read-only inspection")
+            if any((args.reason, args.confirm_hold, args.review_ref, args.confirm_false_positive)):
+                raise ValueError("Database actions cannot release or replace a hold")
+            pool_settings, _ = load_pool_configuration(args.pool_config)
+        elif any((args.pool_config, args.confirm_database_restriction, args.expected_operation_id)):
+            raise ValueError("Database options require a database action")
         release_options = (
             args.review_ref,
             args.expected_revision,
@@ -62,17 +84,28 @@ def run_security_hold(args, parser):
             validate_release_request(
                 args.incident_id, args.review_ref, args.expected_revision, args.expected_boundary, now
             )
-        elif any(value is not None and value is not False for value in release_options):
+        elif not database_action and any(
+            value is not None and value is not False for value in release_options
+        ):
             raise ValueError("Release options require the false-positive release action")
         if args.action == "place":
             if not args.confirm_hold:
                 raise ValueError("Explicit hold confirmation required")
             validate_hold_request(args.incident_id, args.reason, now)
-        elif args.action != "release-false-positive" and (
-            args.incident_id is not None or args.reason is not None or args.confirm_hold
+        elif (
+            not database_action
+            and args.action != "release-false-positive"
+            and (args.incident_id is not None or args.reason is not None or args.confirm_hold)
         ):
             raise ValueError("Observation/status cannot include hold mutation options")
         state = PostgresStateSettings.from_environment()
+        if database_action and (
+            state.region != pool_settings.pool.region
+            or state.secret_arn.split(":")[4] != pool_settings.pool.account_id
+            or state.secret_arn == pool_settings.admin_secret_arn
+            or state.database == pool_settings.pool.control_database
+        ):
+            raise ValueError("Separate registered state and workload databases required")
         workspace = os.environ.get("SKY_STATE_WORKSPACE", "team")
         PostgresDeploymentRecordStore(None, workspace=workspace)
         actor = operator(args)
@@ -82,6 +115,7 @@ def run_security_hold(args, parser):
         print("Configuration valid: security hold; no AWS/DB calls", flush=True)
         return
     from botocore.exceptions import BotoCoreError, ClientError
+    from psycopg import Error as DatabaseError
 
     try:
         factory = RotatingDatabaseConnection(state)
@@ -89,7 +123,7 @@ def run_security_hold(args, parser):
         @contextmanager
         def connection():
             with factory() as db:
-                if args.action == "status":
+                if args.action in {"status", "inspect-database"}:
                     db.execute("SET TRANSACTION READ ONLY")
                 yield db
 
@@ -110,6 +144,50 @@ def run_security_hold(args, parser):
                 expected_boundary=args.expected_boundary,
                 now=now,
             )
+        database_report = None
+        if database_action:
+            writer = DeploymentMetadataWriter(records)
+            snapshot = writer.snapshot(actor, args.job_id)
+            binding = DatabaseBinding(**snapshot.record["workload_database_binding"])
+
+            def guard():
+                if operator(args) != actor:
+                    raise PermissionError("Administrator membership changed")
+                current = writer.snapshot(actor, args.job_id)
+                if current != snapshot:
+                    raise RecordConflict("Deployment changed during database registration checks")
+
+            def membership_guard():
+                if operator(args) != actor:
+                    raise PermissionError("Administrator membership changed")
+
+            guard()
+            adapter = AwsSharedDatabaseAllocator(pool_settings).incident_restriction(
+                binding, state, guard=guard, connection_guard=membership_guard
+            )
+
+            # Once the application service records intent, its own guards replace
+            # the bootstrap snapshot guard; connection guards still recheck admin.
+            def current_operator():
+                return operator(args)
+
+            restriction = IncidentDatabaseRestriction(
+                records,
+                adapter,
+                clock=lambda: datetime.now(UTC).isoformat(),
+                revalidate=current_operator,
+            )
+            options = {
+                "incident_id": args.incident_id,
+                "expected_boundary": args.expected_boundary,
+                "expected_revision": args.expected_revision,
+            }
+            if args.action == "restrict-database":
+                database_report = restriction.restrict(actor, args.job_id, **options)
+            else:
+                database_report = restriction.inspect(
+                    actor, args.job_id, expected_operation_id=args.expected_operation_id, **options
+                )
         observation = None
         if args.action == "observe":
             observation = DeploymentObservationRecorder(
@@ -118,6 +196,10 @@ def run_security_hold(args, parser):
                 clock=lambda: datetime.now(UTC).isoformat(),
                 revalidate=lambda: operator(args),
             ).collect(actor, args.job_id)
+        if args.action == "status":
+            database_report = IncidentDatabaseRestriction(
+                records, None, clock=lambda: now, revalidate=lambda: operator(args)
+            ).status(actor, args.job_id)
         report = service.status(actor, args.job_id)
         if operator(args) != actor:
             raise PermissionError("Administrator membership changed")
@@ -125,7 +207,8 @@ def run_security_hold(args, parser):
             json.dumps(
                 {
                     **report,
-                    "observed_only": args.action == "status",
+                    "observed_only": args.action in {"status", "inspect-database"},
+                    **({"database_restriction": database_report} if database_report is not None else {}),
                     **({"health_observation": observation} if observation is not None else {}),
                     "quarantine_performed": False,
                     "credentials_revoked": False,
@@ -143,6 +226,7 @@ def run_security_hold(args, parser):
         RecordConflict,
         BotoCoreError,
         ClientError,
+        DatabaseError,
     ):
         parser.exit(
             1,
