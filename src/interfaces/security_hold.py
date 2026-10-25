@@ -67,6 +67,7 @@ def run_security_hold(args, parser):
         "contain-runtime",
         "inspect-runtime-containment",
     }
+    executor_action = args.action == "inspect-credential-executor"
     secret_action = args.action in {"fence-secret-access", "inspect-secret-access"}
     secret_registration = None
     dedicated_registration = None
@@ -96,6 +97,14 @@ def run_security_hold(args, parser):
             secret_registration = load_secret_registration(args.incident_secret_config)
         elif args.incident_secret_config:
             raise ValueError("Secret access registration requires a Secret access action or status")
+        if executor_action:
+            validate_release_request(
+                args.incident_id, "credential-executor", args.expected_revision, args.expected_boundary, now
+            )
+            if not re.fullmatch(r"[a-f0-9]{32}", args.expected_operation_id or ""):
+                raise ValueError("Exact credential preparation operation required")
+            if any((args.reason, args.confirm_hold, args.review_ref, args.confirm_false_positive)):
+                raise ValueError("Executor inspection cannot mutate a hold")
         if runtime_action:
             if args.action == "contain-runtime" and args.expected_operation_id is not None:
                 raise ValueError("New containment cannot select an existing operation")
@@ -136,7 +145,8 @@ def run_security_hold(args, parser):
                 args.pool_config,
                 args.confirm_database_restriction,
                 args.expected_operation_id
-                if args.action not in {"inspect-runtime-containment", "inspect-secret-access"}
+                if args.action
+                not in {"inspect-runtime-containment", "inspect-secret-access", "inspect-credential-executor"}
                 else None,
                 args.dedicated_incident_config,
                 args.confirm_credential_preparation,
@@ -159,6 +169,7 @@ def run_security_hold(args, parser):
             not database_action
             and not runtime_action
             and not secret_action
+            and not executor_action
             and any(value is not None and value is not False for value in release_options)
         ):
             raise ValueError("Release options require the false-positive release action")
@@ -170,6 +181,7 @@ def run_security_hold(args, parser):
             not database_action
             and not runtime_action
             and not secret_action
+            and not executor_action
             and args.action != "release-false-positive"
             and (args.incident_id is not None or args.reason is not None or args.confirm_hold)
         ):
@@ -214,6 +226,7 @@ def run_security_hold(args, parser):
                     "inspect-runtime",
                     "inspect-runtime-containment",
                     "inspect-secret-access",
+                    "inspect-credential-executor",
                 }:
                     db.execute("SET TRANSACTION READ ONLY")
                 yield db
@@ -234,6 +247,24 @@ def run_security_hold(args, parser):
                 expected_revision=args.expected_revision,
                 expected_boundary=args.expected_boundary,
                 now=now,
+            )
+        executor_report = None
+        if executor_action:
+            from adapters.aws.credential_executor import AwsCredentialExecutorObserver
+            from application.credential_executor_inspection import CredentialExecutorInspection
+
+            executor_report = CredentialExecutorInspection(
+                records,
+                AwsCredentialExecutorObserver(),
+                clock=lambda: datetime.now(UTC).isoformat(),
+                revalidate=lambda: operator(args),
+            ).inspect(
+                actor,
+                args.job_id,
+                incident_id=args.incident_id,
+                expected_boundary=args.expected_boundary,
+                expected_revision=args.expected_revision,
+                expected_operation_id=args.expected_operation_id,
             )
         secret_report = None
         if secret_action:
@@ -367,12 +398,24 @@ def run_security_hold(args, parser):
                 "expected_revision": args.expected_revision,
             }
             if args.action in {"prepare-credentials", "inspect-credentials"}:
+                from adapters.aws.preparation_executor import load_preparation_executor_identity
+
+                executor = (
+                    load_preparation_executor_identity(
+                        os.environ.get("ECS_CONTAINER_METADATA_URI_V4"),
+                        account_id=binding.account_id,
+                        region=binding.region,
+                    )
+                    if args.action == "prepare-credentials"
+                    else None
+                )
                 credential_service = IncidentCredentialPreparation(
                     records,
                     adapter,
                     preparation,
                     clock=lambda: datetime.now(UTC).isoformat(),
                     revalidate=current_operator,
+                    executor=executor,
                 )
                 command = (
                     credential_service.prepare
@@ -432,6 +475,7 @@ def run_security_hold(args, parser):
                         "inspect-runtime",
                         "inspect-runtime-containment",
                         "inspect-secret-access",
+                        "inspect-credential-executor",
                     },
                     **({"database_restriction": database_report} if database_report is not None else {}),
                     **({"health_observation": observation} if observation is not None else {}),
@@ -441,6 +485,7 @@ def run_security_hold(args, parser):
                     **({"runtime_inspection": runtime_report} if runtime_report is not None else {}),
                     **({"runtime_containment": containment_report} if containment_report is not None else {}),
                     **({"secret_access_fence": secret_report} if secret_report is not None else {}),
+                    **({"credential_executor": executor_report} if executor_report is not None else {}),
                     "quarantine_performed": False,
                     "credentials_revoked": False,
                 }

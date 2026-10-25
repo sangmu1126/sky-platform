@@ -300,3 +300,44 @@ def test_secret_access_cli_records_intent_and_inspects_without_releasing_or_repl
     assert records.load_job(ID) == saved
     assert saved.record["security_hold"] == before.record["security_hold"]
     assert f.clients["secretsmanager"].put_resource_policy.call_count == 1
+
+
+def test_credential_executor_cli_observes_original_task_without_metadata_write(
+    configured_cli, store, database, monkeypatch, capsys, operating_review_setup
+):
+    from datetime import UTC, datetime, timedelta
+
+    from tests.unit.test_credential_executor import app
+
+    memory, _, inspection, _, clients = app(operating_review_setup)
+    now = datetime.now(UTC)
+    inspection.observer.clock = lambda: datetime.now(UTC)
+    clients['ecs'].describe_tasks.return_value['tasks'][0]['stoppedAt'] = now - timedelta(seconds=1)
+    monkeypatch.setenv('SKY_STATE_WORKSPACE', store.workspace)
+    records = PostgresDeploymentRecordStore(database, workspace=store.workspace)
+    records.save_job(ID, memory.job, expected_revision=None)
+    before = records.load_job(ID)
+    original = SecurityHold.status
+    read_only = []
+
+    def status(service, *args):
+        with service.writer.records.connection_factory() as db:
+            read_only.append(db.execute('SHOW transaction_read_only').fetchone()[0])
+        return original(service, *args)
+
+    with (
+        patch('interfaces.security_hold.RotatingDatabaseConnection', return_value=database),
+        patch('adapters.aws.credential_executor.AwsCredentialExecutorObserver', return_value=inspection.observer),
+        patch.object(SecurityHold, 'status', status),
+    ):
+        main(arguments('inspect-credential-executor') + [
+            '--incident-id', 'INC-1', '--expected-revision', str(before.revision),
+            '--expected-boundary', before.record['security_review_boundary']['id'],
+            '--expected-operation-id', before.record['security_credential_preparation']['operation_id'],
+        ])
+    result = json.loads(capsys.readouterr().out)
+    assert result['credential_executor']['executor_state'] == 'stopped'
+    assert result['credential_executor']['provider_requests_settled'] is False
+    assert result['credential_executor']['recovery_authorized'] is False
+    assert result['observed_only'] is True and read_only == ['on']
+    assert records.load_job(ID) == before

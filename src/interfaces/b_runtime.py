@@ -208,6 +208,7 @@ def main(argv):
             "inspect-database",
             "prepare-credentials",
             "inspect-credentials",
+            "inspect-credential-executor",
             "inspect-runtime",
             "contain-runtime",
             "inspect-runtime-containment",

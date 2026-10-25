@@ -8,23 +8,26 @@ import re
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from application.incident_database_restriction import FIELD as RESTRICTION_FIELD
 from application.incident_database_restriction import IncidentDatabaseRestriction, restriction_record_is_valid
 from application.security_hold import validate_release_request
 from domain.database import DatabaseBinding
 from domain.incident_credentials import candidate_secret_name
+from ports.preparation_executor import EcsPreparationExecutor, validate_preparation_executor
 from ports.state import RecordConflict
 
 FIELD = "security_credential_preparation"
 
 
 class IncidentCredentialPreparation:
-    def __init__(self, records, restriction, preparation, *, clock, revalidate):
+    def __init__(self, records, restriction, preparation, *, clock, revalidate, executor=None):
         self.scope = IncidentDatabaseRestriction(records, restriction, clock=clock, revalidate=revalidate)
         self.writer, self.preparation = self.scope.writer, preparation
-        self.clock = clock
+        if executor is not None and not isinstance(executor, EcsPreparationExecutor):
+            raise ValueError("Trusted ECS executor identity or explicit absence required")
+        self.clock, self.executor = clock, executor
 
     def status(self, principal, job_id):
         self.scope._authorized(principal)
@@ -207,7 +210,10 @@ class IncidentCredentialPreparation:
             raise RecordConflict("Deployment changed since credential preparation review")
         operation = uuid4().hex
         intent = {
-            "schema_version": 1,
+            "schema_version": 2,
+            "executor": self.executor.record(principal.user_id, str(UUID(operation)))
+            if self.executor
+            else None,
             "operation_id": operation,
             "restriction_operation_id": expected_operation_id,
             "incident_id": incident_id,
@@ -313,12 +319,18 @@ def preparation_record_is_valid(value):
     }
     try:
         if (
+            isinstance(value, dict)
+            and type(value.get("schema_version")) is int
+            and value["schema_version"] == 2
+        ):
+            base = base | {"executor"}
+        if (
             not isinstance(value, dict)
             or value.get("phase") not in extra
             or set(value) != base | extra[value["phase"]]
         ):
             return False
-        if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        if type(value["schema_version"]) is not int or value["schema_version"] not in {1, 2}:
             return False
         validate_release_request(
             value["incident_id"],
@@ -346,6 +358,15 @@ def preparation_record_is_valid(value):
             )
         ):
             return False
+        if value["schema_version"] == 2 and value["executor"] is not None:
+            executor = validate_preparation_executor(value["executor"])
+            prefix = f"arn:aws:ecs:{binding.region}:{binding.account_id}:task/"
+            if (
+                not executor["task_arn"].startswith(prefix)
+                or executor["worker_owner"] != value["requested_by"]
+                or executor["attempt_id"] != str(UUID(value["operation_id"]))
+            ):
+                return False
         name = candidate_secret_name(value["resource_id"], value["operation_id"])
         if value["candidate_secret_name"] != name:
             return False
