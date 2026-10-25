@@ -206,6 +206,7 @@ def main(argv):
             "release-false-positive",
             "restrict-database",
             "inspect-database",
+            "prepare-credentials",
         ),
     )
     security.add_argument("--job-id", required=True)
@@ -242,6 +243,11 @@ def main(argv):
         "--confirm-false-positive",
         action="store_true",
         help="Attest operator review; this is not automated security clearance",
+    )
+    security.add_argument(
+        "--confirm-credential-preparation",
+        action="store_true",
+        help="Prepare a new Secret and replace the password while LOGIN remains disabled",
     )
     security.add_argument("--check-config", action="store_true", help="Validate without AWS/DB access")
     args = parser.parse_args(argv)

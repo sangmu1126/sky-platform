@@ -80,6 +80,7 @@ class AwsSharedDatabaseAllocator:
 
             connect = psycopg.connect
         self.settings = settings
+        self.session = session
         self.connect = connect
         self.clients = {
             name: session.client(name, region_name=settings.pool.region)
@@ -129,6 +130,28 @@ class AwsSharedDatabaseAllocator:
                 request.ownership_marker,
                 administrative_database=pool.control_database,
             )
+        )
+
+    def incident_credential_preparation(self, binding, state, *, guard, connection_guard):
+        from botocore.config import Config
+
+        from adapters.aws.incident_credentials import (
+            AwsIncidentCredentialPreparation,
+            credential_preparation_principal,
+        )
+
+        restriction = self.incident_restriction(
+            binding, state, guard=guard, connection_guard=connection_guard
+        )
+        principal = credential_preparation_principal(self.session, binding)
+        return AwsIncidentCredentialPreparation(
+            restriction,
+            principal_arn=principal,
+            resource_id=self.settings.resource_id,
+            kms_key_arn=self.settings.app_secret_kms_arn,
+            client=self.session.client(
+                "secretsmanager", region_name=binding.region, config=Config(retries={"total_max_attempts": 1})
+            ),
         )
 
     def _audit(self):

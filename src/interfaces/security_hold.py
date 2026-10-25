@@ -24,6 +24,7 @@ from adapters.state.readiness import check_database_ready
 from application.deployment_observation import DeploymentObservationRecorder
 from application.deployment_writes import DeploymentMetadataWriter
 from application.health import check_deployment
+from application.incident_credential_preparation import IncidentCredentialPreparation
 from application.incident_database_restriction import IncidentDatabaseRestriction
 from application.security_hold import SecurityHold, validate_hold_request, validate_release_request
 from domain.access import LoginSource, Principal, Role
@@ -54,7 +55,7 @@ def operator(args):
 
 def run_security_hold(args, parser):
     now = datetime.now(UTC).isoformat()
-    database_action = args.action in {"restrict-database", "inspect-database"}
+    database_action = args.action in {"restrict-database", "inspect-database", "prepare-credentials"}
     dedicated_registration = None
     try:
         if not re.fullmatch(r"[a-f0-9]{16}", args.job_id):
@@ -70,6 +71,11 @@ def run_security_hold(args, parser):
                 r"[a-f0-9]{32}", args.expected_operation_id or ""
             ):
                 raise ValueError("Exact restriction operation required for read-only inspection")
+            if args.action == "prepare-credentials":
+                if not args.confirm_credential_preparation:
+                    raise ValueError("Explicit credential preparation confirmation required")
+            elif args.confirm_credential_preparation:
+                raise ValueError("Credential confirmation requires credential preparation")
             if any((args.reason, args.confirm_hold, args.review_ref, args.confirm_false_positive)):
                 raise ValueError("Database actions cannot release or replace a hold")
             pool_settings, _ = load_pool_configuration(args.pool_config)
@@ -83,6 +89,7 @@ def run_security_hold(args, parser):
                 args.confirm_database_restriction,
                 args.expected_operation_id,
                 args.dedicated_incident_config,
+                args.confirm_credential_preparation,
             )
         ):
             raise ValueError("Database options require a database action")
@@ -161,6 +168,7 @@ def run_security_hold(args, parser):
                 now=now,
             )
         database_report = None
+        credential_report = None
         if database_action:
             writer = DeploymentMetadataWriter(records)
             snapshot = writer.snapshot(actor, args.job_id)
@@ -186,9 +194,16 @@ def run_security_hold(args, parser):
                 provider = AwsSharedDatabaseAllocator(pool_settings)
             else:
                 raise ValueError("Database role differs from incident registration")
-            adapter = provider.incident_restriction(
-                binding, state, guard=guard, connection_guard=membership_guard
-            )
+            preparation = None
+            if args.action == "prepare-credentials":
+                preparation = provider.incident_credential_preparation(
+                    binding, state, guard=guard, connection_guard=membership_guard
+                )
+                adapter = preparation.restriction
+            else:
+                adapter = provider.incident_restriction(
+                    binding, state, guard=guard, connection_guard=membership_guard
+                )
 
             # Once the application service records intent, its own guards replace
             # the bootstrap snapshot guard; connection guards still recheck admin.
@@ -206,7 +221,16 @@ def run_security_hold(args, parser):
                 "expected_boundary": args.expected_boundary,
                 "expected_revision": args.expected_revision,
             }
-            if args.action == "restrict-database":
+            if args.action == "prepare-credentials":
+                credential_report = IncidentCredentialPreparation(
+                    records,
+                    adapter,
+                    preparation,
+                    clock=lambda: datetime.now(UTC).isoformat(),
+                    revalidate=current_operator,
+                ).prepare(actor, args.job_id, expected_operation_id=args.expected_operation_id, **options)
+                database_report = restriction.status(actor, args.job_id)
+            elif args.action == "restrict-database":
                 database_report = restriction.restrict(actor, args.job_id, **options)
             else:
                 database_report = restriction.inspect(
@@ -224,6 +248,10 @@ def run_security_hold(args, parser):
             database_report = IncidentDatabaseRestriction(
                 records, None, clock=lambda: now, revalidate=lambda: operator(args)
             ).status(actor, args.job_id)
+        if args.action == "status":
+            credential_report = IncidentCredentialPreparation(
+                records, None, None, clock=lambda: now, revalidate=lambda: operator(args)
+            ).status(actor, args.job_id)
         report = service.status(actor, args.job_id)
         if operator(args) != actor:
             raise PermissionError("Administrator membership changed")
@@ -234,6 +262,9 @@ def run_security_hold(args, parser):
                     "observed_only": args.action in {"status", "inspect-database"},
                     **({"database_restriction": database_report} if database_report is not None else {}),
                     **({"health_observation": observation} if observation is not None else {}),
+                    **(
+                        {"credential_preparation": credential_report} if credential_report is not None else {}
+                    ),
                     "quarantine_performed": False,
                     "credentials_revoked": False,
                 }

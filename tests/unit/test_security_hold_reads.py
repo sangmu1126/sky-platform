@@ -67,3 +67,19 @@ def test_corrupt_hold_remains_blocked_without_echoing_raw_record(bad):
         assert detail["security_status"]["promotion_blocked"] is True
         assert detail["security_status"]["hold"] is None
         assert "must-not-disclose" not in json.dumps(detail)
+
+
+@pytest.mark.parametrize("role", list(Role))
+def test_credential_preparation_details_are_operator_cli_only(role):
+    job, service = setup(None)
+    job["security_credential_preparation"] = {"candidate_secret_ref": "must-not-expose-candidate"}
+    detail = service.detail(principal(role=role), ID)
+    assert "security_credential_preparation" not in detail
+    assert "must-not-expose-candidate" not in json.dumps(detail)
+    assert detail["security_status"]["promotion_blocked"] is True
+    for items in (
+        service.summaries(principal(role=role)).items,
+        service.releases(principal(role=role), "game").items,
+    ):
+        assert "must-not-expose-candidate" not in json.dumps(items)
+        assert items[0]["security_status"]["promotion_blocked"] is True

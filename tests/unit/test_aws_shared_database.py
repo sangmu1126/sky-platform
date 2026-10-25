@@ -39,7 +39,10 @@ def aws(tmp_path):
     clients = {name: Mock() for name in ("sts", "rds", "ec2", "secretsmanager")}
     for client in clients.values():
         client.meta.region_name = pool.region
-    clients["sts"].get_caller_identity.return_value = {"Account": pool.account_id}
+    clients["sts"].get_caller_identity.return_value = {
+        "Account": pool.account_id,
+        "Arn": f"arn:aws:iam::{pool.account_id}:user/preparer",
+    }
     instance = {
         "DBInstanceArn": f"arn:aws:rds:{pool.region}:{pool.account_id}:db:{pool.instance_id}",
         "DBInstanceIdentifier": pool.instance_id,

@@ -76,6 +76,28 @@ class AwsDedicatedIncidentDatabase:
             connect=connect,
         )
 
+    def incident_credential_preparation(self, binding, state, *, guard, connection_guard):
+        from botocore.config import Config
+
+        from adapters.aws.incident_credentials import (
+            AwsIncidentCredentialPreparation,
+            credential_preparation_principal,
+        )
+
+        restriction = self.incident_restriction(
+            binding, state, guard=guard, connection_guard=connection_guard
+        )
+        principal = credential_preparation_principal(self.access.session, binding)
+        return AwsIncidentCredentialPreparation(
+            restriction,
+            principal_arn=principal,
+            resource_id=self.registration.resource_id,
+            kms_key_arn=self.registration.settings.source.app_secret_kms_arn,
+            client=self.access.session.client(
+                "secretsmanager", region_name=binding.region, config=Config(retries={"total_max_attempts": 1})
+            ),
+        )
+
     def _audit_target(self, state):
         registration = self.registration
         target, settings = registration.binding, registration.settings

@@ -107,3 +107,15 @@ def test_incident_resolution_uses_the_real_allocator_composition(aws):
     lookup.assert_called_once_with(request.binding())
     connect.assert_not_called()
     clients["secretsmanager"].create_secret.assert_not_called()
+
+
+def test_registered_shared_credential_factory_uses_single_attempt_secret_client(aws):
+    adapter, request, clients, *_ = aws
+    with patch("adapters.database.shared_pool.PostgresSharedPool.existing_allocation", return_value=request):
+        preparation = adapter.incident_credential_preparation(
+            request.binding(), state(adapter), guard=Mock(), connection_guard=Mock()
+        )
+    assert preparation.resource_id == adapter.settings.resource_id
+    assert preparation.binding == request.binding()
+    assert adapter.session.client.call_args.kwargs["config"].retries["total_max_attempts"] == 1
+    clients["secretsmanager"].create_secret.assert_not_called()

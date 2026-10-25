@@ -24,7 +24,10 @@ def setup(prepared):
         instance["MasterUserSecret"]["SecretArn"],
         5,
     )
-    clients["sts"].get_caller_identity.return_value = {"Account": registration.binding.account_id}
+    clients["sts"].get_caller_identity.return_value = {
+        "Account": registration.binding.account_id,
+        "Arn": f"arn:aws:iam::{registration.binding.account_id}:user/preparer",
+    }
     network = preparer.settings.source
     groups = [
         {"GroupId": group, "VpcId": network.vpc_id, "OwnerId": network.pool.account_id}
@@ -184,3 +187,15 @@ def test_invalid_registration_is_rejected_without_clients(prepared, field, value
     adapter, *_ = setup(prepared)
     with pytest.raises((ValueError, TypeError)):
         replace(adapter.registration, **{field: value})
+
+
+def test_dedicated_credential_factory_does_not_depend_on_shared_pool_or_create_secret(prepared):
+    adapter, state, clients, _instance, _connect = setup(prepared)
+    with patch("adapters.database.dedicated_access.PostgresDedicatedAccess.existing_access"):
+        preparation = adapter.incident_credential_preparation(
+            adapter.registration.binding, state, guard=Mock(), connection_guard=Mock()
+        )
+    assert preparation.resource_id == adapter.registration.resource_id
+    assert adapter.access.session.client.call_args.kwargs["config"].retries["total_max_attempts"] == 1
+    clients["secretsmanager"].create_secret.assert_not_called()
+    clients["rds"].create_db_instance.assert_not_called()
