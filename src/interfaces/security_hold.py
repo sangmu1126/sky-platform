@@ -55,7 +55,12 @@ def operator(args):
 
 def run_security_hold(args, parser):
     now = datetime.now(UTC).isoformat()
-    database_action = args.action in {"restrict-database", "inspect-database", "prepare-credentials"}
+    database_action = args.action in {
+        "restrict-database",
+        "inspect-database",
+        "prepare-credentials",
+        "inspect-credentials",
+    }
     dedicated_registration = None
     try:
         if not re.fullmatch(r"[a-f0-9]{16}", args.job_id):
@@ -146,7 +151,7 @@ def run_security_hold(args, parser):
         @contextmanager
         def connection():
             with factory() as db:
-                if args.action in {"status", "inspect-database"}:
+                if args.action in {"status", "inspect-database", "inspect-credentials"}:
                     db.execute("SET TRANSACTION READ ONLY")
                 yield db
 
@@ -195,7 +200,7 @@ def run_security_hold(args, parser):
             else:
                 raise ValueError("Database role differs from incident registration")
             preparation = None
-            if args.action == "prepare-credentials":
+            if args.action in {"prepare-credentials", "inspect-credentials"}:
                 preparation = provider.incident_credential_preparation(
                     binding, state, guard=guard, connection_guard=membership_guard
                 )
@@ -221,14 +226,22 @@ def run_security_hold(args, parser):
                 "expected_boundary": args.expected_boundary,
                 "expected_revision": args.expected_revision,
             }
-            if args.action == "prepare-credentials":
-                credential_report = IncidentCredentialPreparation(
+            if args.action in {"prepare-credentials", "inspect-credentials"}:
+                credential_service = IncidentCredentialPreparation(
                     records,
                     adapter,
                     preparation,
                     clock=lambda: datetime.now(UTC).isoformat(),
                     revalidate=current_operator,
-                ).prepare(actor, args.job_id, expected_operation_id=args.expected_operation_id, **options)
+                )
+                command = (
+                    credential_service.prepare
+                    if args.action == "prepare-credentials"
+                    else credential_service.inspect
+                )
+                credential_report = command(
+                    actor, args.job_id, expected_operation_id=args.expected_operation_id, **options
+                )
                 database_report = restriction.status(actor, args.job_id)
             elif args.action == "restrict-database":
                 database_report = restriction.restrict(actor, args.job_id, **options)
@@ -259,7 +272,7 @@ def run_security_hold(args, parser):
             json.dumps(
                 {
                     **report,
-                    "observed_only": args.action in {"status", "inspect-database"},
+                    "observed_only": args.action in {"status", "inspect-database", "inspect-credentials"},
                     **({"database_restriction": database_report} if database_report is not None else {}),
                     **({"health_observation": observation} if observation is not None else {}),
                     **(

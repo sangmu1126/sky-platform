@@ -55,6 +55,90 @@ class AwsIncidentCredentialPreparation:
         self.principal_arn = principal_arn
         self.kms_key_arn, self.client, self.restriction = kms_key_arn, client, restriction
 
+    def inspect(self, operation_id, *, guard):
+        """Read metadata/policy and SQL state only; never retrieve a password.
+
+        A valid candidate cannot attest that its password reached PostgreSQL.
+        Missing metadata cannot prove a previous creator has stopped either.
+        """
+        name = candidate_secret_name(self.resource_id, operation_id)
+        guard()
+        try:
+            metadata = self.client.describe_secret(SecretId=name)
+        except Exception as error:
+            if getattr(error, "response", {}).get("Error", {}).get("Code") != "ResourceNotFoundException":
+                raise
+            metadata = None
+        arn, version, state = None, None, "not_found"
+        if metadata is not None:
+            arn = metadata.get("ARN")
+            prefix = f"arn:aws:secretsmanager:{self.binding.region}:{self.binding.account_id}:secret:{name}-"
+            tags = {
+                "sky-managed": "true",
+                "sky-database-role": "incident_credential",
+                "sky-operation-id": operation_id,
+                "sky-rds-resource-id": self.resource_id,
+                "sky-organization-id": self.binding.organization_id,
+                "sky-application-id": self.binding.application_id,
+            }
+            actual = metadata.get("Tags", [])
+            if (
+                not isinstance(arn, str)
+                or not re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9]{6}", arn)
+                or metadata.get("Name") != name
+                or metadata.get("KmsKeyId") != self.kms_key_arn
+                or metadata.get("OwningService")
+                or metadata.get("RotationEnabled")
+                or metadata.get("ReplicationStatus")
+                or len({item["Key"] for item in actual}) != len(actual)
+                or {item["Key"]: item["Value"] for item in actual} != tags
+            ):
+                raise ValueError("Observed candidate metadata differs from registered intent")
+            guard()
+            if metadata.get("DeletedDate"):
+                state = "scheduled_for_deletion"
+            elif metadata.get("VersionIdsToStages") != {operation_id: ["AWSCURRENT"]}:
+                state = "version_mismatch"
+            else:
+                expected_policy = self._candidate_policy(arn)
+                raw = self.client.get_resource_policy(SecretId=arn).get("ResourcePolicy", "null")
+                try:
+                    policy_matches = json.loads(raw) == expected_policy
+                except (ValueError, TypeError):
+                    policy_matches = False
+                if policy_matches:
+                    state, version = "registered_candidate", operation_id
+                else:
+                    state = "policy_unverified"
+        guard()
+        observation = self.restriction.inspect(guard=guard)
+        guard()
+        return {
+            **observation,
+            "resource_id": self.resource_id,
+            "candidate_access_principal": self.principal_arn,
+            "candidate_state": state,
+            "candidate_secret_ref": arn,
+            "candidate_version_id": version,
+            "password_update_verified": False,
+            "authentication_verified": False,
+        }
+
+    def _candidate_policy(self, arn):
+        return {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "DenyUnapprovedIncidentCredentialAccess",
+                    "Effect": "Deny",
+                    "Principal": "*",
+                    "Action": "secretsmanager:*",
+                    "Resource": arn,
+                    "Condition": {"ArnNotEquals": {"aws:PrincipalArn": self.principal_arn}},
+                }
+            ],
+        }
+
     def prepare(self, operation_id, *, guard):
         name = candidate_secret_name(self.resource_id, operation_id)
         guard()
@@ -97,19 +181,7 @@ class AwsIncidentCredentialPreparation:
         ):
             raise ValueError("Exact candidate Secret creation receipt required")
         guard()
-        policy = {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Sid": "DenyUnapprovedIncidentCredentialAccess",
-                    "Effect": "Deny",
-                    "Principal": "*",
-                    "Action": "secretsmanager:*",
-                    "Resource": arn,
-                    "Condition": {"ArnNotEquals": {"aws:PrincipalArn": self.principal_arn}},
-                }
-            ],
-        }
+        policy = self._candidate_policy(arn)
         self.client.put_resource_policy(
             SecretId=arn, ResourcePolicy=json.dumps(policy), BlockPublicPolicy=True
         )

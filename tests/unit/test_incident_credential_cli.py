@@ -41,3 +41,20 @@ def test_preparation_needs_exact_confirmation_and_restriction_identity(configure
     ):
         main(args + ["--check-config"])
     assert error.value.code == 2
+
+
+def test_read_only_inspection_config_requires_no_confirmation_or_provider(
+    configured_cli, configuration, capsys
+):
+    args = arguments(configuration[0])
+    args[1] = "inspect-credentials"
+    args.remove("--confirm-credential-preparation")
+    with (
+        patch("interfaces.security_hold.AwsSharedDatabaseAllocator", side_effect=AssertionError("AWS")),
+        patch("interfaces.security_hold.RotatingDatabaseConnection", side_effect=AssertionError("SQL")),
+    ):
+        main(args + ["--check-config"])
+    assert "no AWS/DB calls" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as error:
+        main(args + ["--confirm-credential-preparation", "--check-config"])
+    assert error.value.code == 2

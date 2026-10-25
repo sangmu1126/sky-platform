@@ -207,6 +207,7 @@ def main(argv):
             "restrict-database",
             "inspect-database",
             "prepare-credentials",
+            "inspect-credentials",
         ),
     )
     security.add_argument("--job-id", required=True)
@@ -229,7 +230,10 @@ def main(argv):
     security.add_argument("--review-ref", help="Bounded reference to the operator false-positive review")
     security.add_argument("--expected-revision", type=int)
     security.add_argument("--expected-boundary")
-    security.add_argument("--expected-operation-id")
+    security.add_argument(
+        "--expected-operation-id",
+        help="Restriction ID for DB inspection/credential preparation; preparation ID for credential inspection",
+    )
     security.add_argument("--pool-config", help="Trusted server-registered workload pool configuration")
     security.add_argument(
         "--dedicated-incident-config", help="Trusted app-bound dedicated RDS incident registration"

@@ -36,6 +36,132 @@ class IncidentCredentialPreparation:
             return {"phase": "needs_attention", "record_valid": False}
         return {**deepcopy(record), "record_valid": True}
 
+    def inspect(
+        self, principal, job_id, *, incident_id, expected_boundary, expected_operation_id, expected_revision
+    ):
+        started = self.clock()
+        validate_release_request(
+            incident_id, "credential-inspection", expected_revision, expected_boundary, started
+        )
+        if not isinstance(expected_operation_id, str) or not re.fullmatch(
+            r"[a-f0-9]{32}", expected_operation_id
+        ):
+            raise ValueError("Exact credential preparation operation required")
+        snapshot = self.scope._scope(principal, job_id, incident_id, expected_boundary)
+        record = snapshot.record.get(FIELD)
+        restriction = snapshot.record.get(RESTRICTION_FIELD)
+        if (
+            not preparation_record_is_valid(record)
+            or not restriction_record_is_valid(restriction)
+            or record["operation_id"] != expected_operation_id
+            or record["incident_id"] != incident_id
+            or record["boundary_id"] != expected_boundary
+            or restriction["phase"] != "verified"
+            or restriction["operation_id"] != record["restriction_operation_id"]
+            or restriction["incident_id"] != incident_id
+            or restriction["boundary_id"] != expected_boundary
+            or restriction["binding"] != record["binding"]
+            or record["binding"] != asdict(self.preparation.binding)
+            or self.preparation.binding != self.scope.restriction.binding
+            or record["resource_id"] != self.preparation.resource_id
+            or record["candidate_access_principal"] != self.preparation.principal_arn
+        ):
+            raise ValueError("Current registered credential preparation intent required")
+        if snapshot.revision != expected_revision:
+            raise RecordConflict("Deployment changed since credential inspection request")
+
+        def guard():
+            current = self.scope._scope(principal, job_id, incident_id, expected_boundary)
+            if (
+                current.revision != snapshot.revision
+                or current.record.get(FIELD) != record
+                or current.record.get(RESTRICTION_FIELD) != restriction
+            ):
+                raise RecordConflict("Incident or credential preparation changed during inspection")
+
+        try:
+            guard()
+            receipt = self.preparation.inspect(expected_operation_id, guard=guard)
+            observed_at = self.clock()
+            stamp = datetime.fromisoformat(observed_at)
+            required = {
+                "binding",
+                "resource_id",
+                "candidate_access_principal",
+                "candidate_state",
+                "candidate_secret_ref",
+                "candidate_version_id",
+                "login_enabled",
+                "active_sessions",
+                "read_only",
+                "password_update_verified",
+                "authentication_verified",
+            }
+            candidate_states = {
+                "not_found",
+                "registered_candidate",
+                "scheduled_for_deletion",
+                "version_mismatch",
+                "policy_unverified",
+            }
+            if (
+                not isinstance(receipt, dict)
+                or set(receipt) != required
+                or receipt["binding"] != record["binding"]
+                or receipt["resource_id"] != record["resource_id"]
+                or receipt["candidate_access_principal"] != record["candidate_access_principal"]
+                or receipt["candidate_state"] not in candidate_states
+                or type(receipt["login_enabled"]) is not bool
+                or type(receipt["active_sessions"]) is not int
+                or receipt["active_sessions"] < 0
+                or receipt["read_only"] is not True
+                or receipt["password_update_verified"] is not False
+                or receipt["authentication_verified"] is not False
+                or stamp.tzinfo is None
+                or stamp < datetime.fromisoformat(started)
+                or stamp < datetime.fromisoformat(record["requested_at"])
+            ):
+                raise ValueError("Exact read-only credential inspection receipt required")
+            state = receipt["candidate_state"]
+            arn, version = receipt["candidate_secret_ref"], receipt["candidate_version_id"]
+            binding = self.preparation.binding
+            prefix = f"arn:aws:secretsmanager:{binding.region}:{binding.account_id}:secret:{record['candidate_secret_name']}-"
+            if state == "not_found":
+                if arn is not None or version is not None:
+                    raise ValueError("Absent candidate must not include a credential reference")
+            elif (
+                not isinstance(arn, str)
+                or not re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9]{6}", arn)
+                or version != (expected_operation_id if state == "registered_candidate" else None)
+            ):
+                raise ValueError("Candidate reference or version differs from preparation intent")
+            guard()
+        except (PermissionError, RecordConflict):
+            raise
+        except Exception:  # noqa: BLE001 -- do not disclose secret metadata or SQL diagnostics
+            raise OSError(
+                "Credential inspection unavailable; no Secret, password or state change requested"
+            ) from None
+        observed = (
+            "database_not_restricted"
+            if receipt["login_enabled"] or receipt["active_sessions"]
+            else "restricted_candidate_observed"
+            if state == "registered_candidate"
+            else "candidate_not_found"
+            if state == "not_found"
+            else "candidate_review_required"
+        )
+        return {
+            "operation_id": expected_operation_id,
+            "metadata_revision": snapshot.revision,
+            "persisted_phase": record["phase"],
+            "observed_state": observed,
+            "observed_at": stamp.isoformat(),
+            **deepcopy(receipt),
+            "execution_exclusion_verified": False,
+            "state_changed": False,
+        }
+
     def prepare(
         self, principal, job_id, *, incident_id, expected_boundary, expected_operation_id, expected_revision
     ):
