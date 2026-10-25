@@ -211,6 +211,8 @@ def main(argv):
             "inspect-runtime",
             "contain-runtime",
             "inspect-runtime-containment",
+            "fence-secret-access",
+            "inspect-secret-access",
         ),
     )
     security.add_argument("--job-id", required=True)
@@ -260,6 +262,9 @@ def main(argv):
         "--confirm-runtime-containment", action="store_true",
         help="Suspend this app automatic scaling, lower its minimum and request zero running tasks",
     )
+    security.add_argument("--incident-secret-config", help="Trusted registration of the app Secret and workload binding")
+    security.add_argument("--confirm-secret-access-fence", action="store_true",
+                          help="Deny recorded runtime role sessions access to this app Secret only")
     security.add_argument("--check-config", action="store_true", help="Validate without AWS/DB access")
     args = parser.parse_args(argv)
     if args.mode == "security-hold":

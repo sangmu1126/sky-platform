@@ -31,6 +31,7 @@ from domain.access import LoginSource, Principal, Role
 from domain.database import DatabaseBinding
 from interfaces.b_preparation_runtime import preparation_identity
 from interfaces.incident_database_registration import load_dedicated_incident_registration
+from interfaces.incident_secret_registration import load_secret_registration
 from interfaces.shared_database_worker import current_membership, load_pool_configuration
 from ports.state import RecordConflict
 
@@ -61,13 +62,40 @@ def run_security_hold(args, parser):
         "prepare-credentials",
         "inspect-credentials",
     }
-    runtime_action = args.action in {"inspect-runtime", "contain-runtime", "inspect-runtime-containment"}
+    runtime_action = args.action in {
+        "inspect-runtime",
+        "contain-runtime",
+        "inspect-runtime-containment",
+    }
+    secret_action = args.action in {"fence-secret-access", "inspect-secret-access"}
+    secret_registration = None
     dedicated_registration = None
     try:
         if not re.fullmatch(r"[a-f0-9]{16}", args.job_id):
             raise ValueError("Invalid deployment identity")
         if args.confirm_runtime_containment != (args.action == "contain-runtime"):
             raise ValueError("Explicit runtime containment confirmation required only for containment")
+        if args.confirm_secret_access_fence != (args.action == "fence-secret-access"):
+            raise ValueError("Explicit Secret access confirmation required only for fencing")
+        if secret_action:
+            secret_registration = load_secret_registration(args.incident_secret_config)
+            validate_release_request(
+                args.incident_id, "secret-access", args.expected_revision, args.expected_boundary, now
+            )
+            if args.action == "fence-secret-access" and args.expected_operation_id is not None:
+                raise ValueError("New Secret access fence cannot select an existing operation")
+            if args.action == "inspect-secret-access" and not re.fullmatch(
+                r"[a-f0-9]{32}", args.expected_operation_id or ""
+            ):
+                raise ValueError("Exact Secret access operation required")
+            if any((args.reason, args.confirm_hold, args.review_ref, args.confirm_false_positive)):
+                raise ValueError("Secret access actions cannot release or replace a hold")
+        elif args.action == "status" and (
+            args.incident_secret_config or "SKY_INCIDENT_SECRET_ACCESS_JSON" in os.environ
+        ):
+            secret_registration = load_secret_registration(args.incident_secret_config)
+        elif args.incident_secret_config:
+            raise ValueError("Secret access registration requires a Secret access action or status")
         if runtime_action:
             if args.action == "contain-runtime" and args.expected_operation_id is not None:
                 raise ValueError("New containment cannot select an existing operation")
@@ -107,7 +135,9 @@ def run_security_hold(args, parser):
             (
                 args.pool_config,
                 args.confirm_database_restriction,
-                args.expected_operation_id if args.action != "inspect-runtime-containment" else None,
+                args.expected_operation_id
+                if args.action not in {"inspect-runtime-containment", "inspect-secret-access"}
+                else None,
                 args.dedicated_incident_config,
                 args.confirm_credential_preparation,
             )
@@ -128,6 +158,7 @@ def run_security_hold(args, parser):
         elif (
             not database_action
             and not runtime_action
+            and not secret_action
             and any(value is not None and value is not False for value in release_options)
         ):
             raise ValueError("Release options require the false-positive release action")
@@ -138,6 +169,7 @@ def run_security_hold(args, parser):
         elif (
             not database_action
             and not runtime_action
+            and not secret_action
             and args.action != "release-false-positive"
             and (args.incident_id is not None or args.reason is not None or args.confirm_hold)
         ):
@@ -152,6 +184,12 @@ def run_security_hold(args, parser):
             raise ValueError("Separate registered state and workload databases required")
         if dedicated_registration and state.secret_arn == dedicated_registration.admin_secret_arn:
             raise ValueError("Dedicated workload cannot use Sky state credentials")
+        if secret_registration and (
+            state.region != secret_registration.binding.region
+            or state.secret_arn.split(":")[4] != secret_registration.binding.account_id
+            or state.secret_arn == secret_registration.secret_arn
+        ):
+            raise ValueError("Separate state and registered workload Secret required")
         workspace = os.environ.get("SKY_STATE_WORKSPACE", "team")
         PostgresDeploymentRecordStore(None, workspace=workspace)
         actor = operator(args)
@@ -175,6 +213,7 @@ def run_security_hold(args, parser):
                     "inspect-credentials",
                     "inspect-runtime",
                     "inspect-runtime-containment",
+                    "inspect-secret-access",
                 }:
                     db.execute("SET TRANSACTION READ ONLY")
                 yield db
@@ -196,6 +235,29 @@ def run_security_hold(args, parser):
                 expected_boundary=args.expected_boundary,
                 now=now,
             )
+        secret_report = None
+        if secret_action:
+            from adapters.aws.incident_secret_access import AwsIncidentSecretAccess
+            from application.incident_secret_access import IncidentSecretAccess
+
+            secret_service = IncidentSecretAccess(
+                records,
+                secret_registration,
+                AwsIncidentSecretAccess(secret_registration),
+                clock=lambda: datetime.now(UTC).isoformat(),
+                revalidate=lambda: operator(args),
+            )
+            options = {
+                "incident_id": args.incident_id,
+                "expected_boundary": args.expected_boundary,
+                "expected_revision": args.expected_revision,
+            }
+            if args.action == "fence-secret-access":
+                secret_report = secret_service.fence(actor, args.job_id, **options)
+            else:
+                secret_report = secret_service.inspect(
+                    actor, args.job_id, expected_operation_id=args.expected_operation_id, **options
+                )
         runtime_report = None
         containment_report = None
         if runtime_action:
@@ -349,6 +411,12 @@ def run_security_hold(args, parser):
             containment_report = IncidentRuntimeContainment(
                 records, None, clock=lambda: now, revalidate=lambda: operator(args)
             ).status(actor, args.job_id)
+        if args.action == "status":
+            from application.incident_secret_access import IncidentSecretAccess
+
+            secret_report = IncidentSecretAccess(
+                records, secret_registration, None, clock=lambda: now, revalidate=lambda: operator(args)
+            ).status(actor, args.job_id)
         report = service.status(actor, args.job_id)
         if operator(args) != actor:
             raise PermissionError("Administrator membership changed")
@@ -363,6 +431,7 @@ def run_security_hold(args, parser):
                         "inspect-credentials",
                         "inspect-runtime",
                         "inspect-runtime-containment",
+                        "inspect-secret-access",
                     },
                     **({"database_restriction": database_report} if database_report is not None else {}),
                     **({"health_observation": observation} if observation is not None else {}),
@@ -371,6 +440,7 @@ def run_security_hold(args, parser):
                     ),
                     **({"runtime_inspection": runtime_report} if runtime_report is not None else {}),
                     **({"runtime_containment": containment_report} if containment_report is not None else {}),
+                    **({"secret_access_fence": secret_report} if secret_report is not None else {}),
                     "quarantine_performed": False,
                     "credentials_revoked": False,
                 }

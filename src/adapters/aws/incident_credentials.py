@@ -10,7 +10,7 @@ import secrets
 from dataclasses import asdict
 
 from adapters.database.incident_credentials import PostgresIncidentCredentialPreparation
-from domain.incident_credentials import candidate_secret_name
+from domain.incident_credentials import candidate_resource_policy, candidate_secret_name
 
 
 def credential_preparation_principal(session, binding):
@@ -125,19 +125,7 @@ class AwsIncidentCredentialPreparation:
         }
 
     def _candidate_policy(self, arn):
-        return {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Sid": "DenyUnapprovedIncidentCredentialAccess",
-                    "Effect": "Deny",
-                    "Principal": "*",
-                    "Action": "secretsmanager:*",
-                    "Resource": arn,
-                    "Condition": {"ArnNotEquals": {"aws:PrincipalArn": self.principal_arn}},
-                }
-            ],
-        }
+        return candidate_resource_policy(arn, self.principal_arn)
 
     def prepare(self, operation_id, *, guard):
         name = candidate_secret_name(self.resource_id, operation_id)

@@ -17,6 +17,8 @@ REASONS = frozenset({"suspected_compromise", "credential_exposure", "untrusted_a
 
 
 def require_no_security_hold(job):
+    if job.get("security_secret_access_fence") is not None:
+        raise ValueError("Secret access fencing requires dedicated incident recovery")
     if job.get("security_runtime_containment") is not None:
         raise ValueError("Runtime containment requires dedicated incident recovery")
     # Malformed/non-null values also block. Absence preserves legacy behavior,
@@ -95,6 +97,8 @@ class SecurityHold:
         validate_release_request(incident_id, review_ref, expected_revision, expected_boundary, now)
         snapshot = self.writer.snapshot(principal, job_id)
         job = snapshot.record
+        if job.get("security_secret_access_fence") is not None:
+            raise ValueError("Secret access fencing requires dedicated incident recovery, not false-positive release")
         if job.get("security_runtime_containment") is not None:
             raise ValueError("Runtime containment requires dedicated incident recovery, not false-positive release")
         if (
@@ -315,4 +319,7 @@ def security_hold_projection(job, *, include_details=False):
         value["status"] = "database_restriction_review_required"
     if job.get("security_runtime_containment") is not None:
         value["status"] = "runtime_containment_review_required"
+    if job.get("security_secret_access_fence") is not None:
+        value["promotion_blocked"] = True
+        value["status"] = "secret_access_review_required"
     return value

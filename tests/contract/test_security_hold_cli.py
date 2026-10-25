@@ -235,3 +235,68 @@ def test_runtime_containment_cli_persists_intent_and_inspects_without_replay_or_
     assert records.load_job(ID) == saved
     assert saved.record["security_hold"] == before.record["security_hold"]
     assert scaling.register_scalable_target.call_count == ecs.update_service.call_count == 1
+
+
+def test_secret_access_cli_records_intent_and_inspects_without_releasing_or_replaying(
+    configured_cli, store, database, monkeypatch, capsys, operating_review_setup, tmp_path
+):
+    from application.incident_secret_access import FIELD
+    from tests.unit.test_incident_secret_access import configuration, fixture
+
+    f = fixture(operating_review_setup)
+    monkeypatch.setenv("SKY_STATE_WORKSPACE", store.workspace)
+    records = PostgresDeploymentRecordStore(database, workspace=store.workspace)
+    records.save_job(ID, f.records.job, expected_revision=None)
+    path = configuration(tmp_path / "secret-registration.json", f.registration)
+    original_policy = f.clients["secretsmanager"].put_resource_policy.side_effect
+    admitted = []
+
+    def policy(**kwargs):
+        saved = records.load_job(ID)
+        assert saved.record[FIELD]["phase"] == "applying"
+        assert saved.record["promotion_automation_consent"] is None
+        admitted.append(saved.revision)
+        return original_policy(**kwargs)
+
+    f.clients["secretsmanager"].put_resource_policy.side_effect = policy
+    before = records.load_job(ID)
+    options = ["--incident-secret-config", str(path), "--incident-id", "INC-1",
+               "--expected-boundary", before.record["security_review_boundary"]["id"]]
+    request = arguments("fence-secret-access") + options + ["--expected-revision", str(before.revision), "--confirm-secret-access-fence"]
+    with (
+        patch("interfaces.security_hold.RotatingDatabaseConnection", return_value=database),
+        patch("adapters.aws.incident_secret_access.AwsIncidentSecretAccess", return_value=f.adapter),
+    ):
+        main(request)
+        first = json.loads(capsys.readouterr().out)
+        assert first["secret_access_fence"]["phase"] == "policy_recorded"
+        saved = records.load_job(ID)
+        assert admitted == [before.revision + 1]
+        main(request)
+        assert json.loads(capsys.readouterr().out)["secret_access_fence"] == first["secret_access_fence"]
+        assert records.load_job(ID) == saved
+        original = SecurityHold.status
+        observed_readonly = []
+
+        def status(service, *args):
+            with service.writer.records.connection_factory() as db:
+                observed_readonly.append(db.execute("SHOW transaction_read_only").fetchone()[0])
+            return original(service, *args)
+
+        with patch.object(SecurityHold, "status", status):
+            main(arguments("inspect-secret-access") + options + [
+                "--expected-revision", str(saved.revision), "--expected-operation-id", saved.record[FIELD]["operation_id"],
+            ])
+        inspected = json.loads(capsys.readouterr().out)
+        assert inspected["secret_access_fence"]["policy_state"] == "runtime_roles_denied"
+        assert inspected["secret_access_fence"]["iam_propagation_verified"] is False
+        assert inspected["observed_only"] is True and observed_readonly == ["on"]
+        main(arguments("status") + ["--incident-secret-config", str(path)])
+        current = json.loads(capsys.readouterr().out)
+        assert current["secret_access_fence"]["operation_id"] == saved.record[FIELD]["operation_id"]
+        assert current["secret_access_fence"]["record_valid"] is True
+        main(arguments("status"))
+        assert json.loads(capsys.readouterr().out)["secret_access_fence"] == {"phase": "registration_required"}
+    assert records.load_job(ID) == saved
+    assert saved.record["security_hold"] == before.record["security_hold"]
+    assert f.clients["secretsmanager"].put_resource_policy.call_count == 1
