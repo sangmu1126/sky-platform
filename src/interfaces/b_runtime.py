@@ -209,6 +209,7 @@ def main(argv):
             "prepare-credentials",
             "inspect-credentials",
             "inspect-credential-executor",
+            "inspect-recovery-image",
             "inspect-runtime",
             "contain-runtime",
             "inspect-runtime-containment",
@@ -263,6 +264,7 @@ def main(argv):
         "--confirm-runtime-containment", action="store_true",
         help="Suspend this app automatic scaling, lower its minimum and request zero running tasks",
     )
+    security.add_argument("--recovery-image-config", help="Operator-owned recovery image/source pin registration")
     security.add_argument("--incident-secret-config", help="Trusted registration of the app Secret and workload binding")
     security.add_argument("--confirm-secret-access-fence", action="store_true",
                           help="Deny recorded runtime role sessions access to this app Secret only")

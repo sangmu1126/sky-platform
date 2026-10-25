@@ -341,3 +341,47 @@ def test_credential_executor_cli_observes_original_task_without_metadata_write(
     assert result['credential_executor']['recovery_authorized'] is False
     assert result['observed_only'] is True and read_only == ['on']
     assert records.load_job(ID) == before
+
+
+def test_recovery_image_cli_reads_pinned_artifact_without_writes_or_access_release(
+    configured_cli, store, database, monkeypatch, capsys, operating_review_setup, tmp_path
+):
+    from dataclasses import asdict
+    from datetime import UTC, datetime
+
+    from tests.unit.test_recovery_image_inspection import app, native
+
+    memory, _, inspection, _, _ = app(operating_review_setup)
+    adapter, _, _ = native(inspection.registration)
+    adapter.clock = lambda: datetime.now(UTC)
+    path = tmp_path / "recovery.json"
+    path.write_text(json.dumps({"version": 1, **asdict(inspection.registration)}))
+    monkeypatch.setenv("SKY_STATE_WORKSPACE", store.workspace)
+    records = PostgresDeploymentRecordStore(database, workspace=store.workspace)
+    records.save_job(ID, memory.job, expected_revision=None)
+    before = records.load_job(ID)
+    original = SecurityHold.status
+    readonly = []
+
+    def status(service, *args):
+        with service.writer.records.connection_factory() as db:
+            readonly.append(db.execute("SHOW transaction_read_only").fetchone()[0])
+        return original(service, *args)
+
+    with (
+        patch("interfaces.security_hold.RotatingDatabaseConnection", return_value=database),
+        patch("adapters.aws.recovery_image.AwsRecoveryImageInspector", return_value=adapter),
+        patch.object(SecurityHold, "status", status),
+    ):
+        main(arguments("inspect-recovery-image") + [
+            "--incident-id", "INC-1", "--expected-revision", str(before.revision),
+            "--expected-boundary", before.record["security_review_boundary"]["id"],
+            "--recovery-image-config", str(path),
+        ])
+    result = json.loads(capsys.readouterr().out)
+    assert result["recovery_image"]["manifest_bytes_verified"] is True
+    assert result["recovery_image"]["source_provenance_verified"] is False
+    assert result["recovery_image"]["recovery_authorized"] is False
+    assert result["observed_only"] is True and readonly == ["on"]
+    assert result["promotion_blocked"] is True
+    assert records.load_job(ID) == before

@@ -67,6 +67,8 @@ def run_security_hold(args, parser):
         "contain-runtime",
         "inspect-runtime-containment",
     }
+    image_action = args.action == "inspect-recovery-image"
+    image_registration = None
     executor_action = args.action == "inspect-credential-executor"
     secret_action = args.action in {"fence-secret-access", "inspect-secret-access"}
     secret_registration = None
@@ -97,6 +99,17 @@ def run_security_hold(args, parser):
             secret_registration = load_secret_registration(args.incident_secret_config)
         elif args.incident_secret_config:
             raise ValueError("Secret access registration requires a Secret access action or status")
+        if image_action:
+            from interfaces.recovery_image_registration import load_recovery_image_registration
+
+            image_registration = load_recovery_image_registration(args.recovery_image_config)
+            validate_release_request(
+                args.incident_id, "recovery-image", args.expected_revision, args.expected_boundary, now
+            )
+            if any((args.reason, args.confirm_hold, args.review_ref, args.confirm_false_positive)):
+                raise ValueError("Recovery image inspection cannot mutate a hold")
+        elif args.recovery_image_config:
+            raise ValueError("Recovery image registration requires image inspection")
         if executor_action:
             validate_release_request(
                 args.incident_id, "credential-executor", args.expected_revision, args.expected_boundary, now
@@ -170,6 +183,7 @@ def run_security_hold(args, parser):
             and not runtime_action
             and not secret_action
             and not executor_action
+            and not image_action
             and any(value is not None and value is not False for value in release_options)
         ):
             raise ValueError("Release options require the false-positive release action")
@@ -182,6 +196,7 @@ def run_security_hold(args, parser):
             and not runtime_action
             and not secret_action
             and not executor_action
+            and not image_action
             and args.action != "release-false-positive"
             and (args.incident_id is not None or args.reason is not None or args.confirm_hold)
         ):
@@ -227,6 +242,7 @@ def run_security_hold(args, parser):
                     "inspect-runtime-containment",
                     "inspect-secret-access",
                     "inspect-credential-executor",
+                    "inspect-recovery-image",
                 }:
                     db.execute("SET TRANSACTION READ ONLY")
                 yield db
@@ -247,6 +263,18 @@ def run_security_hold(args, parser):
                 expected_revision=args.expected_revision,
                 expected_boundary=args.expected_boundary,
                 now=now,
+            )
+        image_report = None
+        if image_action:
+            from adapters.aws.recovery_image import AwsRecoveryImageInspector
+            from application.recovery_image_inspection import RecoveryImageInspection
+
+            image_report = RecoveryImageInspection(
+                records, image_registration, AwsRecoveryImageInspector(),
+                clock=lambda: datetime.now(UTC).isoformat(), revalidate=lambda: operator(args),
+            ).inspect(
+                actor, args.job_id, incident_id=args.incident_id,
+                expected_boundary=args.expected_boundary, expected_revision=args.expected_revision,
             )
         executor_report = None
         if executor_action:
@@ -476,6 +504,7 @@ def run_security_hold(args, parser):
                         "inspect-runtime-containment",
                         "inspect-secret-access",
                         "inspect-credential-executor",
+                        "inspect-recovery-image",
                     },
                     **({"database_restriction": database_report} if database_report is not None else {}),
                     **({"health_observation": observation} if observation is not None else {}),
@@ -485,6 +514,7 @@ def run_security_hold(args, parser):
                     **({"runtime_inspection": runtime_report} if runtime_report is not None else {}),
                     **({"runtime_containment": containment_report} if containment_report is not None else {}),
                     **({"secret_access_fence": secret_report} if secret_report is not None else {}),
+                    **({"recovery_image": image_report} if image_report is not None else {}),
                     **({"credential_executor": executor_report} if executor_report is not None else {}),
                     "quarantine_performed": False,
                     "credentials_revoked": False,
