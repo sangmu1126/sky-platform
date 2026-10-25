@@ -165,3 +165,73 @@ def test_runtime_inspection_cli_uses_readonly_state_without_releasing_hold(
     assert report["runtime_inspection"]["execution_exclusion_verified"] is False
     assert report["observed_only"] is True and report["status"] == "held"
     assert records.load_job(ID) == before
+
+
+def test_runtime_containment_cli_persists_intent_and_inspects_without_replay_or_state_write(
+    configured_cli, store, database, monkeypatch, capsys
+):
+    from application.incident_runtime_containment import FIELD
+    from tests.unit.test_incident_runtime_containment import native
+
+    monkeypatch.setenv("SKY_STATE_WORKSPACE", store.workspace)
+    records = PostgresDeploymentRecordStore(database, workspace=store.workspace)
+    job = Records().job
+    _, result, _, _, ecs, scaling = native()
+    from unittest.mock import Mock
+
+    sts = Mock(get_caller_identity=Mock(return_value={"Account": "111111111111"}))
+    sts.meta.region_name = "ap-northeast-2"
+    job["result"] = result
+    records.save_job(ID, job, expected_revision=None)
+    mutation = scaling.register_scalable_target.side_effect
+    admitted = []
+
+    def suspend(**kwargs):
+        saved = records.load_job(ID)
+        assert saved.record[FIELD]["phase"] == "applying"
+        assert saved.record["promotion_automation_consent"] is None
+        admitted.append(saved.revision)
+        return mutation(**kwargs)
+
+    scaling.register_scalable_target.side_effect = suspend
+    clients = {"ecs": ecs, "sts": sts, "application-autoscaling": scaling}
+    with (
+        patch("interfaces.security_hold.RotatingDatabaseConnection", return_value=database),
+        patch("boto3.client", side_effect=lambda name, **kwargs: clients[name]),
+    ):
+        main(arguments("place"))
+        capsys.readouterr()
+        before = records.load_job(ID)
+        options = ["--incident-id", "INC-1", "--expected-boundary", before.record["security_review_boundary"]["id"]]
+        request = arguments("contain-runtime") + options + ["--expected-revision", str(before.revision), "--confirm-runtime-containment"]
+        main(request)
+        response = json.loads(capsys.readouterr().out)
+        assert response["runtime_containment"]["phase"] == "scale_down_requested"
+        assert response["observed_only"] is False
+        saved = records.load_job(ID)
+        assert admitted == [before.revision + 1]
+        main(request)
+        assert json.loads(capsys.readouterr().out)["runtime_containment"] == response["runtime_containment"]
+        assert records.load_job(ID) == saved
+        assert scaling.register_scalable_target.call_count == ecs.update_service.call_count == 1
+        original = SecurityHold.status
+        readonly = []
+
+        def status(service, *args):
+            with service.writer.records.connection_factory() as db:
+                readonly.append(db.execute("SHOW transaction_read_only").fetchone()[0])
+            return original(service, *args)
+
+        with patch.object(SecurityHold, "status", status):
+            main(arguments("inspect-runtime-containment") + options + [
+                "--expected-revision", str(saved.revision), "--expected-operation-id", saved.record[FIELD]["operation_id"],
+            ])
+        observed = json.loads(capsys.readouterr().out)
+    assert observed["observed_only"] is True and readonly == ["on"]
+    assert observed["runtime_containment"]["scale_down_configuration_observed"] is True
+    assert observed["runtime_containment"]["recovery_authorized"] is False
+    assert observed["runtime_containment"]["persisted_phase"] == "scale_down_requested"
+    assert observed["promotion_blocked"] is True
+    assert records.load_job(ID) == saved
+    assert saved.record["security_hold"] == before.record["security_hold"]
+    assert scaling.register_scalable_target.call_count == ecs.update_service.call_count == 1

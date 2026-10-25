@@ -61,12 +61,20 @@ def run_security_hold(args, parser):
         "prepare-credentials",
         "inspect-credentials",
     }
-    runtime_action = args.action == "inspect-runtime"
+    runtime_action = args.action in {"inspect-runtime", "contain-runtime", "inspect-runtime-containment"}
     dedicated_registration = None
     try:
         if not re.fullmatch(r"[a-f0-9]{16}", args.job_id):
             raise ValueError("Invalid deployment identity")
+        if args.confirm_runtime_containment != (args.action == "contain-runtime"):
+            raise ValueError("Explicit runtime containment confirmation required only for containment")
         if runtime_action:
+            if args.action == "contain-runtime" and args.expected_operation_id is not None:
+                raise ValueError("New containment cannot select an existing operation")
+            if args.action == "inspect-runtime-containment" and not re.fullmatch(
+                r"[a-f0-9]{32}", args.expected_operation_id or ""
+            ):
+                raise ValueError("Exact containment operation required")
             validate_release_request(
                 args.incident_id, "runtime-inspection", args.expected_revision, args.expected_boundary, now
             )
@@ -99,7 +107,7 @@ def run_security_hold(args, parser):
             (
                 args.pool_config,
                 args.confirm_database_restriction,
-                args.expected_operation_id,
+                args.expected_operation_id if args.action != "inspect-runtime-containment" else None,
                 args.dedicated_incident_config,
                 args.confirm_credential_preparation,
             )
@@ -117,8 +125,10 @@ def run_security_hold(args, parser):
             validate_release_request(
                 args.incident_id, args.review_ref, args.expected_revision, args.expected_boundary, now
             )
-        elif not database_action and not runtime_action and any(
-            value is not None and value is not False for value in release_options
+        elif (
+            not database_action
+            and not runtime_action
+            and any(value is not None and value is not False for value in release_options)
         ):
             raise ValueError("Release options require the false-positive release action")
         if args.action == "place":
@@ -159,7 +169,13 @@ def run_security_hold(args, parser):
         @contextmanager
         def connection():
             with factory() as db:
-                if args.action in {"status", "inspect-database", "inspect-credentials", "inspect-runtime"}:
+                if args.action in {
+                    "status",
+                    "inspect-database",
+                    "inspect-credentials",
+                    "inspect-runtime",
+                    "inspect-runtime-containment",
+                }:
                     db.execute("SET TRANSACTION READ ONLY")
                 yield db
 
@@ -181,27 +197,59 @@ def run_security_hold(args, parser):
                 now=now,
             )
         runtime_report = None
+        containment_report = None
         if runtime_action:
             import boto3
+            from botocore.config import Config
 
+            from adapters.aws.incident_containment import AwsIncidentRuntimeContainment
             from adapters.aws.incident_runtime import AwsIncidentRuntimeInspection
+            from application.incident_runtime_containment import IncidentRuntimeContainment
             from application.incident_runtime_inspection import IncidentRuntimeInspection
             from domain.incident_runtime import runtime_identity
 
             recorded = DeploymentMetadataWriter(records).snapshot(actor, args.job_id)
             _, runtime_region, *_ = runtime_identity(recorded.record.get("result"))
-            runtime_report = IncidentRuntimeInspection(
-                records,
-                AwsIncidentRuntimeInspection(
-                    client=boto3.client("ecs", region_name=runtime_region),
-                    sts=boto3.client("sts", region_name=runtime_region),
-                ),
-                clock=lambda: datetime.now(UTC).isoformat(),
-                revalidate=lambda: operator(args),
-            ).inspect(
-                actor, args.job_id, incident_id=args.incident_id,
-                expected_boundary=args.expected_boundary, expected_revision=args.expected_revision,
+            client = boto3.client(
+                "ecs",
+                region_name=runtime_region,
+                config=Config(retries={"total_max_attempts": 1, "mode": "standard"}),
             )
+            sts = boto3.client("sts", region_name=runtime_region)
+            options = {
+                "incident_id": args.incident_id,
+                "expected_boundary": args.expected_boundary,
+                "expected_revision": args.expected_revision,
+            }
+            if args.action == "inspect-runtime":
+                runtime_report = IncidentRuntimeInspection(
+                    records,
+                    AwsIncidentRuntimeInspection(client=client, sts=sts),
+                    clock=lambda: datetime.now(UTC).isoformat(),
+                    revalidate=lambda: operator(args),
+                ).inspect(actor, args.job_id, **options)
+            else:
+                adapter = AwsIncidentRuntimeContainment(
+                    client=client,
+                    sts=sts,
+                    autoscaling=boto3.client(
+                        "application-autoscaling",
+                        region_name=runtime_region,
+                        config=Config(retries={"total_max_attempts": 1, "mode": "standard"}),
+                    ),
+                )
+                containment = IncidentRuntimeContainment(
+                    records,
+                    adapter,
+                    clock=lambda: datetime.now(UTC).isoformat(),
+                    revalidate=lambda: operator(args),
+                )
+                if args.action == "contain-runtime":
+                    containment_report = containment.request(actor, args.job_id, **options)
+                else:
+                    containment_report = containment.inspect(
+                        actor, args.job_id, expected_operation_id=args.expected_operation_id, **options
+                    )
         database_report = None
         credential_report = None
         if database_action:
@@ -295,6 +343,12 @@ def run_security_hold(args, parser):
             credential_report = IncidentCredentialPreparation(
                 records, None, None, clock=lambda: now, revalidate=lambda: operator(args)
             ).status(actor, args.job_id)
+        if args.action == "status":
+            from application.incident_runtime_containment import IncidentRuntimeContainment
+
+            containment_report = IncidentRuntimeContainment(
+                records, None, clock=lambda: now, revalidate=lambda: operator(args)
+            ).status(actor, args.job_id)
         report = service.status(actor, args.job_id)
         if operator(args) != actor:
             raise PermissionError("Administrator membership changed")
@@ -302,13 +356,21 @@ def run_security_hold(args, parser):
             json.dumps(
                 {
                     **report,
-                    "observed_only": args.action in {"status", "inspect-database", "inspect-credentials", "inspect-runtime"},
+                    "observed_only": args.action
+                    in {
+                        "status",
+                        "inspect-database",
+                        "inspect-credentials",
+                        "inspect-runtime",
+                        "inspect-runtime-containment",
+                    },
                     **({"database_restriction": database_report} if database_report is not None else {}),
                     **({"health_observation": observation} if observation is not None else {}),
                     **(
                         {"credential_preparation": credential_report} if credential_report is not None else {}
                     ),
                     **({"runtime_inspection": runtime_report} if runtime_report is not None else {}),
+                    **({"runtime_containment": containment_report} if containment_report is not None else {}),
                     "quarantine_performed": False,
                     "credentials_revoked": False,
                 }

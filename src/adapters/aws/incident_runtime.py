@@ -30,35 +30,7 @@ class AwsIncidentRuntimeInspection:
         if self.client.meta.region_name != region:
             raise ValueError("Runtime inspection client region differs from deployment")
 
-        def service():
-            response = call(
-                self.client, "describe_services", cluster=cluster, services=[arn], include=["TAGS"]
-            )
-            services = response.get("services", [])
-            if response.get("failures") or len(services) != 1:
-                raise ValueError("Registered service could not be observed")
-            item = services[0]
-            tags = item.get("tags", [])
-            if (
-                item.get("serviceArn") != arn
-                or item.get("clusterArn") != cluster
-                or item.get("status") not in {"ACTIVE", "DRAINING", "INACTIVE"}
-                or item.get("taskDefinition") != definition
-                or not isinstance(tags, list)
-                or any(not isinstance(tag, dict) or set(tag) != {"key", "value"} for tag in tags)
-                or len({tag["key"] for tag in tags}) != len(tags)
-                or {tag["key"]: tag["value"] for tag in tags}.get("sky-managed") != "true"
-                or {tag["key"]: tag["value"] for tag in tags}.get("sky-attempt") != result["owner_attempt"]
-                or any(
-                    type(item.get(key)) is not int or item[key] < 0
-                    for key in ("desiredCount", "runningCount", "pendingCount")
-                )
-                or not isinstance(item.get("deployments"), list)
-            ):
-                raise ValueError("Service ownership, identity or counts could not be verified")
-            return item
-
-        before = service()
+        before = self._service(result, call)
         inventory = set(known)
         # RUNNING includes pending starts; STOPPED includes tasks requested to
         # stop that may still be draining. Neither list alone is sufficient.
@@ -102,7 +74,7 @@ class AwsIncidentRuntimeInspection:
             )
         ):
             raise ValueError("Historical and current task observations must be complete")
-        after = service()
+        after = self._service(result, call)
         if after != before:
             raise ValueError("Service changed during inspection")
         stopped = all(
@@ -132,3 +104,30 @@ class AwsIncidentRuntimeInspection:
             "scheduler_fenced": False,
             "state_changed": False,
         }
+
+    def _service(self, result, call):
+        _, _, cluster, arn, definition, _, _ = runtime_identity(result)
+        response = call(self.client, "describe_services", cluster=cluster, services=[arn], include=["TAGS"])
+        services = response.get("services", [])
+        if response.get("failures") or len(services) != 1:
+            raise ValueError("Registered service could not be observed")
+        item = services[0]
+        tags = item.get("tags", [])
+        if (
+            item.get("serviceArn") != arn
+            or item.get("clusterArn") != cluster
+            or item.get("status") not in {"ACTIVE", "DRAINING", "INACTIVE"}
+            or item.get("taskDefinition") != definition
+            or not isinstance(tags, list)
+            or any(not isinstance(tag, dict) or set(tag) != {"key", "value"} for tag in tags)
+            or len({tag["key"] for tag in tags}) != len(tags)
+            or {tag["key"]: tag["value"] for tag in tags}.get("sky-managed") != "true"
+            or {tag["key"]: tag["value"] for tag in tags}.get("sky-attempt") != result["owner_attempt"]
+            or any(
+                type(item.get(key)) is not int or item[key] < 0
+                for key in ("desiredCount", "runningCount", "pendingCount")
+            )
+            or not isinstance(item.get("deployments"), list)
+        ):
+            raise ValueError("Service ownership, identity or counts could not be verified")
+        return item

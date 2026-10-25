@@ -58,6 +58,7 @@ class DeploymentReadService:
                         "security_hold_history",
                         "security_database_restriction",
                         "security_credential_preparation",
+                        "security_runtime_containment",
                     }
                 },
                 "security_status": security_hold_projection(

@@ -23,25 +23,9 @@ class IncidentRuntimeInspection:
         )
 
         def snapshot():
-            if (
-                not isinstance(principal, Principal)
-                or principal.role is not Role.ADMIN
-                or self.revalidate() != principal
-            ):
-                raise PermissionError("Current organization administrator required")
-            value = self.writer.snapshot(principal, job_id)
-            projection = security_hold_projection(value.record, include_details=True)
-            if (
-                projection.get("record_valid") is not True
-                or projection["hold"]["incident_id"] != incident_id
-                or value.record.get("security_review_boundary")
-                != {"id": expected_boundary, "recorded_at": projection["hold"]["recorded_at"]}
-            ):
-                raise ValueError("Current incident hold and boundary required")
+            value = self._scope(principal, job_id, incident_id, expected_boundary, started)
             if value.revision != expected_revision:
                 raise RecordConflict("Deployment changed since runtime inspection request")
-            if datetime.fromisoformat(started) < datetime.fromisoformat(projection["hold"]["recorded_at"]):
-                raise ValueError("Observation cannot precede incident")
             return value
 
         original = snapshot()
@@ -102,3 +86,23 @@ class IncidentRuntimeInspection:
             **deepcopy(result),
             "recovery_authorized": False,
         }
+
+    def _scope(self, principal, job_id, incident_id, expected_boundary, started):
+        if (
+            not isinstance(principal, Principal)
+            or principal.role is not Role.ADMIN
+            or self.revalidate() != principal
+        ):
+            raise PermissionError("Current organization administrator required")
+        value = self.writer.snapshot(principal, job_id)
+        projection = security_hold_projection(value.record, include_details=True)
+        if (
+            projection.get("record_valid") is not True
+            or projection["hold"]["incident_id"] != incident_id
+            or value.record.get("security_review_boundary")
+            != {"id": expected_boundary, "recorded_at": projection["hold"]["recorded_at"]}
+        ):
+            raise ValueError("Current incident hold and boundary required")
+        if datetime.fromisoformat(started) < datetime.fromisoformat(projection["hold"]["recorded_at"]):
+            raise ValueError("Observation cannot precede incident")
+        return value

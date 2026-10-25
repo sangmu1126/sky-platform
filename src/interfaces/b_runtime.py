@@ -209,6 +209,8 @@ def main(argv):
             "prepare-credentials",
             "inspect-credentials",
             "inspect-runtime",
+            "contain-runtime",
+            "inspect-runtime-containment",
         ),
     )
     security.add_argument("--job-id", required=True)
@@ -233,7 +235,7 @@ def main(argv):
     security.add_argument("--expected-boundary")
     security.add_argument(
         "--expected-operation-id",
-        help="Restriction ID for DB inspection/credential preparation; preparation ID for credential inspection",
+        help="Restriction ID for DB inspection/credential preparation; preparation ID for credential inspection; containment ID for containment inspection",
     )
     security.add_argument("--pool-config", help="Trusted server-registered workload pool configuration")
     security.add_argument(
@@ -253,6 +255,10 @@ def main(argv):
         "--confirm-credential-preparation",
         action="store_true",
         help="Prepare a new Secret and replace the password while LOGIN remains disabled",
+    )
+    security.add_argument(
+        "--confirm-runtime-containment", action="store_true",
+        help="Suspend this app automatic scaling, lower its minimum and request zero running tasks",
     )
     security.add_argument("--check-config", action="store_true", help="Validate without AWS/DB access")
     args = parser.parse_args(argv)
