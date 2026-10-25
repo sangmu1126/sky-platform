@@ -61,10 +61,17 @@ def run_security_hold(args, parser):
         "prepare-credentials",
         "inspect-credentials",
     }
+    runtime_action = args.action == "inspect-runtime"
     dedicated_registration = None
     try:
         if not re.fullmatch(r"[a-f0-9]{16}", args.job_id):
             raise ValueError("Invalid deployment identity")
+        if runtime_action:
+            validate_release_request(
+                args.incident_id, "runtime-inspection", args.expected_revision, args.expected_boundary, now
+            )
+            if any((args.reason, args.confirm_hold, args.review_ref, args.confirm_false_positive)):
+                raise ValueError("Runtime inspection cannot mutate a hold")
         if database_action:
             validate_release_request(
                 args.incident_id, "database-operator", args.expected_revision, args.expected_boundary, now
@@ -110,7 +117,7 @@ def run_security_hold(args, parser):
             validate_release_request(
                 args.incident_id, args.review_ref, args.expected_revision, args.expected_boundary, now
             )
-        elif not database_action and any(
+        elif not database_action and not runtime_action and any(
             value is not None and value is not False for value in release_options
         ):
             raise ValueError("Release options require the false-positive release action")
@@ -120,6 +127,7 @@ def run_security_hold(args, parser):
             validate_hold_request(args.incident_id, args.reason, now)
         elif (
             not database_action
+            and not runtime_action
             and args.action != "release-false-positive"
             and (args.incident_id is not None or args.reason is not None or args.confirm_hold)
         ):
@@ -151,7 +159,7 @@ def run_security_hold(args, parser):
         @contextmanager
         def connection():
             with factory() as db:
-                if args.action in {"status", "inspect-database", "inspect-credentials"}:
+                if args.action in {"status", "inspect-database", "inspect-credentials", "inspect-runtime"}:
                     db.execute("SET TRANSACTION READ ONLY")
                 yield db
 
@@ -171,6 +179,28 @@ def run_security_hold(args, parser):
                 expected_revision=args.expected_revision,
                 expected_boundary=args.expected_boundary,
                 now=now,
+            )
+        runtime_report = None
+        if runtime_action:
+            import boto3
+
+            from adapters.aws.incident_runtime import AwsIncidentRuntimeInspection
+            from application.incident_runtime_inspection import IncidentRuntimeInspection
+            from domain.incident_runtime import runtime_identity
+
+            recorded = DeploymentMetadataWriter(records).snapshot(actor, args.job_id)
+            _, runtime_region, *_ = runtime_identity(recorded.record.get("result"))
+            runtime_report = IncidentRuntimeInspection(
+                records,
+                AwsIncidentRuntimeInspection(
+                    client=boto3.client("ecs", region_name=runtime_region),
+                    sts=boto3.client("sts", region_name=runtime_region),
+                ),
+                clock=lambda: datetime.now(UTC).isoformat(),
+                revalidate=lambda: operator(args),
+            ).inspect(
+                actor, args.job_id, incident_id=args.incident_id,
+                expected_boundary=args.expected_boundary, expected_revision=args.expected_revision,
             )
         database_report = None
         credential_report = None
@@ -272,12 +302,13 @@ def run_security_hold(args, parser):
             json.dumps(
                 {
                     **report,
-                    "observed_only": args.action in {"status", "inspect-database", "inspect-credentials"},
+                    "observed_only": args.action in {"status", "inspect-database", "inspect-credentials", "inspect-runtime"},
                     **({"database_restriction": database_report} if database_report is not None else {}),
                     **({"health_observation": observation} if observation is not None else {}),
                     **(
                         {"credential_preparation": credential_report} if credential_report is not None else {}
                     ),
+                    **({"runtime_inspection": runtime_report} if runtime_report is not None else {}),
                     "quarantine_performed": False,
                     "credentials_revoked": False,
                 }

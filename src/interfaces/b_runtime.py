@@ -208,6 +208,7 @@ def main(argv):
             "inspect-database",
             "prepare-credentials",
             "inspect-credentials",
+            "inspect-runtime",
         ),
     )
     security.add_argument("--job-id", required=True)
