@@ -2,7 +2,7 @@
 
 Requires both OS/AWS/database access and an explicit current admin membership.
 No arbitrary role flag, migrations, allocation, or queue messages.
-Explicitly confirmed DB restriction disables only a registered shared-app login.
+Explicitly confirmed DB restriction disables only a registered shared/dedicated app login.
 Only explicitly reviewed false positives may be released; real incident recovery is separate.
 Observe invokes the fixed ownership-checking probe; it cannot accept user URLs or receipts.
 """
@@ -13,6 +13,7 @@ import re
 from contextlib import contextmanager
 from datetime import UTC, datetime
 
+from adapters.aws.dedicated_incident import AwsDedicatedIncidentDatabase
 from adapters.aws.shared_database import AwsSharedDatabaseAllocator
 from adapters.state.postgres import (
     PostgresDeploymentRecordStore,
@@ -28,6 +29,7 @@ from application.security_hold import SecurityHold, validate_hold_request, valid
 from domain.access import LoginSource, Principal, Role
 from domain.database import DatabaseBinding
 from interfaces.b_preparation_runtime import preparation_identity
+from interfaces.incident_database_registration import load_dedicated_incident_registration
 from interfaces.shared_database_worker import current_membership, load_pool_configuration
 from ports.state import RecordConflict
 
@@ -53,6 +55,7 @@ def operator(args):
 def run_security_hold(args, parser):
     now = datetime.now(UTC).isoformat()
     database_action = args.action in {"restrict-database", "inspect-database"}
+    dedicated_registration = None
     try:
         if not re.fullmatch(r"[a-f0-9]{16}", args.job_id):
             raise ValueError("Invalid deployment identity")
@@ -70,7 +73,18 @@ def run_security_hold(args, parser):
             if any((args.reason, args.confirm_hold, args.review_ref, args.confirm_false_positive)):
                 raise ValueError("Database actions cannot release or replace a hold")
             pool_settings, _ = load_pool_configuration(args.pool_config)
-        elif any((args.pool_config, args.confirm_database_restriction, args.expected_operation_id)):
+            if args.dedicated_incident_config or "SKY_DEDICATED_INCIDENT_JSON" in os.environ:
+                dedicated_registration = load_dedicated_incident_registration(
+                    args.dedicated_incident_config, pool_settings
+                )
+        elif any(
+            (
+                args.pool_config,
+                args.confirm_database_restriction,
+                args.expected_operation_id,
+                args.dedicated_incident_config,
+            )
+        ):
             raise ValueError("Database options require a database action")
         release_options = (
             args.review_ref,
@@ -106,6 +120,8 @@ def run_security_hold(args, parser):
             or state.database == pool_settings.pool.control_database
         ):
             raise ValueError("Separate registered state and workload databases required")
+        if dedicated_registration and state.secret_arn == dedicated_registration.admin_secret_arn:
+            raise ValueError("Dedicated workload cannot use Sky state credentials")
         workspace = os.environ.get("SKY_STATE_WORKSPACE", "team")
         PostgresDeploymentRecordStore(None, workspace=workspace)
         actor = operator(args)
@@ -162,7 +178,15 @@ def run_security_hold(args, parser):
                     raise PermissionError("Administrator membership changed")
 
             guard()
-            adapter = AwsSharedDatabaseAllocator(pool_settings).incident_restriction(
+            if binding.role == "dedicated_workload":
+                if dedicated_registration is None or dedicated_registration.binding != binding:
+                    raise ValueError("Exact dedicated application registration required")
+                provider = AwsDedicatedIncidentDatabase(dedicated_registration)
+            elif binding.role == "shared_workload" and dedicated_registration is None:
+                provider = AwsSharedDatabaseAllocator(pool_settings)
+            else:
+                raise ValueError("Database role differs from incident registration")
+            adapter = provider.incident_restriction(
                 binding, state, guard=guard, connection_guard=membership_guard
             )
 

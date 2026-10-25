@@ -120,3 +120,81 @@ def test_unrelated_database_public_connect_is_rejected_without_publishing_app_ro
                 assert db.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (role,)).fetchone() is None
         finally:
             root.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(unrelated)))
+
+
+def test_existing_dedicated_access_is_read_only_and_accepts_nologin(access):
+    from unittest.mock import patch
+
+    from psycopg import sql
+
+    from adapters.database.promotion_fence import PostgresApplicationFence
+
+    adapter, binding, admin, _login = access
+    receipt = prepare(adapter, binding)
+    with admin() as db:
+        db.execute(sql.SQL("ALTER ROLE {} NOLOGIN").format(sql.Identifier(receipt["login_role"])))
+    original = PostgresApplicationFence._verify_ownership
+
+    def read_only(fence, db):
+        assert db.execute("SHOW transaction_read_only").fetchone() == ("on",)
+        with pytest.raises(psycopg.errors.ReadOnlySqlTransaction), db.transaction():
+            db.execute("UPDATE public.scores SET score=score WHERE false")
+        original(fence, db)
+
+    with patch.object(PostgresApplicationFence, "_verify_ownership", new=read_only):
+        result = adapter.existing_access(binding, connection_limit=5, guard=lambda: None)
+    assert result["login_role"] == receipt["login_role"]
+    with admin() as db:
+        assert db.execute(
+            "SELECT rolcanlogin FROM pg_roles WHERE rolname=%s", (receipt["login_role"],)
+        ).fetchone() == (False,)
+
+
+@pytest.mark.parametrize("change", ["limit", "inherit", "marker", "control-schema"])
+def test_existing_dedicated_registration_drift_is_rejected_without_restoring_login(access, change):
+    from psycopg import sql
+
+    adapter, binding, admin, _login = access
+    receipt = prepare(adapter, binding)
+    with admin() as db:
+        db.execute(sql.SQL("ALTER ROLE {} NOLOGIN").format(sql.Identifier(receipt["login_role"])))
+        if change == "inherit":
+            db.execute(sql.SQL("ALTER ROLE {} INHERIT").format(sql.Identifier(receipt["login_role"])))
+        elif change == "marker":
+            db.execute(
+                sql.SQL("COMMENT ON DATABASE {} IS 'foreign'").format(sql.Identifier(binding.database_name))
+            )
+        elif change == "control-schema":
+            db.execute("CREATE SCHEMA sky_state")
+    with pytest.raises(ValueError):
+        adapter.existing_access(binding, connection_limit=6 if change == "limit" else 5, guard=lambda: None)
+    with admin() as db:
+        assert db.execute(
+            "SELECT rolcanlogin FROM pg_roles WHERE rolname=%s", (receipt["login_role"],)
+        ).fetchone() == (False,)
+
+
+def test_dedicated_fence_restricts_existing_session_and_inspects_without_data_changes(access):
+    from adapters.database.incident_restriction import PostgresIncidentRestriction
+    from adapters.database.promotion_fence import PostgresApplicationFence
+
+    adapter, binding, admin, login = access
+    prepare(adapter, binding)
+    role, marker = access_identity(binding)
+    held = login(role, "disposable-app-password")
+    try:
+        held.execute("SELECT count(*) FROM scores")
+        adapter.existing_access(binding, connection_limit=5, guard=lambda: None)
+        restriction = PostgresIncidentRestriction(PostgresApplicationFence(admin, binding, role, marker))
+        assert restriction.restrict(guard=lambda: None)["login_enabled"] is False
+        with pytest.raises(psycopg.OperationalError):
+            held.execute("SELECT 1")
+        with pytest.raises(psycopg.OperationalError):
+            login(role, "disposable-app-password")
+        adapter.existing_access(binding, connection_limit=5, guard=lambda: None)
+        report = restriction.inspect(guard=lambda: None)
+        assert report["read_only"] and report["login_enabled"] is False and report["active_sessions"] == 0
+        with admin() as db:
+            assert db.execute("SELECT count(*) FROM scores").fetchone() == (2,)
+    finally:
+        held.close()

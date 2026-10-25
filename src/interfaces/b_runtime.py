@@ -231,6 +231,9 @@ def main(argv):
     security.add_argument("--expected-operation-id")
     security.add_argument("--pool-config", help="Trusted server-registered workload pool configuration")
     security.add_argument(
+        "--dedicated-incident-config", help="Trusted app-bound dedicated RDS incident registration"
+    )
+    security.add_argument(
         "--confirm-database-restriction",
         action="store_true",
         help="Acknowledge stopping this app database login and its existing sessions",

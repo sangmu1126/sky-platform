@@ -27,6 +27,35 @@ class PostgresDedicatedAccess:
     def __init__(self, admin_connect, application_connect):
         self.admin_connect, self.application_connect = admin_connect, application_connect
 
+    def existing_access(self, binding, *, connection_limit, guard):
+        """Validate an existing login (including NOLOGIN) without provisioning it."""
+        from adapters.database.promotion_fence import PostgresApplicationFence
+
+        role, marker = access_identity(binding)
+        if type(connection_limit) is not int or not 1 <= connection_limit <= 50:
+            raise ValueError("Registered connection limit required")
+        fence = PostgresApplicationFence(self.admin_connect, binding, role, marker)
+        guard()
+        with self.admin_connect() as db:
+            db.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            db.execute("SET LOCAL statement_timeout='10s'")
+            if db.execute(
+                "SELECT to_regnamespace('sky_state') IS NOT NULL OR to_regnamespace('sky_pool') IS NOT NULL"
+            ).fetchone() != (False,):
+                raise ValueError("Control-plane schema cannot receive incident controls")
+            fence._verify_ownership(db)
+            flags = db.execute(
+                "SELECT rolinherit,rolconnlimit FROM pg_roles WHERE rolname=%s", (role,)
+            ).fetchone()
+            owner = db.execute(
+                "SELECT datdba=(SELECT oid FROM pg_roles WHERE rolname=current_user) "
+                "FROM pg_database WHERE datname=current_database()"
+            ).fetchone()
+            if flags != (False, connection_limit) or owner != (True,):
+                raise ValueError("Dedicated role limits or database owner differ from registration")
+            guard()
+        return {"login_role": role, "ownership_marker": marker}
+
     def provision(self, binding, *, password, secret_ref, guard, connection_limit=5):
         role, marker = access_identity(binding)
         if (
