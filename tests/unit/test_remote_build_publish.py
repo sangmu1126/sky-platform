@@ -295,3 +295,26 @@ def test_command_preserves_scoped_environment_on_inspect_fallback(tmp_path, fall
     assert value == "linux/amd64"
     assert len(calls) == (2 if fallback else 1)
     assert all(selected is environment for _, selected in calls)
+
+
+def test_publish_exports_only_after_result_write_and_never_runs_source(publisher, tmp_path):
+    builder, _, objects, _ = publisher
+    destination = tmp_path / "proof"
+    events = []
+    objects.put.side_effect = lambda *args: events.append("result-persisted")
+    with patch(
+        "scripts.build_attestation.export_published",
+        side_effect=lambda *args: events.append("proof-exported"),
+    ) as export:
+        builder.publish(tmp_path, tmp_path, attestation_output=destination)
+    assert events == ["result-persisted", "proof-exported"]
+    assert export.call_args.args[0] == destination
+    assert export.call_args.args[3] == IMAGE_MANIFEST.decode()
+
+
+def test_failed_result_write_cannot_export_attestation_proof(publisher, tmp_path):
+    builder, _, objects, _ = publisher
+    objects.put.side_effect = OSError("uncertain result write")
+    with patch("scripts.build_attestation.export_published") as export, pytest.raises(OSError):
+        builder.publish(tmp_path, tmp_path, attestation_output=tmp_path / "proof")
+    export.assert_not_called()

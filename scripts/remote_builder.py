@@ -185,7 +185,7 @@ def verified_build(request, output):
     return receipt["image_id"]
 
 
-def publish(directory, output):
+def publish(directory, output, *, attestation_output=None):
     import boto3
     from botocore.exceptions import ClientError
 
@@ -287,6 +287,16 @@ def publish(directory, output):
             }
             validate_result(result, request, result["run_id"])
             objects.put(result_key, result)
+            if attestation_output is not None:
+                from scripts.build_attestation import document, export_published
+
+                export_published(
+                    attestation_output,
+                    request,
+                    result,
+                    images[0]["imageManifest"],
+                    document(output / "build.json", 4096),
+                )
         finally:
             # Always attempt registry credential cleanup, including partial login failures.
             # Preserve the original failure if cleanup also fails; a cleanup-only
@@ -306,14 +316,17 @@ def main():
     parser.add_argument("mode", choices=("prepare", "build", "publish"))
     parser.add_argument("--input", type=Path, default=Path("build-input"))
     parser.add_argument("--output", type=Path, default=Path("build-output"))
+    parser.add_argument("--attestation-output", type=Path)
     args = parser.parse_args()
+    if args.attestation_output is not None and args.mode != "publish":
+        parser.error("Attestation export requires publish")
     try:
         if args.mode == "prepare":
             prepare(args.input)
         elif args.mode == "build":
             build(args.input, args.output)
         else:
-            publish(args.input, args.output)
+            publish(args.input, args.output, attestation_output=args.attestation_output)
     except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired, BotoCoreError, ClientError):
         sys.exit("Remote builder failed; inspect scope, inputs and immutable build state.")
 
