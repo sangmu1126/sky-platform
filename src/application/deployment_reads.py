@@ -60,6 +60,8 @@ class DeploymentReadService:
                         "security_credential_preparation",
                         "security_runtime_containment",
                         "security_secret_access_fence",
+                        "security_artifact_review",
+                        "security_artifact_review_history",
                     }
                 },
                 "security_status": security_hold_projection(

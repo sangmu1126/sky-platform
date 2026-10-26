@@ -68,8 +68,17 @@ def run_security_hold(args, parser):
         "inspect-runtime-containment",
     }
     image_action = args.action == "inspect-recovery-image"
-    combined_action = args.action == "inspect-build-image"
-    build_action = args.action in {"inspect-build-approval", "inspect-build-image"}
+    review_action = args.action in {
+        "approve-artifact-review",
+        "check-artifact-review",
+        "revoke-artifact-review",
+    }
+    combined_action = args.action in {
+        "inspect-build-image",
+        "approve-artifact-review",
+        "check-artifact-review",
+    }
+    build_action = args.action == "inspect-build-approval" or combined_action
     build_registration = None
     image_registration = None
     provenance_policy, provenance_verifier = None, None
@@ -80,6 +89,41 @@ def run_security_hold(args, parser):
     try:
         if not re.fullmatch(r"[a-f0-9]{16}", args.job_id):
             raise ValueError("Invalid deployment identity")
+        if review_action:
+            validate_release_request(
+                args.incident_id,
+                args.artifact_review_ref or "artifact-review",
+                args.expected_revision,
+                args.expected_boundary,
+                now,
+            )
+            if not re.fullmatch(r"[a-f0-9]{32}", args.artifact_review_id or ""):
+                raise ValueError("Exact artifact review identity required")
+            if args.confirm_artifact_review != (
+                args.action == "approve-artifact-review"
+            ) or args.confirm_artifact_review_revocation != (args.action == "revoke-artifact-review"):
+                raise ValueError("Explicit disjoint artifact review confirmation required")
+            if args.action == "check-artifact-review":
+                if args.artifact_review_ref is not None or args.artifact_review_seconds is not None:
+                    raise ValueError("Review check cannot change reference or validity")
+            elif args.artifact_review_ref is None:
+                raise ValueError("Separate artifact review reference required")
+            if args.action != "approve-artifact-review" and args.artifact_review_seconds is not None:
+                raise ValueError("Review validity requires approval")
+            if args.artifact_review_seconds is not None and not 1 <= args.artifact_review_seconds <= 900:
+                raise ValueError("Bounded artifact review validity required")
+            if any((args.reason, args.confirm_hold, args.review_ref, args.confirm_false_positive)):
+                raise ValueError("Artifact review cannot release or replace a hold")
+        elif any(
+            (
+                args.artifact_review_id,
+                args.artifact_review_ref,
+                args.artifact_review_seconds is not None,
+                args.confirm_artifact_review,
+                args.confirm_artifact_review_revocation,
+            )
+        ):
+            raise ValueError("Artifact review options require a review action")
         if args.confirm_runtime_containment != (args.action == "contain-runtime"):
             raise ValueError("Explicit runtime containment confirmation required only for containment")
         if args.confirm_secret_access_fence != (args.action == "fence-secret-access"):
@@ -236,6 +280,7 @@ def run_security_hold(args, parser):
             and not executor_action
             and not image_action
             and not build_action
+            and not review_action
             and any(value is not None and value is not False for value in release_options)
         ):
             raise ValueError("Release options require the false-positive release action")
@@ -250,6 +295,7 @@ def run_security_hold(args, parser):
             and not executor_action
             and not image_action
             and not build_action
+            and not review_action
             and args.action != "release-false-positive"
             and (args.incident_id is not None or args.reason is not None or args.confirm_hold)
         ):
@@ -298,6 +344,7 @@ def run_security_hold(args, parser):
                     "inspect-recovery-image",
                     "inspect-build-approval",
                     "inspect-build-image",
+                    "check-artifact-review",
                 }:
                     db.execute("SET TRANSACTION READ ONLY")
                 yield db
@@ -320,6 +367,7 @@ def run_security_hold(args, parser):
                 now=now,
             )
         build_report = None
+        review_report = None
         if build_action:
             from adapters.aws.kms_build_key import AwsKmsBuildKeyObserver
             from adapters.aws.recovery_image import AwsRecoveryImageInspector
@@ -327,7 +375,7 @@ def run_security_hold(args, parser):
             from adapters.state.operations import PostgresOperationStore
             from application.incident_build_approval import IncidentBuildApprovalInspection
 
-            build_report = IncidentBuildApprovalInspection(
+            inspector = IncidentBuildApprovalInspection(
                 records,
                 PostgresBuildApprovalReader(
                     PostgresOperationStore(connection, workspace=workspace), build_registration.settings
@@ -338,16 +386,65 @@ def run_security_hold(args, parser):
                 key_observer=AwsKmsBuildKeyObserver(build_registration.identity),
                 image_registration=image_registration if combined_action else None,
                 image_inspector=AwsRecoveryImageInspector() if combined_action else None,
-            ).inspect(
+            )
+            options = {
+                "incident_id": args.incident_id,
+                "expected_boundary": args.expected_boundary,
+                "expected_revision": args.expected_revision,
+                "bundle": build_registration.bundle,
+                "image_digest": build_registration.image_digest,
+                "config_digest": build_registration.config_digest,
+                "run_id": build_registration.run_id,
+            }
+            if review_action:
+                from copy import copy
+
+                from application.incident_artifact_review import IncidentArtifactReview
+
+                def reviewer(user_id):
+                    selected = copy(args)
+                    selected.user_id = user_id
+                    return operator(selected)
+
+                reviews = IncidentArtifactReview(
+                    records,
+                    inspector,
+                    clock=lambda: datetime.now(UTC).isoformat(),
+                    revalidate=lambda: operator(args),
+                    reviewer=reviewer,
+                )
+                if args.action == "approve-artifact-review":
+                    review_report = reviews.approve(
+                        actor,
+                        args.job_id,
+                        review_id=args.artifact_review_id,
+                        review_ref=args.artifact_review_ref,
+                        seconds=args.artifact_review_seconds or 900,
+                        **options,
+                    )
+                else:
+                    review_report = reviews.check(
+                        actor, args.job_id, review_id=args.artifact_review_id, **options
+                    )
+            else:
+                build_report = inspector.inspect(actor, args.job_id, **options)
+        if args.action == "revoke-artifact-review":
+            from application.incident_artifact_review import IncidentArtifactReview
+
+            review_report = IncidentArtifactReview(
+                records,
+                None,
+                clock=lambda: datetime.now(UTC).isoformat(),
+                revalidate=lambda: operator(args),
+                reviewer=None,
+            ).revoke(
                 actor,
                 args.job_id,
+                review_id=args.artifact_review_id,
+                review_ref=args.artifact_review_ref,
                 incident_id=args.incident_id,
                 expected_boundary=args.expected_boundary,
                 expected_revision=args.expected_revision,
-                bundle=build_registration.bundle,
-                image_digest=build_registration.image_digest,
-                config_digest=build_registration.config_digest,
-                run_id=build_registration.run_id,
             )
         image_report = None
         if image_action:
@@ -590,6 +687,13 @@ def run_security_hold(args, parser):
             or report["review_boundary"].get("id") != args.expected_boundary
         ):
             raise RecordConflict("Deployment changed before build inspection output")
+        if review_report is not None and (
+            report.get("metadata_revision") != review_report["metadata_revision"]
+            or not isinstance(report.get("review_boundary"), dict)
+            or report["review_boundary"].get("id") != args.expected_boundary
+            or report.get("record_valid") is not True
+        ):
+            raise RecordConflict("Deployment changed before artifact review output")
         if operator(args) != actor:
             raise PermissionError("Administrator membership changed")
         print(
@@ -608,6 +712,7 @@ def run_security_hold(args, parser):
                         "inspect-recovery-image",
                         "inspect-build-approval",
                         "inspect-build-image",
+                        "check-artifact-review",
                     },
                     **({"database_restriction": database_report} if database_report is not None else {}),
                     **({"health_observation": observation} if observation is not None else {}),
@@ -619,6 +724,7 @@ def run_security_hold(args, parser):
                     **({"secret_access_fence": secret_report} if secret_report is not None else {}),
                     **({"recovery_image": image_report} if image_report is not None else {}),
                     **({"build_approval": build_report} if build_report is not None else {}),
+                    **({"artifact_review": review_report} if review_report is not None else {}),
                     **({"credential_executor": executor_report} if executor_report is not None else {}),
                     "quarantine_performed": False,
                     "credentials_revoked": False,

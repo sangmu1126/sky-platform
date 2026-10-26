@@ -212,6 +212,9 @@ def main(argv):
             "inspect-recovery-image",
             "inspect-build-approval",
             "inspect-build-image",
+            "approve-artifact-review",
+            "check-artifact-review",
+            "revoke-artifact-review",
             "inspect-runtime",
             "contain-runtime",
             "inspect-runtime-containment",
@@ -224,6 +227,17 @@ def main(argv):
         "--user-id", required=True, help="Current operator-provisioned internal administrator"
     )
     security.add_argument("--organization-id", required=True)
+    security.add_argument("--artifact-review-id", help="Exact 32-hex operator request/review identity")
+    security.add_argument("--artifact-review-ref", help="Bounded reference to the separate artifact review")
+    security.add_argument(
+        "--artifact-review-seconds", type=int, help="Artifact review validity, maximum 900 seconds"
+    )
+    security.add_argument(
+        "--confirm-artifact-review",
+        action="store_true",
+        help="Record artifact review only; never release a hold or grant execution",
+    )
+    security.add_argument("--confirm-artifact-review-revocation", action="store_true")
     security.add_argument("--auth-mode", choices=("cognito", "alb"), default="cognito")
     security.add_argument("--alb-trusts-file")
     security.add_argument("--memberships-file")

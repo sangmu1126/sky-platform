@@ -17,6 +17,8 @@ REASONS = frozenset({"suspected_compromise", "credential_exposure", "untrusted_a
 
 
 def require_no_security_hold(job):
+    if job.get("security_artifact_review") is not None:
+        raise ValueError("Artifact review requires dedicated recovery and cannot resume execution")
     if job.get("security_secret_access_fence") is not None:
         raise ValueError("Secret access fencing requires dedicated incident recovery")
     if job.get("security_runtime_containment") is not None:
@@ -97,6 +99,8 @@ class SecurityHold:
         validate_release_request(incident_id, review_ref, expected_revision, expected_boundary, now)
         snapshot = self.writer.snapshot(principal, job_id)
         job = snapshot.record
+        if job.get("security_artifact_review") is not None:
+            raise ValueError("Artifact review requires dedicated recovery, not false-positive release")
         if job.get("security_secret_access_fence") is not None:
             raise ValueError("Secret access fencing requires dedicated incident recovery, not false-positive release")
         if job.get("security_runtime_containment") is not None:
@@ -322,4 +326,8 @@ def security_hold_projection(job, *, include_details=False):
     if job.get("security_secret_access_fence") is not None:
         value["promotion_blocked"] = True
         value["status"] = "secret_access_review_required"
+    if job.get("security_artifact_review") is not None:
+        value["promotion_blocked"] = True
+        if value["status"] in {"not_recorded", "held", "released_false_positive"}:
+            value["status"] = "artifact_review_requires_recovery"
     return value
