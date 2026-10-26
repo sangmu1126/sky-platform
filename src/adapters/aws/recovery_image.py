@@ -17,8 +17,8 @@ CONFIG = {
 
 
 class AwsRecoveryImageInspector:
-    def __init__(self, *, session=None, clock=lambda: datetime.now(UTC)):
-        self.session, self.clock = session, clock
+    def __init__(self, *, session=None, clock=lambda: datetime.now(UTC), provenance=None):
+        self.session, self.clock, self.provenance = session, clock, provenance
 
     def inspect(self, registration, *, guard):
         if not isinstance(registration, RecoveryImageRegistration):
@@ -91,6 +91,9 @@ class AwsRecoveryImageInspector:
             raise ValueError(
                 "Single image manifest/config required; indexes require separate review"
             )
+        provenance = None
+        if self.provenance is not None:
+            provenance = self.provenance.verify(registration, raw.encode(), guard=guard)
         checked = self.clock()
         if not isinstance(checked, datetime) or checked.tzinfo is None:
             raise ValueError("Timezone-aware image observation required")
@@ -106,4 +109,5 @@ class AwsRecoveryImageInspector:
             "state_changed": False,
             "read_only": True,
             "observed_at": checked.isoformat(),
+            **({"provenance": provenance} if self.provenance is not None else {}),
         }

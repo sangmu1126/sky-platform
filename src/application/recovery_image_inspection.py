@@ -6,15 +6,17 @@ from application.incident_runtime_inspection import IncidentRuntimeInspection
 from application.security_hold import validate_release_request
 from domain.incident_runtime import runtime_identity
 from domain.recovery_image import RecoveryImageRegistration
+from domain.recovery_provenance import validate_provenance_receipt
 from ports.state import RecordConflict
 
 
 class RecoveryImageInspection:
-    def __init__(self, records, registration, inspector, *, clock, revalidate):
+    def __init__(self, records, registration, inspector, *, clock, revalidate, provenance_policy=None):
         self.scope = IncidentRuntimeInspection(
             records, None, clock=clock, revalidate=revalidate
         )
         self.registration, self.inspector, self.clock = registration, inspector, clock
+        self.provenance_policy = provenance_policy
 
     def inspect(
         self, principal, job_id, *, incident_id, expected_boundary, expected_revision
@@ -79,7 +81,7 @@ class RecoveryImageInspection:
                     "state_changed",
                     "read_only",
                     "observed_at",
-                }
+                } | ({"provenance"} if self.provenance_policy is not None else set())
                 or receipt["image"] != r.image
                 or receipt["config_digest"] != r.config_digest
                 or any(
@@ -101,6 +103,8 @@ class RecoveryImageInspection:
                 )
             ):
                 raise ValueError("Exact limited read-only image receipt required")
+            if self.provenance_policy is not None:
+                validate_provenance_receipt(r, self.provenance_policy, receipt["provenance"])
             checked, completed = (
                 datetime.fromisoformat(receipt["observed_at"]),
                 datetime.fromisoformat(self.clock()),

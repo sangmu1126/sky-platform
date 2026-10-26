@@ -69,6 +69,7 @@ def run_security_hold(args, parser):
     }
     image_action = args.action == "inspect-recovery-image"
     image_registration = None
+    provenance_policy, provenance_verifier = None, None
     executor_action = args.action == "inspect-credential-executor"
     secret_action = args.action in {"fence-secret-access", "inspect-secret-access"}
     secret_registration = None
@@ -110,6 +111,16 @@ def run_security_hold(args, parser):
                 raise ValueError("Recovery image inspection cannot mutate a hold")
         elif args.recovery_image_config:
             raise ValueError("Recovery image registration requires image inspection")
+        if args.recovery_provenance_config:
+            if not image_action:
+                raise ValueError("Provenance verification requires recovery image inspection")
+            from adapters.github.recovery_provenance import GitHubRecoveryProvenance
+            from domain.recovery_provenance import expected_provenance
+            from interfaces.recovery_provenance_registration import load_recovery_provenance_registration
+
+            provenance_policy, paths = load_recovery_provenance_registration(args.recovery_provenance_config)
+            expected_provenance(image_registration, provenance_policy)
+            provenance_verifier = GitHubRecoveryProvenance(provenance_policy, **paths)
         if executor_action:
             validate_release_request(
                 args.incident_id, "credential-executor", args.expected_revision, args.expected_boundary, now
@@ -270,8 +281,9 @@ def run_security_hold(args, parser):
             from application.recovery_image_inspection import RecoveryImageInspection
 
             image_report = RecoveryImageInspection(
-                records, image_registration, AwsRecoveryImageInspector(),
+                records, image_registration, AwsRecoveryImageInspector(provenance=provenance_verifier),
                 clock=lambda: datetime.now(UTC).isoformat(), revalidate=lambda: operator(args),
+                provenance_policy=provenance_policy,
             ).inspect(
                 actor, args.job_id, incident_id=args.incident_id,
                 expected_boundary=args.expected_boundary, expected_revision=args.expected_revision,

@@ -1,6 +1,8 @@
 import json
 from unittest.mock import patch
 
+import pytest
+
 from adapters.state.postgres import PostgresDeploymentRecordStore
 from application.security_hold import SecurityHold
 from interfaces.b_runtime import main
@@ -343,19 +345,36 @@ def test_credential_executor_cli_observes_original_task_without_metadata_write(
     assert records.load_job(ID) == before
 
 
+@pytest.mark.parametrize("with_provenance", [False, True])
 def test_recovery_image_cli_reads_pinned_artifact_without_writes_or_access_release(
-    configured_cli, store, database, monkeypatch, capsys, operating_review_setup, tmp_path
+    configured_cli, store, database, monkeypatch, capsys, operating_review_setup, tmp_path, with_provenance
 ):
     from dataclasses import asdict
     from datetime import UTC, datetime
+    from types import SimpleNamespace
 
     from tests.unit.test_recovery_image_inspection import app, native
+    from tests.unit.test_recovery_provenance import policy, verified
 
     memory, _, inspection, _, _ = app(operating_review_setup)
     adapter, _, _ = native(inspection.registration)
     adapter.clock = lambda: datetime.now(UTC)
     path = tmp_path / "recovery.json"
     path.write_text(json.dumps({"version": 1, **asdict(inspection.registration)}))
+    provenance_options = []
+    if with_provenance:
+        from tests.unit.test_recovery_provenance import ROOT
+
+        (tmp_path / "bundle").write_bytes(b'{"signed_fixture":"test-double"}')
+        (tmp_path / "root").write_bytes(ROOT)
+        config = tmp_path / "policy.json"
+        config.write_text(json.dumps({"version": 1, **asdict(policy()), "bundle": "bundle", "trusted_root": "root"}))
+        provenance_options = ["--recovery-provenance-config", str(config)]
+
+    def image_inspector(**kwargs):
+        adapter.provenance = kwargs.get("provenance")
+        return adapter
+
     monkeypatch.setenv("SKY_STATE_WORKSPACE", store.workspace)
     records = PostgresDeploymentRecordStore(database, workspace=store.workspace)
     records.save_job(ID, memory.job, expected_revision=None)
@@ -370,18 +389,27 @@ def test_recovery_image_cli_reads_pinned_artifact_without_writes_or_access_relea
 
     with (
         patch("interfaces.security_hold.RotatingDatabaseConnection", return_value=database),
-        patch("adapters.aws.recovery_image.AwsRecoveryImageInspector", return_value=adapter),
+        patch("adapters.aws.recovery_image.AwsRecoveryImageInspector", side_effect=image_inspector),
+        patch("adapters.github.recovery_provenance.shutil.which", return_value="/usr/bin/true"),
+        patch("adapters.github.recovery_provenance.subprocess.run", return_value=SimpleNamespace(
+            returncode=0, stdout=json.dumps(verified(inspection.registration)).encode()
+        )),
         patch.object(SecurityHold, "status", status),
     ):
         main(arguments("inspect-recovery-image") + [
             "--incident-id", "INC-1", "--expected-revision", str(before.revision),
             "--expected-boundary", before.record["security_review_boundary"]["id"],
             "--recovery-image-config", str(path),
-        ])
+        ] + provenance_options)
     result = json.loads(capsys.readouterr().out)
     assert result["recovery_image"]["manifest_bytes_verified"] is True
     assert result["recovery_image"]["source_provenance_verified"] is False
     assert result["recovery_image"]["recovery_authorized"] is False
+    if with_provenance:
+        assert result["recovery_image"]["provenance"]["signed_source_revision_verified"] is True
+        assert result["recovery_image"]["provenance"]["source_snapshot_digest_verified"] is False
+    else:
+        assert "provenance" not in result["recovery_image"]
     assert result["observed_only"] is True and readonly == ["on"]
     assert result["promotion_blocked"] is True
     assert records.load_job(ID) == before
