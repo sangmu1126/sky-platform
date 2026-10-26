@@ -210,6 +210,7 @@ def main(argv):
             "inspect-credentials",
             "inspect-credential-executor",
             "inspect-recovery-image",
+            "inspect-build-approval",
             "inspect-runtime",
             "contain-runtime",
             "inspect-runtime-containment",
@@ -264,6 +265,10 @@ def main(argv):
         "--confirm-runtime-containment",
         action="store_true",
         help="Suspend this app automatic scaling, lower its minimum and request zero running tasks",
+    )
+    security.add_argument(
+        "--build-approval-config",
+        help="Operator-owned KMS public trust, builder pins and signed bundle; expected inputs come from DB",
     )
     security.add_argument(
         "--recovery-provenance-config", help="Operator-pinned signer policy and signed attestation files"

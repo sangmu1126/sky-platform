@@ -5,7 +5,6 @@ extracted from a signature. This CLI does not verify live approval DB state.
 """
 
 import argparse
-import base64
 import json
 import os
 import tempfile
@@ -13,27 +12,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from adapters.aws.kms_build_signature import AwsKmsBuildSigner
-from application.kms_build_signature import KmsBuildSigningIdentity, verify_build_signature
+from application.kms_build_signature import verify_build_signature
+from interfaces.kms_build_registration import load_identity as load_identity  # noqa: PLC0414 -- public compatibility
 from ports.remote_builds import canonical, validate_request
 from scripts.build_attestation import document, prepare
-
-
-def load_identity(path):
-    value = document(path, 4096)
-    if (
-        not isinstance(value, dict)
-        or set(value) != {"version", "key_arn", "public_key_der"}
-        or (
-            type(value["version"]) is not int
-            or value["version"] != 1
-            or not isinstance(value["public_key_der"], str)
-        )
-    ):
-        raise ValueError("Exact operator KMS public trust registration required")
-    raw = base64.b64decode(value["public_key_der"], validate=True)
-    if base64.b64encode(raw).decode() != value["public_key_der"]:
-        raise ValueError("Canonical public trust encoding required")
-    return KmsBuildSigningIdentity(value["key_arn"], raw)
 
 
 def sign_inputs(input_directory, published, output, identity, *, environment=None, signer=None):

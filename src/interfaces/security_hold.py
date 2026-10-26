@@ -68,6 +68,8 @@ def run_security_hold(args, parser):
         "inspect-runtime-containment",
     }
     image_action = args.action == "inspect-recovery-image"
+    build_action = args.action == "inspect-build-approval"
+    build_registration = None
     image_registration = None
     provenance_policy, provenance_verifier = None, None
     executor_action = args.action == "inspect-credential-executor"
@@ -111,6 +113,17 @@ def run_security_hold(args, parser):
                 raise ValueError("Recovery image inspection cannot mutate a hold")
         elif args.recovery_image_config:
             raise ValueError("Recovery image registration requires image inspection")
+        if build_action:
+            from interfaces.kms_build_registration import load_build_approval_registration
+
+            build_registration = load_build_approval_registration(args.build_approval_config)
+            validate_release_request(
+                args.incident_id, "build-approval", args.expected_revision, args.expected_boundary, now
+            )
+            if any((args.reason, args.confirm_hold, args.review_ref, args.confirm_false_positive)):
+                raise ValueError("Build approval inspection cannot mutate a hold")
+        elif args.build_approval_config:
+            raise ValueError("Build approval registration requires build approval inspection")
         if args.recovery_provenance_config:
             if not image_action:
                 raise ValueError("Provenance verification requires recovery image inspection")
@@ -195,6 +208,7 @@ def run_security_hold(args, parser):
             and not secret_action
             and not executor_action
             and not image_action
+            and not build_action
             and any(value is not None and value is not False for value in release_options)
         ):
             raise ValueError("Release options require the false-positive release action")
@@ -208,6 +222,7 @@ def run_security_hold(args, parser):
             and not secret_action
             and not executor_action
             and not image_action
+            and not build_action
             and args.action != "release-false-positive"
             and (args.incident_id is not None or args.reason is not None or args.confirm_hold)
         ):
@@ -254,6 +269,7 @@ def run_security_hold(args, parser):
                     "inspect-secret-access",
                     "inspect-credential-executor",
                     "inspect-recovery-image",
+                    "inspect-build-approval",
                 }:
                     db.execute("SET TRANSACTION READ ONLY")
                 yield db
@@ -274,6 +290,31 @@ def run_security_hold(args, parser):
                 expected_revision=args.expected_revision,
                 expected_boundary=args.expected_boundary,
                 now=now,
+            )
+        build_report = None
+        if build_action:
+            from adapters.state.build_approval import PostgresBuildApprovalReader
+            from adapters.state.operations import PostgresOperationStore
+            from application.incident_build_approval import IncidentBuildApprovalInspection
+
+            build_report = IncidentBuildApprovalInspection(
+                records,
+                PostgresBuildApprovalReader(
+                    PostgresOperationStore(connection, workspace=workspace), build_registration.settings
+                ),
+                build_registration.identity,
+                clock=lambda: datetime.now(UTC).isoformat(),
+                revalidate=lambda: operator(args),
+            ).inspect(
+                actor,
+                args.job_id,
+                incident_id=args.incident_id,
+                expected_boundary=args.expected_boundary,
+                expected_revision=args.expected_revision,
+                bundle=build_registration.bundle,
+                image_digest=build_registration.image_digest,
+                config_digest=build_registration.config_digest,
+                run_id=build_registration.run_id,
             )
         image_report = None
         if image_action:
@@ -507,6 +548,15 @@ def run_security_hold(args, parser):
                 records, secret_registration, None, clock=lambda: now, revalidate=lambda: operator(args)
             ).status(actor, args.job_id)
         report = service.status(actor, args.job_id)
+        if build_report is not None and (
+            report.get("metadata_revision") != build_report["metadata_revision"]
+            or report.get("record_valid") is not True
+            or not isinstance(report.get("hold"), dict)
+            or report["hold"].get("incident_id") != args.incident_id
+            or not isinstance(report.get("review_boundary"), dict)
+            or report["review_boundary"].get("id") != args.expected_boundary
+        ):
+            raise RecordConflict("Deployment changed before build inspection output")
         if operator(args) != actor:
             raise PermissionError("Administrator membership changed")
         print(
@@ -523,6 +573,7 @@ def run_security_hold(args, parser):
                         "inspect-secret-access",
                         "inspect-credential-executor",
                         "inspect-recovery-image",
+                        "inspect-build-approval",
                     },
                     **({"database_restriction": database_report} if database_report is not None else {}),
                     **({"health_observation": observation} if observation is not None else {}),
@@ -533,6 +584,7 @@ def run_security_hold(args, parser):
                     **({"runtime_containment": containment_report} if containment_report is not None else {}),
                     **({"secret_access_fence": secret_report} if secret_report is not None else {}),
                     **({"recovery_image": image_report} if image_report is not None else {}),
+                    **({"build_approval": build_report} if build_report is not None else {}),
                     **({"credential_executor": executor_report} if executor_report is not None else {}),
                     "quarantine_performed": False,
                     "credentials_revoked": False,

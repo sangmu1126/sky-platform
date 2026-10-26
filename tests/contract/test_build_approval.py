@@ -121,7 +121,8 @@ def test_unconsumed_approval_cannot_substitute_for_admitted_approval(store, admi
         reader.expected_request(principal(role=Role.ADMIN), {**record, "approval_id": unused.id})
 
 
-def test_full_read_only_incident_comparison_uses_postgres_and_real_signature(store, admitted):
+@pytest.fixture
+def signed_incident(store, admitted):
     import base64
     import json
     from datetime import UTC, datetime
@@ -136,7 +137,7 @@ def test_full_read_only_incident_comparison_uses_postgres_and_real_signature(sto
     from tests.unit.test_incident_runtime_inspection import fixture
 
     reader, record = admitted
-    actor = principal(user="reviewer", role=Role.ADMIN)
+    actor = principal(user="user1", role=Role.ADMIN)
     records = store.operations.records
     saved = records.load_job(record["id"])
     runtime = json.loads(json.dumps(fixture()[0]).replace("111111111111", "123456789012"))
@@ -182,17 +183,34 @@ def test_full_read_only_incident_comparison_uses_postgres_and_real_signature(sto
     service = IncidentBuildApprovalInspection(
         records, reader, identity, clock=lambda: now.isoformat(), revalidate=lambda: actor
     )
-    receipt = service.inspect(
-        actor,
-        record["id"],
-        incident_id="INC-1",
-        expected_boundary=held.record["security_review_boundary"]["id"],
-        expected_revision=held.revision,
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        reader=reader,
+        record=record,
+        records=records,
+        actor=actor,
+        held=held,
+        identity=identity,
         bundle=bundle,
-        image_digest=statement["image_digest"],
-        config_digest=statement["config_digest"],
+        statement=statement,
+        service=service,
+    )
+
+
+def test_full_read_only_incident_comparison_uses_postgres_and_real_signature(signed_incident):
+    c = signed_incident
+    receipt = c.service.inspect(
+        c.actor,
+        c.record["id"],
+        incident_id="INC-1",
+        expected_boundary=c.held.record["security_review_boundary"]["id"],
+        expected_revision=c.held.revision,
+        bundle=c.bundle,
+        image_digest=c.statement["image_digest"],
+        config_digest=c.statement["config_digest"],
         run_id=123,
     )
     assert receipt["signature_verified"] and receipt["consumed_deployment_approval_matched"]
     assert not receipt["current_approval_verified"] and not receipt["recovery_authorized"]
-    assert records.load_job(record["id"]) == held
+    assert c.records.load_job(c.record["id"]) == c.held
