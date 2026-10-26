@@ -150,7 +150,7 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
-    uses: sangmu1126/sky-platform/.github/workflows/attest-build.yml@c6b584db36e99dcdf93b7f9766f55611f771fe15
+    uses: sangmu1126/sky-platform/.github/workflows/attest-build.yml@e1b3c37483e9eb8035089d1452eb6c1bc07d9b2d
     with:
       build_id: ${{ inputs.build_id }}
       request_digest: ${{ inputs.request_digest }}
