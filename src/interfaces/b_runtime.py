@@ -219,6 +219,14 @@ def main(argv):
             "inspect-runtime",
             "contain-runtime",
             "inspect-runtime-containment",
+            "approve-recovery",
+            "execute-recovery",
+            "verify-restricted-database",
+            "retire-runtime",
+            "inspect-runtime-retirement",
+            "confirm-runtime-retirement",
+            "fence-execution",
+            "inspect-execution-fence",
             "fence-secret-access",
             "inspect-secret-access",
         ),
@@ -300,6 +308,16 @@ def main(argv):
         action="store_true",
         help="Deny recorded runtime role sessions access to this app Secret only",
     )
+    security.add_argument("--recovery-runtime-config")
+    security.add_argument("--recovery-id")
+    security.add_argument("--recovery-approval-ref")
+    security.add_argument("--recovery-seconds", type=int)
+    security.add_argument("--confirm-recovery-approval", action="store_true")
+    security.add_argument("--confirm-recovery-execution", action="store_true")
+    security.add_argument("--database-baseline-sha256")
+    security.add_argument("--confirm-database-verification", action="store_true")
+    security.add_argument("--confirm-runtime-retirement", action="store_true")
+    security.add_argument("--confirm-execution-fence", action="store_true")
     security.add_argument("--check-config", action="store_true", help="Validate without AWS/DB access")
     args = parser.parse_args(argv)
     if args.mode == "security-hold":

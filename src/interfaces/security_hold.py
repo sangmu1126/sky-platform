@@ -55,6 +55,39 @@ def operator(args):
 
 
 def run_security_hold(args, parser):
+    if args.action in {"approve-recovery", "execute-recovery"}:
+        from interfaces.incident_recovery import run_incident_recovery
+
+        return run_incident_recovery(args, parser)
+    if any(
+        (
+            args.recovery_runtime_config,
+            args.recovery_id,
+            args.recovery_approval_ref,
+            args.recovery_seconds is not None,
+            args.confirm_recovery_approval,
+            args.confirm_recovery_execution,
+        )
+    ):
+        parser.error("Recovery execution options require their dedicated action")
+    if args.action == "verify-restricted-database":
+        from interfaces.incident_verification import run_database_verification
+
+        return run_database_verification(args, parser)
+    if args.database_baseline_sha256 is not None or args.confirm_database_verification:
+        parser.error("Database verification options require their dedicated action")
+    if args.action in {
+        "fence-execution",
+        "inspect-execution-fence",
+        "retire-runtime",
+        "inspect-runtime-retirement",
+        "confirm-runtime-retirement",
+    }:
+        from interfaces.incident_execution import run_execution_control
+
+        return run_execution_control(args, parser)
+    if args.confirm_execution_fence or args.confirm_runtime_retirement:
+        parser.error("Execution barrier confirmation requires its dedicated action")
     now = datetime.now(UTC).isoformat()
     database_action = args.action in {
         "restrict-database",

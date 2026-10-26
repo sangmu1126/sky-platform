@@ -112,7 +112,7 @@ class PostgresOperationStore:
                     "SELECT version FROM sky_state.operation_schema_versions ORDER BY version"
                 ).fetchall()
             )
-            if versions not in ((), (1,), (1, 2)):
+            if versions not in ((), (1,), (1, 2), (1, 2, 3)):
                 raise ValueError("Unsupported operation schema version")
             if not versions:
                 for statement in DDL:
@@ -127,6 +127,59 @@ class PostgresOperationStore:
                     ADD COLUMN failure_code text CHECK (failure_code = 'retry_exhausted'),
                     ADD CONSTRAINT outbox_failure_consistent CHECK ((failed_at IS NULL) = (failure_code IS NULL))""")
                 connection.execute("INSERT INTO sky_state.operation_schema_versions (version) VALUES (2)")
+            if 3 not in versions:
+                connection.execute("""CREATE TABLE sky_state.incident_execution_fences (
+                    workspace text NOT NULL, application_id text NOT NULL,
+                    organization_id text NOT NULL, job_id text NOT NULL,
+                    incident_id text NOT NULL, boundary_id text NOT NULL,
+                    recorded_by text NOT NULL, recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+                    PRIMARY KEY (workspace, application_id))""")
+                connection.execute("""CREATE FUNCTION sky_state.incident_execution_allowed(scope_workspace text, scope_application text)
+                    RETURNS boolean LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog AS $$
+                    SELECT NOT EXISTS(SELECT 1 FROM sky_state.incident_execution_fences
+                    WHERE workspace=scope_workspace AND application_id=scope_application) $$""")
+                connection.execute(
+                    "GRANT EXECUTE ON FUNCTION sky_state.incident_execution_allowed(text,text) TO PUBLIC"
+                )
+                connection.execute("""CREATE FUNCTION sky_state.guard_incident_execution() RETURNS trigger
+                    LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+                    BEGIN
+                        PERFORM pg_advisory_xact_lock(hashtextextended('sky-execution:' || NEW.workspace || ':' || NEW.application_id,0));
+                        IF EXISTS(SELECT 1 FROM sky_state.incident_execution_fences f
+                            WHERE f.workspace=NEW.workspace AND f.application_id=NEW.application_id) THEN
+                            IF TG_OP='INSERT' THEN
+                                RAISE EXCEPTION 'incident execution barrier' USING ERRCODE='55000';
+                            ELSIF NEW.status IN ('queued','running') OR (NEW.external_pending AND NOT OLD.external_pending) THEN
+                                RAISE EXCEPTION 'incident execution barrier' USING ERRCODE='55000';
+                            END IF;
+                        END IF;
+                        RETURN NEW;
+                    END $$""")
+                connection.execute("""CREATE TRIGGER incident_execution_barrier BEFORE INSERT OR UPDATE
+                    ON sky_state.operations FOR EACH ROW EXECUTE FUNCTION sky_state.guard_incident_execution()""")
+                connection.execute("INSERT INTO sky_state.operation_schema_versions (version) VALUES (3)")
+
+    def _application_lock(self, connection, application_id):
+        # All mutation admissions and external-intent writes serialize with an
+        # incident barrier. The namespaced hash is stable across processes.
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+            ("sky-execution:" + self.workspace + ":" + application_id,),
+        )
+
+    def _execution_allowed(self, connection, application_id):
+        self._application_lock(connection, application_id)
+        return connection.execute(
+            "SELECT sky_state.incident_execution_allowed(%s,%s)",
+            (self.workspace, application_id),
+        ).fetchone() == (True,)
+
+    def _operation_allowed(self, connection, operation_id):
+        row = connection.execute(
+            "SELECT application_id FROM sky_state.operations WHERE workspace=%s AND id=%s",
+            (self.workspace, operation_id),
+        ).fetchone()
+        return row is not None and self._execution_allowed(connection, row[0])
 
     @staticmethod
     def _text(value, label, *, maximum=128):
@@ -150,7 +203,7 @@ class PostgresOperationStore:
     @staticmethod
     def _document(value):
         if not isinstance(value, dict):
-            raise ValueError("Operation document must be an object")
+            raise ValueError("Operation document must be an object")  # noqa: TRY004 -- operation document contract
         try:
             encoded = json.dumps(
                 value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -245,6 +298,8 @@ class PostgresOperationStore:
                 [application_id, kind, command], ensure_ascii=False, sort_keys=True, separators=(",", ":")
             ).encode()
         ).hexdigest()
+        if not self._execution_allowed(connection, application_id):
+            raise ApplicationBusy("Application execution is fenced for incident recovery")
         identity, attempt = str(uuid4()), str(uuid4())
         created = connection.execute(
             """INSERT INTO sky_state.operations
@@ -288,6 +343,8 @@ class PostgresOperationStore:
         owner = self._text(owner, "worker identity")
         seconds = self._bounded(seconds, 1, 3600)
         with self.records._connection() as connection:
+            if not self._operation_allowed(connection, operation_id):
+                return None
             row = connection.execute(
                 """UPDATE sky_state.operations SET status='running',lease_owner=%s,
                 lease_epoch=lease_epoch+1,lease_until=clock_timestamp()+(%s * interval '1 second'),
@@ -301,7 +358,7 @@ class PostgresOperationStore:
             return ExecutionLease(operation_id, attempt_id, owner, row[0], row[1], self.workspace)
 
     def _owned(self, connection, lease):
-        if lease.workspace != self.workspace:
+        if lease.workspace != self.workspace or not self._operation_allowed(connection, lease.operation_id):
             return False
         row = connection.execute(
             """SELECT id FROM sky_state.operations WHERE workspace=%s AND id=%s
@@ -409,7 +466,8 @@ class PostgresOperationStore:
             return True
 
     def _resume_or_block(self, connection, operation):
-        if operation.external_pending:
+        fenced = not self._execution_allowed(connection, operation.application_id)
+        if operation.external_pending or fenced:
             connection.execute(
                 """UPDATE sky_state.operations SET status='needs_attention',
                 lease_owner=NULL,lease_until=NULL,row_version=row_version+1 WHERE workspace=%s AND id=%s""",

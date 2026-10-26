@@ -30,7 +30,7 @@ UNSUPPORTED = (
 
 class IncidentRecoveryReadiness:
     def __init__(self, records, reviews, inspections, *, clock, revalidate):
-        if not isinstance(inspections, dict) or set(inspections) - {"runtime", *OPERATIONS}:
+        if not isinstance(inspections, dict) or set(inspections) - {"runtime", "sky_execution", *OPERATIONS}:
             raise ValueError("Only fixed recovery inspection services are allowed")
         self.scope = IncidentRuntimeInspection(records, None, clock=clock, revalidate=revalidate)
         self.reviews, self.inspections, self.clock = reviews, inspections, clock
@@ -75,7 +75,7 @@ class IncidentRecoveryReadiness:
 
         review()
         checks = {"artifact_review": {"status": "verified", "reason_code": "fresh_combined_evidence"}}
-        for name in ("runtime", *OPERATIONS):
+        for name in ("runtime", "sky_execution", *OPERATIONS):
             guard()
             record, phase = None, None
             if name in OPERATIONS:
@@ -169,6 +169,14 @@ def validate_observation(receipt, revision, started, completed, record):
 
 def condition(name, value):
     verified = {
+        "sky_execution": lambda: (
+            value.get("fence_scope") == "sky_postgres_operations"
+            and value.get("sky_operation_admission_fenced") is True
+            and value.get("sky_worker_external_intents_fenced") is True
+            and value.get("registered_operation_requests_settled") is True
+            and value.get("pending_inventory_complete") is True
+            and value.get("pending_operation_ids") == []
+        ),
         "runtime": lambda: value.get("registered_service_quiescent") is True,
         "runtime_containment": lambda: value.get("scale_down_configuration_observed") is True,
         "database_restriction": lambda: (

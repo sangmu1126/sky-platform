@@ -16,7 +16,7 @@ def test_no_registration_does_not_initialize_cloud_clients_or_database_connectio
     with patch("boto3.Session", side_effect=AssertionError("Unexpected AWS call")):
         configuration = load_readiness_configuration(config_args(), None)
         checks = native_inspections(None, None, configuration, clock=lambda: "", revalidate=lambda: None)
-    assert set(checks) == {"runtime", "runtime_containment", "credential_executor"}
+    assert set(checks) == {"runtime", "runtime_containment", "credential_executor", "sky_execution"}
 
 
 @pytest.mark.parametrize("shared_secret,shared_database", [(True, False), (False, True)])

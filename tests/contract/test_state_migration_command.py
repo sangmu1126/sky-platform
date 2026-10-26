@@ -16,7 +16,7 @@ ACCOUNT = "977889523182"
 REGION = "ap-northeast-2"
 LEDGERS = (
     ("metadata", "schema_versions", "1,2"),
-    ("operation", "operation_schema_versions", "1,2"),
+    ("operation", "operation_schema_versions", "1,2,3"),
     ("admission", "admission_schema_versions", "1"),
     ("approval", "approval_schema_versions", "1"),
     ("preview", "preview_schema_versions", "1"),
@@ -99,7 +99,7 @@ def test_migrate_continues_from_existing_foundation(empty_database, capsys):
     migrate(empty_database)
     assert capsys.readouterr().out.splitlines() == [
         "metadata schema: up to date (now 1,2)",
-        "operation schema: up to date (now 1,2)",
+        "operation schema: up to date (now 1,2,3)",
         "admission schema: applied 1 (now 1)",
         "approval schema: applied 1 (now 1)",
         "preview schema: applied 1 (now 1)",
@@ -124,7 +124,7 @@ def test_concurrent_migrations_serialize_on_advisory_lock(empty_database):
 def test_unsupported_schema_fails_without_diagnostics_or_changes(empty_database, capsys):
     migrate(empty_database)
     with empty_database() as connection:
-        connection.execute("INSERT INTO sky_state.operation_schema_versions (version) VALUES (3)")
+        connection.execute("INSERT INTO sky_state.operation_schema_versions (version) VALUES (4)")
     capsys.readouterr()
     with pytest.raises(SystemExit) as error:
         migrate(empty_database)
@@ -138,7 +138,7 @@ def test_unsupported_schema_fails_without_diagnostics_or_changes(empty_database,
         rows = connection.execute(
             "SELECT version FROM sky_state.operation_schema_versions ORDER BY version"
         ).fetchall()
-    assert rows == [(1,), (2,), (3,)]
+    assert rows == [(1,), (2,), (3,), (4,)]
 
 
 def test_unsupported_preview_schema_fails_without_diagnostics_or_changes(empty_database, capsys):

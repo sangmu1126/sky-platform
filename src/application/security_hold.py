@@ -17,6 +17,15 @@ REASONS = frozenset({"suspected_compromise", "credential_exposure", "untrusted_a
 
 
 def require_no_security_hold(job):
+    if job.get("security_recovery") is not None:
+        raise ValueError("Single-use incident recovery requires its dedicated execution boundary")
+    if (
+        job.get("security_runtime_retirement") is not None
+        or job.get("security_database_verification") is not None
+    ):
+        raise ValueError("Incident recovery controls require dedicated recovery")
+    if job.get("security_execution_fence") is not None:
+        raise ValueError("Execution fencing requires dedicated incident recovery")
     if job.get("security_artifact_review") is not None:
         raise ValueError("Artifact review requires dedicated recovery and cannot resume execution")
     if job.get("security_secret_access_fence") is not None:
@@ -102,9 +111,13 @@ class SecurityHold:
         if job.get("security_artifact_review") is not None:
             raise ValueError("Artifact review requires dedicated recovery, not false-positive release")
         if job.get("security_secret_access_fence") is not None:
-            raise ValueError("Secret access fencing requires dedicated incident recovery, not false-positive release")
+            raise ValueError(
+                "Secret access fencing requires dedicated incident recovery, not false-positive release"
+            )
         if job.get("security_runtime_containment") is not None:
-            raise ValueError("Runtime containment requires dedicated incident recovery, not false-positive release")
+            raise ValueError(
+                "Runtime containment requires dedicated incident recovery, not false-positive release"
+            )
         if (
             job.get("security_database_restriction") is not None
             or job.get("security_credential_preparation") is not None
@@ -112,6 +125,15 @@ class SecurityHold:
             raise ValueError(
                 "Database restriction requires dedicated incident recovery, not false-positive release"
             )
+        if job.get("security_execution_fence") is not None:
+            raise ValueError("Execution fencing requires dedicated recovery, not false-positive release")
+        if (
+            job.get("security_runtime_retirement") is not None
+            or job.get("security_database_verification") is not None
+        ):
+            raise ValueError("Incident recovery controls cannot be cleared by false-positive release")
+        if job.get("security_recovery") is not None:
+            raise ValueError("Incident recovery cannot be cleared by false-positive release")
         history = job.get("security_hold_history", [])
         if not isinstance(history, list) or any(not _valid_release(item) for item in history):
             raise ValueError("Invalid security hold audit history")
@@ -330,4 +352,16 @@ def security_hold_projection(job, *, include_details=False):
         value["promotion_blocked"] = True
         if value["status"] in {"not_recorded", "held", "released_false_positive"}:
             value["status"] = "artifact_review_requires_recovery"
+    if job.get("security_execution_fence") is not None:
+        value["promotion_blocked"] = True
+        value["status"] = "execution_fence_review_required"
+    if (
+        job.get("security_runtime_retirement") is not None
+        or job.get("security_database_verification") is not None
+    ):
+        value["promotion_blocked"] = True
+        value["status"] = "incident_recovery_review_required"
+    if job.get("security_recovery") is not None:
+        value["promotion_blocked"] = True
+        value["status"] = "incident_recovery_review_required"
     return value

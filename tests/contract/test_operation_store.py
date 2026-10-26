@@ -836,7 +836,11 @@ def test_version_one_outbox_migration_preserves_existing_delivery(store, databas
         connection.execute("""ALTER TABLE sky_state.outbox_events
             DROP COLUMN max_attempts, DROP COLUMN retry_base_seconds, DROP COLUMN retry_cap_seconds,
             DROP COLUMN failed_at, DROP COLUMN failure_code""")
-        connection.execute("DELETE FROM sky_state.operation_schema_versions WHERE version=2")
+        connection.execute("DROP TRIGGER incident_execution_barrier ON sky_state.operations")
+        connection.execute("DROP FUNCTION sky_state.guard_incident_execution()")
+        connection.execute("DROP FUNCTION sky_state.incident_execution_allowed(text,text)")
+        connection.execute("DROP TABLE sky_state.incident_execution_fences")
+        connection.execute("DELETE FROM sky_state.operation_schema_versions WHERE version>=2")
 
         class BorrowedConnection:
             def __enter__(self):
@@ -882,7 +886,11 @@ def test_failed_operation_migration_rolls_back_policy_columns(store, database):
         connection.execute("""ALTER TABLE sky_state.outbox_events
             DROP COLUMN max_attempts, DROP COLUMN retry_base_seconds, DROP COLUMN retry_cap_seconds,
             DROP COLUMN failed_at, DROP COLUMN failure_code""")
-        connection.execute("DELETE FROM sky_state.operation_schema_versions WHERE version=2")
+        connection.execute("DROP TRIGGER incident_execution_barrier ON sky_state.operations")
+        connection.execute("DROP FUNCTION sky_state.guard_incident_execution()")
+        connection.execute("DROP FUNCTION sky_state.incident_execution_allowed(text,text)")
+        connection.execute("DROP TABLE sky_state.incident_execution_fences")
+        connection.execute("DELETE FROM sky_state.operation_schema_versions WHERE version>=2")
         # An unexpected pre-existing column makes migration fail atomically.
         connection.execute("ALTER TABLE sky_state.outbox_events ADD COLUMN failed_at text")
         connection.execute("SAVEPOINT before_migration")

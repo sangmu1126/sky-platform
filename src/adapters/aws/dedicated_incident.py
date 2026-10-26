@@ -98,6 +98,41 @@ class AwsDedicatedIncidentDatabase:
             ),
         )
 
+    def incident_verification(self, binding, state, registration, *, guard, connection_guard):
+        from adapters.aws.incident_secret_access import AwsIncidentSecretAccess
+        from adapters.aws.incident_verification import AwsIncidentVerification
+
+        preparation = self.incident_credential_preparation(
+            binding, state, guard=guard, connection_guard=connection_guard
+        )
+
+        cleanup = self.incident_restriction(binding, state, guard=guard, connection_guard=lambda: None)
+
+        def endpoint():
+            connection_guard()
+            host = self._audit_target(state)
+            connection_guard()
+            return host
+
+        def workload():
+            host = endpoint()
+            credentials = self.access._admin_credentials("skyadmin")
+            return self.access._connection(host, 5432, binding.database_name, *credentials)
+
+        def login(password):
+            return self.access._connection(
+                endpoint(), 5432, binding.database_name, preparation.restriction.fence.role, password
+            )
+
+        return AwsIncidentVerification(
+            preparation,
+            workload_connect=workload,
+            login_connect=login,
+            cleanup_restriction=cleanup,
+            registration=registration,
+            secret_access=AwsIncidentSecretAccess(registration, session=self.access.session),
+        )
+
     def _audit_target(self, state):
         registration = self.registration
         target, settings = registration.binding, registration.settings

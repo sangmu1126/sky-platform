@@ -4,7 +4,7 @@ import re
 
 
 def runtime_identity(result):
-    if not isinstance(result, dict) or result.get("target") != "aws-ecs-express":
+    if not isinstance(result, dict) or result.get("target") not in {"aws-ecs-express", "aws-ecs-standard"}:
         raise ValueError("Recorded ECS deployment required")
     account, region = result.get("account"), result.get("region")
     if (
@@ -13,7 +13,7 @@ def runtime_identity(result):
         or not isinstance(region, str)
         or not re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]+", region)
         or not isinstance(result.get("owner_attempt"), str)
-        or not re.fullmatch(r"[a-f0-9]{16}", result["owner_attempt"])
+        or not re.fullmatch(r"[a-f0-9]{16}(?:-a[1-3])?", result["owner_attempt"])
     ):
         raise ValueError("Exact recorded account, region and owner required")
     identity = result.get("image_identity")

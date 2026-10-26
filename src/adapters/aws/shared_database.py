@@ -154,6 +154,44 @@ class AwsSharedDatabaseAllocator:
             ),
         )
 
+    def incident_verification(self, binding, state, registration, *, guard, connection_guard):
+        from adapters.aws.incident_secret_access import AwsIncidentSecretAccess
+        from adapters.aws.incident_verification import AwsIncidentVerification
+
+        preparation = self.incident_credential_preparation(
+            binding, state, guard=guard, connection_guard=connection_guard
+        )
+
+        cleanup = self.incident_restriction(binding, state, guard=guard, connection_guard=lambda: None)
+
+        def endpoint():
+            connection_guard()
+            host, port, username = self._audit()
+            if host.lower().rstrip(".") == state.host.lower().rstrip("."):
+                raise ValueError("Separate workload endpoint required")
+            connection_guard()
+            return host, port, username
+
+        def workload():
+            host, port, username = endpoint()
+            credentials = self._admin_credentials(username)
+            return self._connection(host, port, binding.database_name, *credentials)
+
+        def login(password):
+            host, port, _ = endpoint()
+            return self._connection(
+                host, port, binding.database_name, preparation.restriction.fence.role, password
+            )
+
+        return AwsIncidentVerification(
+            preparation,
+            workload_connect=workload,
+            login_connect=login,
+            cleanup_restriction=cleanup,
+            registration=registration,
+            secret_access=AwsIncidentSecretAccess(registration, session=self.session),
+        )
+
     def _audit(self):
         settings, pool = self.settings, self.settings.pool
         if any(client.meta.region_name != pool.region for client in self.clients.values()):

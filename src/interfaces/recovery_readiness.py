@@ -133,7 +133,18 @@ def native_inspections(records, state, configuration, *, clock, revalidate):
             records, secret, AwsIncidentSecretAccess(secret), clock=clock, revalidate=revalidate
         ).inspect(principal, job_id, **options)
 
+    def sky_execution(principal, job_id, **options):
+        from adapters.state.incident_execution import PostgresIncidentExecutionControl
+        from adapters.state.operations import PostgresOperationStore
+
+        operations = PostgresOperationStore(records.connection_factory, workspace=records.workspace)
+        receipt = PostgresIncidentExecutionControl(operations, revalidate=revalidate).inspect(
+            principal, job_id, **options
+        )
+        return {**receipt, "observed_at": clock()}
+
     checks = {
+        "sky_execution": SimpleNamespace(inspect=sky_execution),
         "runtime": SimpleNamespace(inspect=runtime),
         "runtime_containment": SimpleNamespace(inspect=containment),
         "credential_executor": SimpleNamespace(inspect=executor),

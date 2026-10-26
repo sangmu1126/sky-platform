@@ -61,6 +61,11 @@ class DeploymentReadService:
                         "security_runtime_containment",
                         "security_secret_access_fence",
                         "security_artifact_review",
+                        "security_execution_fence",
+                        "security_runtime_retirement",
+                        "security_database_verification",
+                        "security_recovery",
+                        "security_incident_history",
                         "security_artifact_review_history",
                     }
                 },
