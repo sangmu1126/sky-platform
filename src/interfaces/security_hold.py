@@ -281,12 +281,18 @@ def run_security_hold(args, parser):
             from application.recovery_image_inspection import RecoveryImageInspection
 
             image_report = RecoveryImageInspection(
-                records, image_registration, AwsRecoveryImageInspector(provenance=provenance_verifier),
-                clock=lambda: datetime.now(UTC).isoformat(), revalidate=lambda: operator(args),
+                records,
+                image_registration,
+                AwsRecoveryImageInspector(provenance=provenance_verifier),
+                clock=lambda: datetime.now(UTC).isoformat(),
+                revalidate=lambda: operator(args),
                 provenance_policy=provenance_policy,
             ).inspect(
-                actor, args.job_id, incident_id=args.incident_id,
-                expected_boundary=args.expected_boundary, expected_revision=args.expected_revision,
+                actor,
+                args.job_id,
+                incident_id=args.incident_id,
+                expected_boundary=args.expected_boundary,
+                expected_revision=args.expected_revision,
             )
         executor_report = None
         if executor_action:

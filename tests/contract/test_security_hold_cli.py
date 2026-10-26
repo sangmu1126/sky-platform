@@ -156,10 +156,17 @@ def test_runtime_inspection_cli_uses_readonly_state_without_releasing_hold(
             patch("boto3.client", side_effect=lambda name, **kwargs: ecs if name == "ecs" else sts),
             patch.object(SecurityHold, "status", check_state),
         ):
-            main(arguments("inspect-runtime") + [
-                "--incident-id", "INC-1", "--expected-revision", str(before.revision),
-                "--expected-boundary", before.record["security_review_boundary"]["id"],
-            ])
+            main(
+                arguments("inspect-runtime")
+                + [
+                    "--incident-id",
+                    "INC-1",
+                    "--expected-revision",
+                    str(before.revision),
+                    "--expected-boundary",
+                    before.record["security_review_boundary"]["id"],
+                ]
+            )
         report = json.loads(capsys.readouterr().out)
     assert observed_readonly == [True]
     assert report["runtime_inspection"]["registered_service_quiescent"] is True
@@ -204,8 +211,17 @@ def test_runtime_containment_cli_persists_intent_and_inspects_without_replay_or_
         main(arguments("place"))
         capsys.readouterr()
         before = records.load_job(ID)
-        options = ["--incident-id", "INC-1", "--expected-boundary", before.record["security_review_boundary"]["id"]]
-        request = arguments("contain-runtime") + options + ["--expected-revision", str(before.revision), "--confirm-runtime-containment"]
+        options = [
+            "--incident-id",
+            "INC-1",
+            "--expected-boundary",
+            before.record["security_review_boundary"]["id"],
+        ]
+        request = (
+            arguments("contain-runtime")
+            + options
+            + ["--expected-revision", str(before.revision), "--confirm-runtime-containment"]
+        )
         main(request)
         response = json.loads(capsys.readouterr().out)
         assert response["runtime_containment"]["phase"] == "scale_down_requested"
@@ -225,9 +241,16 @@ def test_runtime_containment_cli_persists_intent_and_inspects_without_replay_or_
             return original(service, *args)
 
         with patch.object(SecurityHold, "status", status):
-            main(arguments("inspect-runtime-containment") + options + [
-                "--expected-revision", str(saved.revision), "--expected-operation-id", saved.record[FIELD]["operation_id"],
-            ])
+            main(
+                arguments("inspect-runtime-containment")
+                + options
+                + [
+                    "--expected-revision",
+                    str(saved.revision),
+                    "--expected-operation-id",
+                    saved.record[FIELD]["operation_id"],
+                ]
+            )
         observed = json.loads(capsys.readouterr().out)
     assert observed["observed_only"] is True and readonly == ["on"]
     assert observed["runtime_containment"]["scale_down_configuration_observed"] is True
@@ -262,9 +285,19 @@ def test_secret_access_cli_records_intent_and_inspects_without_releasing_or_repl
 
     f.clients["secretsmanager"].put_resource_policy.side_effect = policy
     before = records.load_job(ID)
-    options = ["--incident-secret-config", str(path), "--incident-id", "INC-1",
-               "--expected-boundary", before.record["security_review_boundary"]["id"]]
-    request = arguments("fence-secret-access") + options + ["--expected-revision", str(before.revision), "--confirm-secret-access-fence"]
+    options = [
+        "--incident-secret-config",
+        str(path),
+        "--incident-id",
+        "INC-1",
+        "--expected-boundary",
+        before.record["security_review_boundary"]["id"],
+    ]
+    request = (
+        arguments("fence-secret-access")
+        + options
+        + ["--expected-revision", str(before.revision), "--confirm-secret-access-fence"]
+    )
     with (
         patch("interfaces.security_hold.RotatingDatabaseConnection", return_value=database),
         patch("adapters.aws.incident_secret_access.AwsIncidentSecretAccess", return_value=f.adapter),
@@ -286,9 +319,16 @@ def test_secret_access_cli_records_intent_and_inspects_without_releasing_or_repl
             return original(service, *args)
 
         with patch.object(SecurityHold, "status", status):
-            main(arguments("inspect-secret-access") + options + [
-                "--expected-revision", str(saved.revision), "--expected-operation-id", saved.record[FIELD]["operation_id"],
-            ])
+            main(
+                arguments("inspect-secret-access")
+                + options
+                + [
+                    "--expected-revision",
+                    str(saved.revision),
+                    "--expected-operation-id",
+                    saved.record[FIELD]["operation_id"],
+                ]
+            )
         inspected = json.loads(capsys.readouterr().out)
         assert inspected["secret_access_fence"]["policy_state"] == "runtime_roles_denied"
         assert inspected["secret_access_fence"]["iam_propagation_verified"] is False
@@ -298,7 +338,9 @@ def test_secret_access_cli_records_intent_and_inspects_without_releasing_or_repl
         assert current["secret_access_fence"]["operation_id"] == saved.record[FIELD]["operation_id"]
         assert current["secret_access_fence"]["record_valid"] is True
         main(arguments("status"))
-        assert json.loads(capsys.readouterr().out)["secret_access_fence"] == {"phase": "registration_required"}
+        assert json.loads(capsys.readouterr().out)["secret_access_fence"] == {
+            "phase": "registration_required"
+        }
     assert records.load_job(ID) == saved
     assert saved.record["security_hold"] == before.record["security_hold"]
     assert f.clients["secretsmanager"].put_resource_policy.call_count == 1
@@ -314,8 +356,8 @@ def test_credential_executor_cli_observes_original_task_without_metadata_write(
     memory, _, inspection, _, clients = app(operating_review_setup)
     now = datetime.now(UTC)
     inspection.observer.clock = lambda: datetime.now(UTC)
-    clients['ecs'].describe_tasks.return_value['tasks'][0]['stoppedAt'] = now - timedelta(seconds=1)
-    monkeypatch.setenv('SKY_STATE_WORKSPACE', store.workspace)
+    clients["ecs"].describe_tasks.return_value["tasks"][0]["stoppedAt"] = now - timedelta(seconds=1)
+    monkeypatch.setenv("SKY_STATE_WORKSPACE", store.workspace)
     records = PostgresDeploymentRecordStore(database, workspace=store.workspace)
     records.save_job(ID, memory.job, expected_revision=None)
     before = records.load_job(ID)
@@ -324,24 +366,34 @@ def test_credential_executor_cli_observes_original_task_without_metadata_write(
 
     def status(service, *args):
         with service.writer.records.connection_factory() as db:
-            read_only.append(db.execute('SHOW transaction_read_only').fetchone()[0])
+            read_only.append(db.execute("SHOW transaction_read_only").fetchone()[0])
         return original(service, *args)
 
     with (
-        patch('interfaces.security_hold.RotatingDatabaseConnection', return_value=database),
-        patch('adapters.aws.credential_executor.AwsCredentialExecutorObserver', return_value=inspection.observer),
-        patch.object(SecurityHold, 'status', status),
+        patch("interfaces.security_hold.RotatingDatabaseConnection", return_value=database),
+        patch(
+            "adapters.aws.credential_executor.AwsCredentialExecutorObserver", return_value=inspection.observer
+        ),
+        patch.object(SecurityHold, "status", status),
     ):
-        main(arguments('inspect-credential-executor') + [
-            '--incident-id', 'INC-1', '--expected-revision', str(before.revision),
-            '--expected-boundary', before.record['security_review_boundary']['id'],
-            '--expected-operation-id', before.record['security_credential_preparation']['operation_id'],
-        ])
+        main(
+            arguments("inspect-credential-executor")
+            + [
+                "--incident-id",
+                "INC-1",
+                "--expected-revision",
+                str(before.revision),
+                "--expected-boundary",
+                before.record["security_review_boundary"]["id"],
+                "--expected-operation-id",
+                before.record["security_credential_preparation"]["operation_id"],
+            ]
+        )
     result = json.loads(capsys.readouterr().out)
-    assert result['credential_executor']['executor_state'] == 'stopped'
-    assert result['credential_executor']['provider_requests_settled'] is False
-    assert result['credential_executor']['recovery_authorized'] is False
-    assert result['observed_only'] is True and read_only == ['on']
+    assert result["credential_executor"]["executor_state"] == "stopped"
+    assert result["credential_executor"]["provider_requests_settled"] is False
+    assert result["credential_executor"]["recovery_authorized"] is False
+    assert result["observed_only"] is True and read_only == ["on"]
     assert records.load_job(ID) == before
 
 
@@ -368,7 +420,9 @@ def test_recovery_image_cli_reads_pinned_artifact_without_writes_or_access_relea
         (tmp_path / "bundle").write_bytes(b'{"signed_fixture":"test-double"}')
         (tmp_path / "root").write_bytes(ROOT)
         config = tmp_path / "policy.json"
-        config.write_text(json.dumps({"version": 1, **asdict(policy()), "bundle": "bundle", "trusted_root": "root"}))
+        config.write_text(
+            json.dumps({"version": 1, **asdict(policy()), "bundle": "bundle", "trusted_root": "root"})
+        )
         provenance_options = ["--recovery-provenance-config", str(config)]
 
     def image_inspector(**kwargs):
@@ -391,16 +445,28 @@ def test_recovery_image_cli_reads_pinned_artifact_without_writes_or_access_relea
         patch("interfaces.security_hold.RotatingDatabaseConnection", return_value=database),
         patch("adapters.aws.recovery_image.AwsRecoveryImageInspector", side_effect=image_inspector),
         patch("adapters.github.recovery_provenance.shutil.which", return_value="/usr/bin/true"),
-        patch("adapters.github.recovery_provenance.subprocess.run", return_value=SimpleNamespace(
-            returncode=0, stdout=json.dumps(verified(inspection.registration)).encode()
-        )),
+        patch(
+            "adapters.github.recovery_provenance.subprocess.run",
+            return_value=SimpleNamespace(
+                returncode=0, stdout=json.dumps(verified(inspection.registration)).encode()
+            ),
+        ),
         patch.object(SecurityHold, "status", status),
     ):
-        main(arguments("inspect-recovery-image") + [
-            "--incident-id", "INC-1", "--expected-revision", str(before.revision),
-            "--expected-boundary", before.record["security_review_boundary"]["id"],
-            "--recovery-image-config", str(path),
-        ] + provenance_options)
+        main(
+            arguments("inspect-recovery-image")
+            + [
+                "--incident-id",
+                "INC-1",
+                "--expected-revision",
+                str(before.revision),
+                "--expected-boundary",
+                before.record["security_review_boundary"]["id"],
+                "--recovery-image-config",
+                str(path),
+            ]
+            + provenance_options
+        )
     result = json.loads(capsys.readouterr().out)
     assert result["recovery_image"]["manifest_bytes_verified"] is True
     assert result["recovery_image"]["source_provenance_verified"] is False
