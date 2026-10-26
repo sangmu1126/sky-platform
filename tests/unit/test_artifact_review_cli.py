@@ -17,6 +17,10 @@ from tests.unit.test_security_hold_cli import configured_cli as configured_cli  
     [
         ("approve", None),
         ("check", None),
+        ("readiness", None),
+        ("readiness", "approve-confirm"),
+        ("readiness", "operation-id"),
+        ("readiness", "database-confirm"),
         ("revoke", None),
         ("approve", "missing-confirm"),
         ("approve", "missing-ref"),
@@ -35,7 +39,7 @@ def test_explicit_disjoint_review_preflight(configured_cli, registration, contex
     image_path = path.parent / "image.json"
     image_path.write_bytes(canonical({"version": 1, **asdict(image)}))
     args = cli(path)
-    args[1] = f"{action}-artifact-review"
+    args[1] = "check-recovery-readiness" if action == "readiness" else f"{action}-artifact-review"
     args += ["--artifact-review-id", "c" * 32]
     if action == "revoke":
         index = args.index("--build-approval-config")
@@ -60,6 +64,10 @@ def test_explicit_disjoint_review_preflight(configured_cli, registration, contex
         args += ["--confirm-artifact-review"]
     elif change == "reference":
         args += ["--artifact-review-ref", "REVIEW-2"]
+    elif change == "operation-id":
+        args += ["--expected-operation-id", "d" * 32]
+    elif change == "database-confirm":
+        args += ["--confirm-database-restriction"]
     elif change == "cloud-config":
         args += ["--build-approval-config", str(path)]
     with (

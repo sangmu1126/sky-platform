@@ -68,15 +68,19 @@ def run_security_hold(args, parser):
         "inspect-runtime-containment",
     }
     image_action = args.action == "inspect-recovery-image"
+    readiness_action = args.action == "check-recovery-readiness"
+    readiness_configuration = None
     review_action = args.action in {
         "approve-artifact-review",
         "check-artifact-review",
+        "check-recovery-readiness",
         "revoke-artifact-review",
     }
     combined_action = args.action in {
         "inspect-build-image",
         "approve-artifact-review",
         "check-artifact-review",
+        "check-recovery-readiness",
     }
     build_action = args.action == "inspect-build-approval" or combined_action
     build_registration = None
@@ -103,7 +107,7 @@ def run_security_hold(args, parser):
                 args.action == "approve-artifact-review"
             ) or args.confirm_artifact_review_revocation != (args.action == "revoke-artifact-review"):
                 raise ValueError("Explicit disjoint artifact review confirmation required")
-            if args.action == "check-artifact-review":
+            if args.action in {"check-artifact-review", "check-recovery-readiness"}:
                 if args.artifact_review_ref is not None or args.artifact_review_seconds is not None:
                     raise ValueError("Review check cannot change reference or validity")
             elif args.artifact_review_ref is None:
@@ -145,7 +149,7 @@ def run_security_hold(args, parser):
             args.incident_secret_config or "SKY_INCIDENT_SECRET_ACCESS_JSON" in os.environ
         ):
             secret_registration = load_secret_registration(args.incident_secret_config)
-        elif args.incident_secret_config:
+        elif args.incident_secret_config and not readiness_action:
             raise ValueError("Secret access registration requires a Secret access action or status")
         if image_action or combined_action:
             from interfaces.recovery_image_registration import load_recovery_image_registration
@@ -248,7 +252,7 @@ def run_security_hold(args, parser):
                 dedicated_registration = load_dedicated_incident_registration(
                     args.dedicated_incident_config, pool_settings
                 )
-        elif any(
+        elif not readiness_action and any(
             (
                 args.pool_config,
                 args.confirm_database_restriction,
@@ -300,7 +304,19 @@ def run_security_hold(args, parser):
             and (args.incident_id is not None or args.reason is not None or args.confirm_hold)
         ):
             raise ValueError("Observation/status cannot include hold mutation options")
+        if readiness_action and any(
+            (
+                args.confirm_database_restriction,
+                args.confirm_credential_preparation,
+                args.expected_operation_id,
+            )
+        ):
+            raise ValueError("Readiness uses recorded operation IDs and cannot mutate database state")
         state = PostgresStateSettings.from_environment()
+        if readiness_action:
+            from interfaces.recovery_readiness import load_readiness_configuration
+
+            readiness_configuration = load_readiness_configuration(args, state)
         if database_action and (
             state.region != pool_settings.pool.region
             or state.secret_arn.split(":")[4] != pool_settings.pool.account_id
@@ -345,6 +361,7 @@ def run_security_hold(args, parser):
                     "inspect-build-approval",
                     "inspect-build-image",
                     "check-artifact-review",
+                    "check-recovery-readiness",
                 }:
                     db.execute("SET TRANSACTION READ ONLY")
                 yield db
@@ -368,6 +385,7 @@ def run_security_hold(args, parser):
             )
         build_report = None
         review_report = None
+        readiness_report = None
         if build_action:
             from adapters.aws.kms_build_key import AwsKmsBuildKeyObserver
             from adapters.aws.recovery_image import AwsRecoveryImageInspector
@@ -422,6 +440,23 @@ def run_security_hold(args, parser):
                         seconds=args.artifact_review_seconds or 900,
                         **options,
                     )
+                elif readiness_action:
+                    from application.incident_recovery_readiness import IncidentRecoveryReadiness
+                    from interfaces.recovery_readiness import native_inspections
+
+                    readiness_report = IncidentRecoveryReadiness(
+                        records,
+                        reviews,
+                        native_inspections(
+                            records,
+                            state,
+                            readiness_configuration,
+                            clock=lambda: datetime.now(UTC).isoformat(),
+                            revalidate=lambda: operator(args),
+                        ),
+                        clock=lambda: datetime.now(UTC).isoformat(),
+                        revalidate=lambda: operator(args),
+                    ).check(actor, args.job_id, review_id=args.artifact_review_id, **options)
                 else:
                     review_report = reviews.check(
                         actor, args.job_id, review_id=args.artifact_review_id, **options
@@ -694,6 +729,13 @@ def run_security_hold(args, parser):
             or report.get("record_valid") is not True
         ):
             raise RecordConflict("Deployment changed before artifact review output")
+        if readiness_report is not None and (
+            report.get("metadata_revision") != readiness_report["metadata_revision"]
+            or not isinstance(report.get("review_boundary"), dict)
+            or report["review_boundary"].get("id") != args.expected_boundary
+            or report.get("record_valid") is not True
+        ):
+            raise RecordConflict("Deployment changed before readiness output")
         if operator(args) != actor:
             raise PermissionError("Administrator membership changed")
         print(
@@ -713,6 +755,7 @@ def run_security_hold(args, parser):
                         "inspect-build-approval",
                         "inspect-build-image",
                         "check-artifact-review",
+                        "check-recovery-readiness",
                     },
                     **({"database_restriction": database_report} if database_report is not None else {}),
                     **({"health_observation": observation} if observation is not None else {}),
@@ -725,6 +768,7 @@ def run_security_hold(args, parser):
                     **({"recovery_image": image_report} if image_report is not None else {}),
                     **({"build_approval": build_report} if build_report is not None else {}),
                     **({"artifact_review": review_report} if review_report is not None else {}),
+                    **({"recovery_readiness": readiness_report} if readiness_report is not None else {}),
                     **({"credential_executor": executor_report} if executor_report is not None else {}),
                     "quarantine_performed": False,
                     "credentials_revoked": False,

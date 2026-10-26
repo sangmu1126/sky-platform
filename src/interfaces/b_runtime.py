@@ -214,6 +214,7 @@ def main(argv):
             "inspect-build-image",
             "approve-artifact-review",
             "check-artifact-review",
+            "check-recovery-readiness",
             "revoke-artifact-review",
             "inspect-runtime",
             "contain-runtime",

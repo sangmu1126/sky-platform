@@ -86,7 +86,17 @@ def test_persist_recheck_and_revoke_without_any_activation(
         ],
         "failures": [],
     }
-    session.client = Mock(side_effect=lambda name, **_: {"kms": kms, "sts": sts, "ecr": ecr}[name])
+    from tests.unit.test_incident_runtime_inspection import fixture
+
+    _, _, _, ecs, _ = fixture()
+    for name in ("describe_services", "describe_tasks", "list_tasks"):
+        method = getattr(ecs, name)
+        method.return_value = json.loads(
+            json.dumps(method.return_value).replace("111111111111", c.identity.account_id)
+        )
+    session.client = Mock(
+        side_effect=lambda name, **_: {"kms": kms, "sts": sts, "ecr": ecr, "ecs": ecs}[name]
+    )
     operator_id = c.actor.user_id
 
     def command(action):
@@ -138,6 +148,17 @@ def test_persist_recheck_and_revoke_without_any_activation(
             PostgresDeploymentReads(database, workspace=store.operations.workspace)
         ).detail(c.actor, c.record["id"])
         assert FIELD not in public and HISTORY not in public
+        readiness_args = command("check-artifact-review")
+        readiness_args[1] = "check-recovery-readiness"
+        main(readiness_args)
+        readiness = json.loads(capsys.readouterr().out)["recovery_readiness"]
+        assert readiness["checks"]["runtime"]["status"] == "verified"
+        assert readiness["checks"]["database_restriction"]["reason_code"] == "operation_not_recorded"
+        assert "provider_requests_settled" in readiness["blocking_checks"]
+        assert "data_integrity" in readiness["blocking_checks"]
+        assert readiness["read_only"] and not readiness["ready_for_recovery"]
+        assert not readiness["execution_authorized"] and not readiness["state_changed"]
+        assert c.records.load_job(c.record["id"]) == held
         if change == "key-disabled":
             kms.describe_key.return_value["KeyMetadata"].update(KeyState="Disabled", Enabled=False)
         elif change == "image-missing":
