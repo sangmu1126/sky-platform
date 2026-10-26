@@ -15,6 +15,7 @@ from domain.incident_secret_access import (
     deny_runtime_secret_policy,
     runtime_secret_policy_matches,
     validate_access_target,
+    validate_prior_role_ids,
 )
 
 
@@ -65,22 +66,36 @@ class AwsIncidentSecretAccess:
         if (
             not isinstance(context, dict)
             or set(context)
-            != {
-                "binding",
-                "resource_id",
-                "secret_arn",
-                "kms_key_arn",
-                "candidate_secret_arn",
-                "candidate_version_id",
-                "preparer_principal",
-                "runtime",
-            }
+            not in (
+                {
+                    "binding",
+                    "resource_id",
+                    "secret_arn",
+                    "kms_key_arn",
+                    "candidate_secret_arn",
+                    "candidate_version_id",
+                    "preparer_principal",
+                    "runtime",
+                },
+                {
+                    "binding",
+                    "resource_id",
+                    "secret_arn",
+                    "kms_key_arn",
+                    "candidate_secret_arn",
+                    "candidate_version_id",
+                    "preparer_principal",
+                    "runtime",
+                    "prior_role_ids",
+                },
+            )
             or context["binding"] != asdict(b)
             or context["resource_id"] != r.resource_id
             or context["secret_arn"] != r.secret_arn
             or context["kms_key_arn"] != r.kms_key_arn
         ):
             raise ValueError("Exact registered workload credential context required")
+        validate_prior_role_ids(context.get("prior_role_ids", []))
 
         def call(name, method, **kwargs):
             guard()
@@ -206,22 +221,33 @@ class AwsIncidentSecretAccess:
 
     def preflight(self, context, *, guard):
         target, old, _ = self._audit(deepcopy(context), guard=guard)
-        if old is not None:
+        if not self._prior_policy_matches(old, target, context):
             raise ValueError("Existing app Secret policy requires separate operator review")
         return target
+
+    @staticmethod
+    def _prior_policy_matches(policy, target, context):
+        prior = context.get("prior_role_ids", [])
+        if not prior:
+            return policy is None
+        # Accept only the complete deny set proved by the archived incident chain.
+        # Missing entries, unknown statements or absent policies require manual review.
+        return runtime_secret_policy_matches(policy, {**target, "roles": {}}, prior_role_ids=prior)
 
     def fence(self, context, target, *, guard):
         validate_access_target(target, context)
         if self.clients["secretsmanager"].meta.config.retries.get("total_max_attempts") != 1:
             raise ValueError("Single-attempt Secret policy mutation client required")
         actual, old, call = self._audit(deepcopy(context), guard=guard)
-        if actual != target or old is not None:
+        if actual != target or not self._prior_policy_matches(old, target, context):
             raise ValueError("Runtime roles or existing Secret policy changed after admission")
         call(
             "secretsmanager",
             "put_resource_policy",
             SecretId=target["secret_arn"],
-            ResourcePolicy=json.dumps(deny_runtime_secret_policy(target)),
+            ResourcePolicy=json.dumps(
+                deny_runtime_secret_policy(target, prior_role_ids=context.get("prior_role_ids", []))
+            ),
             BlockPublicPolicy=True,
         )
         observed = self.inspect(context, target, guard=guard)
@@ -243,7 +269,7 @@ class AwsIncidentSecretAccess:
         return {
             "target": deepcopy(target),
             "policy_state": "runtime_roles_denied"
-            if runtime_secret_policy_matches(policy, target)
+            if runtime_secret_policy_matches(policy, target, prior_role_ids=context.get("prior_role_ids", []))
             else "not_recorded"
             if policy is None
             else "review_required",

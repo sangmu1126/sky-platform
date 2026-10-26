@@ -22,6 +22,52 @@ FIELD = "security_secret_access_fence"
 
 
 def access_context(job, registration):
+    context = _base_access_context(job, registration)
+    history = job.get("security_incident_history", [])
+    if not isinstance(history, list) or len(history) > 10:
+        raise ValueError("Bounded completed incident history required")
+    prior_ids, recovery_ids = set(), set()
+    for audit in history:
+        if not isinstance(audit, dict) or not isinstance(audit.get("controls"), dict):
+            raise TypeError("Completed incident access archive required")
+        recovery_id = audit.get("id")
+        if (
+            not isinstance(recovery_id, str)
+            or not re.fullmatch(r"[a-f0-9]{32}", recovery_id)
+            or recovery_id in recovery_ids
+        ):
+            raise ValueError("Unique completed incident recovery identity required")
+        recovery_ids.add(recovery_id)
+        recovery = audit["controls"].get("security_recovery")
+        if (
+            not isinstance(recovery, dict)
+            or recovery.get("id") != recovery_id
+            or recovery.get("phase") != "verified"
+            or recovery.get("external_pending") is not False
+            or recovery.get("incident_id") != audit.get("incident_id")
+            or recovery.get("boundary_id") != audit.get("prior_boundary")
+        ):
+            raise ValueError("Completed one-shot recovery archive required")
+        previous = _base_access_context(
+            {**job, **audit["controls"], "result": audit.get("prior_result")}, registration
+        )
+        if prior_ids:
+            previous["prior_role_ids"] = sorted(prior_ids)
+        fence = audit["controls"].get(FIELD)
+        if (
+            not access_record_is_valid(fence, previous)
+            or fence["phase"] != "policy_recorded"
+            or fence["incident_id"] != audit.get("incident_id")
+            or fence["boundary_id"] != audit.get("prior_boundary")
+        ):
+            raise ValueError("Matching completed incident access fence required")
+        prior_ids.update(fence["target"]["roles"].values())
+    if prior_ids:
+        context["prior_role_ids"] = sorted(prior_ids)
+    return context
+
+
+def _base_access_context(job, registration):
     if not isinstance(registration, IncidentSecretRegistration):
         raise ValueError("Trusted app Secret registration required")  # noqa: TRY004 -- invalid registration/policy contract
     prepared, restricted = job.get(PREPARATION), job.get(RESTRICTION)

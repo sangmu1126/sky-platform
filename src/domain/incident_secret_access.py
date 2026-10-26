@@ -108,8 +108,22 @@ def validate_access_target(target, context):
     return target
 
 
-def deny_runtime_secret_policy(target):
-    identities = sorted(value + ":*" for value in target["roles"].values())
+def validate_prior_role_ids(values):
+    if (
+        not isinstance(values, list)
+        or len(values) > 20
+        or any(not isinstance(v, str) or not re.fullmatch(r"AROA[A-Z0-9]{17}", v) for v in values)
+        or values != sorted(set(values))
+    ):
+        raise ValueError("Bounded canonical historical runtime role identities required")
+    return values
+
+
+def deny_runtime_secret_policy(target, *, prior_role_ids=None):
+    prior = validate_prior_role_ids([] if prior_role_ids is None else prior_role_ids)
+    identities = sorted(value + ":*" for value in set(target["roles"].values()) | set(prior))
+    if not identities:
+        raise ValueError("At least one denied runtime identity required")
     return {
         "Version": "2012-10-17",
         "Statement": [
@@ -127,7 +141,7 @@ def deny_runtime_secret_policy(target):
     }
 
 
-def runtime_secret_policy_matches(policy, target):
+def runtime_secret_policy_matches(policy, target, *, prior_role_ids=None):
     """Normalize only IAM's scalar/list representation of this exact OR condition."""
     from copy import deepcopy
 
@@ -138,12 +152,15 @@ def runtime_secret_policy_matches(policy, target):
             values = [values]
         if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
             return False
-        identities = sorted(value + ":*" for value in target["roles"].values())
+        expected = deny_runtime_secret_policy(target, prior_role_ids=prior_role_ids)
+        identities = expected["Statement"][0]["Condition"]["StringLike"]["aws:userid"]
+        if isinstance(identities, str):
+            identities = [identities]
         if sorted(values) != identities:
             return False
         normalized["Statement"][0]["Condition"]["StringLike"]["aws:userid"] = (
             identities[0] if len(identities) == 1 else identities
         )
-        return normalized == deny_runtime_secret_policy(target)
-    except (TypeError, KeyError, IndexError):
+        return normalized == expected
+    except (ValueError, TypeError, KeyError, IndexError):
         return False
