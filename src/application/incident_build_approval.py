@@ -5,17 +5,31 @@ from datetime import datetime, timedelta
 
 from application.incident_runtime_inspection import IncidentRuntimeInspection
 from application.kms_build_signature import ALGORITHM, verify_build_signature
+from application.recovery_image_inspection import validate_image_receipt
 from application.security_hold import validate_release_request
 from domain.incident_runtime import runtime_identity
+from domain.recovery_image import RecoveryImageRegistration
 from ports.remote_builds import digest
 from ports.state import RecordConflict
 
 
 class IncidentBuildApprovalInspection:
-    def __init__(self, records, approvals, identity, *, clock, revalidate, key_observer=None):
+    def __init__(
+        self,
+        records,
+        approvals,
+        identity,
+        *,
+        clock,
+        revalidate,
+        key_observer=None,
+        image_registration=None,
+        image_inspector=None,
+    ):
         self.scope = IncidentRuntimeInspection(records, None, clock=clock, revalidate=revalidate)
         self.approvals, self.identity, self.clock = approvals, identity, clock
         self.key_observer = key_observer
+        self.image_registration, self.image_inspector = image_registration, image_inspector
 
     def inspect(
         self,
@@ -60,6 +74,48 @@ class IncidentBuildApprovalInspection:
                 now=datetime.fromisoformat(self.clock()),
             )
             guard()
+            image_observation = None
+            if self.image_registration is not None or self.image_inspector is not None:
+                r = self.image_registration
+                if (
+                    self.key_observer is None
+                    or self.image_inspector is None
+                    or not isinstance(r, RecoveryImageRegistration)
+                ):
+                    raise ValueError(
+                        "Combined image inspection requires registered image, inspector and current signing key"
+                    )
+                expected = (
+                    principal.organization_id,
+                    original.record.get("application_id"),
+                    job_id,
+                    incident_id,
+                    expected_boundary,
+                    account,
+                    region,
+                    image_digest,
+                    config_digest,
+                    request["workflow_sha"],
+                    "sha256:" + request["source_digest"],
+                    f"https://github.com/{request['repository']}/actions/runs/{run_id}",
+                )
+                if (
+                    r.organization_id,
+                    r.application_id,
+                    r.job_id,
+                    r.incident_id,
+                    r.boundary_id,
+                    r.account_id,
+                    r.region,
+                    r.manifest_digest,
+                    r.config_digest,
+                    r.source_revision,
+                    r.source_digest,
+                    r.build_reference,
+                ) != expected:
+                    raise ValueError("Image registration differs from signed approved build")
+                image_observation = self.image_inspector.inspect(r, guard=guard)
+                guard()
             key_observation = None
             if self.key_observer is not None:
                 key_observation = self.key_observer.observe(guard=guard)
@@ -76,6 +132,10 @@ class IncidentBuildApprovalInspection:
                 raise ValueError("Fresh build approval inspection required")
             if self.key_observer is not None:
                 validate_key_observation(key_observation, self.identity, started, completed)
+            if self.image_registration is not None:
+                validate_image_receipt(
+                    self.image_registration, image_observation, started, completed.isoformat()
+                )
             # A short-lived signature may expire while the second DB read runs.
             # Evaluate validity again at the observation's completion time.
             receipt = verify_build_signature(
@@ -108,6 +168,15 @@ class IncidentBuildApprovalInspection:
             **(
                 {"key_liveness_checked": True, "signing_key": deepcopy(key_observation)}
                 if self.key_observer is not None
+                else {}
+            ),
+            **(
+                {
+                    "ecr_image_verified": True,
+                    "image_signature_approval_binding_matched": True,
+                    "recovery_image": deepcopy(image_observation),
+                }
+                if self.image_registration is not None
                 else {}
             ),
         }

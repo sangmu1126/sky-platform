@@ -211,6 +211,7 @@ def main(argv):
             "inspect-credential-executor",
             "inspect-recovery-image",
             "inspect-build-approval",
+            "inspect-build-image",
             "inspect-runtime",
             "contain-runtime",
             "inspect-runtime-containment",

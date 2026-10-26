@@ -68,7 +68,8 @@ def run_security_hold(args, parser):
         "inspect-runtime-containment",
     }
     image_action = args.action == "inspect-recovery-image"
-    build_action = args.action == "inspect-build-approval"
+    combined_action = args.action == "inspect-build-image"
+    build_action = args.action in {"inspect-build-approval", "inspect-build-image"}
     build_registration = None
     image_registration = None
     provenance_policy, provenance_verifier = None, None
@@ -102,7 +103,7 @@ def run_security_hold(args, parser):
             secret_registration = load_secret_registration(args.incident_secret_config)
         elif args.incident_secret_config:
             raise ValueError("Secret access registration requires a Secret access action or status")
-        if image_action:
+        if image_action or combined_action:
             from interfaces.recovery_image_registration import load_recovery_image_registration
 
             image_registration = load_recovery_image_registration(args.recovery_image_config)
@@ -122,6 +123,32 @@ def run_security_hold(args, parser):
             )
             if any((args.reason, args.confirm_hold, args.review_ref, args.confirm_false_positive)):
                 raise ValueError("Build approval inspection cannot mutate a hold")
+            if combined_action:
+                b, r = build_registration, image_registration
+                if (
+                    r.organization_id,
+                    r.job_id,
+                    r.incident_id,
+                    r.boundary_id,
+                    r.account_id,
+                    r.region,
+                    r.manifest_digest,
+                    r.config_digest,
+                    r.source_revision,
+                    r.build_reference,
+                ) != (
+                    args.organization_id,
+                    args.job_id,
+                    args.incident_id,
+                    args.expected_boundary,
+                    b.settings.account_id,
+                    b.settings.region,
+                    b.image_digest,
+                    b.config_digest,
+                    b.settings.workflow_sha,
+                    f"https://github.com/{b.settings.repository}/actions/runs/{b.run_id}",
+                ):
+                    raise ValueError("Image and build registration pins differ")
         elif args.build_approval_config:
             raise ValueError("Build approval registration requires build approval inspection")
         if args.recovery_provenance_config:
@@ -270,6 +297,7 @@ def run_security_hold(args, parser):
                     "inspect-credential-executor",
                     "inspect-recovery-image",
                     "inspect-build-approval",
+                    "inspect-build-image",
                 }:
                     db.execute("SET TRANSACTION READ ONLY")
                 yield db
@@ -294,6 +322,7 @@ def run_security_hold(args, parser):
         build_report = None
         if build_action:
             from adapters.aws.kms_build_key import AwsKmsBuildKeyObserver
+            from adapters.aws.recovery_image import AwsRecoveryImageInspector
             from adapters.state.build_approval import PostgresBuildApprovalReader
             from adapters.state.operations import PostgresOperationStore
             from application.incident_build_approval import IncidentBuildApprovalInspection
@@ -307,6 +336,8 @@ def run_security_hold(args, parser):
                 clock=lambda: datetime.now(UTC).isoformat(),
                 revalidate=lambda: operator(args),
                 key_observer=AwsKmsBuildKeyObserver(build_registration.identity),
+                image_registration=image_registration if combined_action else None,
+                image_inspector=AwsRecoveryImageInspector() if combined_action else None,
             ).inspect(
                 actor,
                 args.job_id,
@@ -576,6 +607,7 @@ def run_security_hold(args, parser):
                         "inspect-credential-executor",
                         "inspect-recovery-image",
                         "inspect-build-approval",
+                        "inspect-build-image",
                     },
                     **({"database_restriction": database_report} if database_report is not None else {}),
                     **({"health_observation": observation} if observation is not None else {}),

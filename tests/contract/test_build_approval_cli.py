@@ -4,7 +4,8 @@ import base64
 import json
 import os
 from dataclasses import asdict
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -20,21 +21,26 @@ from tests.unit.test_security_hold_cli import configured_cli as configured_cli  
 
 
 @pytest.mark.parametrize(
-    "change",
+    "with_image,change",
     [
-        None,
-        "signature",
-        "revision",
-        "run",
-        "ledger",
-        "final-status",
-        "key-disabled",
-        "key-pending",
-        "key-denied",
-    ],
+        (flag, change)
+        for flag in (False, True)
+        for change in [
+            None,
+            "signature",
+            "revision",
+            "run",
+            "ledger",
+            "final-status",
+            "key-disabled",
+            "key-pending",
+            "key-denied",
+        ]
+    ]
+    + [(True, change) for change in ("image-bytes", "image-missing", "image-source")],
 )
 def test_cli_reads_authoritative_state_without_releasing_or_mutating(
-    configured_cli, signed_incident, store, database, tmp_path, monkeypatch, capsys, change
+    configured_cli, signed_incident, store, database, tmp_path, monkeypatch, capsys, change, with_image
 ):
     import psycopg
 
@@ -93,6 +99,27 @@ def test_cli_reads_authoritative_state_without_releasing_or_mutating(
         "--build-approval-config",
         str(registration),
     ]
+    if with_image:
+        from domain.recovery_image import RecoveryImageRegistration
+
+        image = RecoveryImageRegistration(
+            organization_id=c.actor.organization_id,
+            application_id=c.record["application_id"],
+            job_id=c.record["id"],
+            incident_id="INC-1",
+            boundary_id=c.held.record["security_review_boundary"]["id"],
+            account_id=c.reader.settings.account_id,
+            region=c.reader.settings.region,
+            image=f"{c.reader.settings.account_id}.dkr.ecr.{c.reader.settings.region}.amazonaws.com/recovery@{c.statement['image_digest']}",
+            config_digest=c.statement["config_digest"],
+            source_revision=c.reader.settings.workflow_sha,
+            source_digest="sha256:" + ("f" * 64 if change == "image-source" else c.record["source_digest"]),
+            build_reference=f"https://github.com/{c.reader.settings.repository}/actions/runs/123",
+        )
+        image_file = tmp_path / "image.json"
+        image_file.write_bytes(canonical({"version": 1, **asdict(image)}))
+        args[1] = "inspect-build-image"
+        args += ["--recovery-image-config", str(image_file)]
     original_status = SecurityHold.status
     observed = []
 
@@ -109,7 +136,24 @@ def test_cli_reads_authoritative_state_without_releasing_or_mutating(
 
     from datetime import UTC, datetime
 
-    _, session, kms, _ = native(c.identity, clock=lambda: datetime.now(UTC))
+    _, session, kms, sts = native(c.identity, clock=lambda: datetime.now(UTC))
+    ecr = Mock(spec=["meta", "batch_get_image"])
+    ecr.meta = SimpleNamespace(region_name=c.reader.settings.region)
+    ecr.batch_get_image.return_value = {
+        "images": [
+            {
+                "registryId": c.reader.settings.account_id,
+                "repositoryName": "recovery",
+                "imageId": {"imageDigest": c.statement["image_digest"]},
+                "imageManifest": c.manifest + (" " if change == "image-bytes" else ""),
+                "imageManifestMediaType": "application/vnd.oci.image.manifest.v1+json",
+            }
+        ],
+        "failures": [],
+    }
+    if change == "image-missing":
+        ecr.batch_get_image.return_value = {"images": [], "failures": [{"failureCode": "ImageNotFound"}]}
+    session.client = Mock(side_effect=lambda name, **kw: {"kms": kms, "sts": sts, "ecr": ecr}[name])
     if change in {"key-disabled", "key-pending"}:
         kms.describe_key.return_value["KeyMetadata"].update(
             KeyState="Disabled" if change == "key-disabled" else "PendingDeletion", Enabled=False
@@ -129,7 +173,7 @@ def test_cli_reads_authoritative_state_without_releasing_or_mutating(
         if change is not None:
             with pytest.raises(SystemExit) as exc:
                 main(args)
-            assert exc.value.code == 1
+            assert exc.value.code == (2 if with_image and change == "run" else 1)
             assert capsys.readouterr().out == ""
         else:
             main(args)
@@ -142,6 +186,14 @@ def test_cli_reads_authoritative_state_without_releasing_or_mutating(
             assert not receipt["current_approval_verified"] and receipt["key_liveness_checked"]
             assert receipt["signing_key"]["key_state"] == "Enabled"
             assert kms.describe_key.call_count == 2
+            assert receipt["ecr_image_verified"] is with_image
+            if with_image:
+                assert receipt["image_signature_approval_binding_matched"]
+                assert receipt["recovery_image"]["manifest_bytes_verified"]
+                assert not receipt["recovery_image"]["source_provenance_verified"]
+                assert ecr.batch_get_image.call_count == 1
+            else:
+                ecr.batch_get_image.assert_not_called()
             for private in ("approved_plan_json", "public_key_der", "signature", "source_ref"):
                 assert f'"{private}":' not in json.dumps(result)
     assert c.records.load_job(c.record["id"]) == c.held

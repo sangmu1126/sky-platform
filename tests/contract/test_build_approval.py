@@ -124,6 +124,7 @@ def test_unconsumed_approval_cannot_substitute_for_admitted_approval(store, admi
 @pytest.fixture
 def signed_incident(store, admitted):
     import base64
+    import hashlib
     import json
     from datetime import UTC, datetime
 
@@ -148,6 +149,18 @@ def signed_incident(store, admitted):
     )
     held = records.load_job(record["id"])
     request = reader.expected_request(actor, held.record)
+    manifest = canonical(
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": "sha256:" + "e" * 64,
+                "size": 2,
+            },
+            "layers": [],
+        }
+    ).decode()
     statement = {
         "protocol": "sky-build-input-binding-v1",
         "build_id": request["build_id"],
@@ -156,7 +169,7 @@ def signed_incident(store, admitted):
         "source_zip_size": artifact().size,
         "source_digest": request["source_digest"],
         "plan_digest": request["plan_digest"],
-        "image_digest": "sha256:" + "d" * 64,
+        "image_digest": "sha256:" + hashlib.sha256(manifest.encode()).hexdigest(),
         "config_digest": "sha256:" + "e" * 64,
         "archive_digest": "f" * 64,
         "repository": request["repository"],
@@ -195,6 +208,7 @@ def signed_incident(store, admitted):
         bundle=bundle,
         statement=statement,
         service=service,
+        manifest=manifest,
     )
 
 
