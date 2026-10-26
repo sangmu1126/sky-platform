@@ -15,10 +15,24 @@ from tests.contract.test_build_approval import admitted as admitted  # noqa: PLC
 from tests.contract.test_build_approval import signed_incident as signed_incident  # noqa: PLC0414
 from tests.contract.test_deployment_approvals import database as database  # noqa: PLC0414
 from tests.contract.test_deployment_approvals import store as store  # noqa: PLC0414
+from tests.unit.test_kms_build_key import native
 from tests.unit.test_security_hold_cli import configured_cli as configured_cli  # noqa: PLC0414
 
 
-@pytest.mark.parametrize("change", [None, "signature", "revision", "run", "ledger", "final-status"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        None,
+        "signature",
+        "revision",
+        "run",
+        "ledger",
+        "final-status",
+        "key-disabled",
+        "key-pending",
+        "key-denied",
+    ],
+)
 def test_cli_reads_authoritative_state_without_releasing_or_mutating(
     configured_cli, signed_incident, store, database, tmp_path, monkeypatch, capsys, change
 ):
@@ -93,10 +107,23 @@ def test_cli_reads_authoritative_state_without_releasing_or_mutating(
             result["metadata_revision"] += 1
         return result
 
+    from datetime import UTC, datetime
+
+    _, session, kms, _ = native(c.identity, clock=lambda: datetime.now(UTC))
+    if change in {"key-disabled", "key-pending"}:
+        kms.describe_key.return_value["KeyMetadata"].update(
+            KeyState="Disabled" if change == "key-disabled" else "PendingDeletion", Enabled=False
+        )
+    elif change == "key-denied":
+        from botocore.exceptions import ClientError
+
+        kms.describe_key.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "private-diagnostic"}}, "DescribeKey"
+        )
     with (
         patch("interfaces.security_hold.RotatingDatabaseConnection", return_value=database),
         patch("boto3.client", side_effect=AssertionError("No AWS API needed")),
-        patch("boto3.Session", side_effect=AssertionError("No AWS session needed")),
+        patch("boto3.Session", return_value=session),
         patch.object(SecurityHold, "status", status),
     ):
         if change is not None:
@@ -112,7 +139,9 @@ def test_cli_reads_authoritative_state_without_releasing_or_mutating(
             receipt = result["build_approval"]
             assert receipt["signature_verified"] and receipt["consumed_deployment_approval_matched"]
             assert receipt["read_only"] and not receipt["recovery_authorized"]
-            assert not receipt["current_approval_verified"] and not receipt["key_liveness_checked"]
+            assert not receipt["current_approval_verified"] and receipt["key_liveness_checked"]
+            assert receipt["signing_key"]["key_state"] == "Enabled"
+            assert kms.describe_key.call_count == 2
             for private in ("approved_plan_json", "public_key_der", "signature", "source_ref"):
                 assert f'"{private}":' not in json.dumps(result)
     assert c.records.load_job(c.record["id"]) == c.held

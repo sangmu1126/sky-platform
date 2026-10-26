@@ -293,6 +293,7 @@ def run_security_hold(args, parser):
             )
         build_report = None
         if build_action:
+            from adapters.aws.kms_build_key import AwsKmsBuildKeyObserver
             from adapters.state.build_approval import PostgresBuildApprovalReader
             from adapters.state.operations import PostgresOperationStore
             from application.incident_build_approval import IncidentBuildApprovalInspection
@@ -305,6 +306,7 @@ def run_security_hold(args, parser):
                 build_registration.identity,
                 clock=lambda: datetime.now(UTC).isoformat(),
                 revalidate=lambda: operator(args),
+                key_observer=AwsKmsBuildKeyObserver(build_registration.identity),
             ).inspect(
                 actor,
                 args.job_id,
