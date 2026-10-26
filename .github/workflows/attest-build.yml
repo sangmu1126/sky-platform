@@ -25,7 +25,14 @@ jobs:
       SKY_PLATFORM_CODE_SHA: 26bb4760deffe59e8bf1367ab8655def2bc18525
       PYTHONPATH: src
       AWS_EC2_METADATA_DISABLED: "true"
+      CALLER_REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
     steps:
+      - name: Check supported personal repository visibility before signing
+        run: |
+          if [ "$CALLER_REPOSITORY_PRIVATE" != "false" ]; then
+            echo "::error::This personal GitHub attestation backend requires a public caller repository. Keep private repositories private and configure an approved alternative backend."
+            exit 1
+          fi
       # This reusable workflow reviews data only. No user checkout, pip install,
       # AWS login, Docker invocation or execution of uploaded code in the signing job.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
