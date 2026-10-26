@@ -30,6 +30,7 @@ env:
   SKY_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
   AWS_REGION: ${{ vars.AWS_REGION }}
   AWS_EC2_METADATA_DISABLED: "true"
+  SKY_BUILD_ATTESTATIONS_ENABLED: ${{ vars.SKY_BUILD_ATTESTATIONS_ENABLED }}
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -125,4 +126,31 @@ jobs:
           role-to-assume: ${{ vars.AWS_APP_BUILDER_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
-      - run: python scripts/remote_builder.py publish
+      - name: Publish checked image and optionally export signing inputs
+        run: |
+          if [ "$SKY_BUILD_ATTESTATIONS_ENABLED" = "true" ]; then
+            python scripts/remote_builder.py publish --attestation-output published-proof
+          else
+            python scripts/remote_builder.py publish
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: vars.SKY_BUILD_ATTESTATIONS_ENABLED == 'true'
+        with:
+          name: sky-build-published
+          path: published-proof/
+          if-no-files-found: error
+          retention-days: 1
+
+  attest:
+    if: vars.SKY_BUILD_ATTESTATIONS_ENABLED == 'true'
+    needs: publish
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    uses: sangmu1126/sky-platform/.github/workflows/attest-build.yml@c6b584db36e99dcdf93b7f9766f55611f771fe15
+    with:
+      build_id: ${{ inputs.build_id }}
+      request_digest: ${{ inputs.request_digest }}
