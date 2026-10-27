@@ -65,6 +65,7 @@ class DeploymentReadService:
                         "security_runtime_retirement",
                         "security_database_verification",
                         "security_recovery",
+                        "security_recovery_source_review",
                         "security_incident_history",
                         "security_artifact_review_history",
                     }

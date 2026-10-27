@@ -55,6 +55,26 @@ def operator(args):
 
 
 def run_security_hold(args, parser):
+    if args.action in {
+        "approve-source-review",
+        "check-source-review",
+        "inspect-source-review",
+        "revoke-source-review",
+    }:
+        from interfaces.incident_source_review import run_source_review
+
+        return run_source_review(args, parser)
+    if any(
+        (
+            args.recovery_source_config,
+            args.source_review_id,
+            args.source_review_ref,
+            args.source_review_seconds is not None,
+            args.confirm_source_review,
+            args.confirm_source_review_revocation,
+        )
+    ):
+        parser.error("Source review options require their dedicated action")
     if args.action == "inspect-recovery":
         from interfaces.incident_recovery_inspection import run_recovery_inspection
 

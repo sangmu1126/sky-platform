@@ -83,3 +83,19 @@ def test_credential_preparation_details_are_operator_cli_only(role):
     ):
         assert "must-not-expose-candidate" not in json.dumps(items)
         assert items[0]["security_status"]["promotion_blocked"] is True
+
+
+@pytest.mark.parametrize("role", list(Role))
+def test_new_source_review_is_operator_only_and_never_unblocks_promotion(role):
+    job, service = setup(None)
+    job["security_recovery_source_review"] = {"candidate": "must-not-expose-source"}
+    detail = service.detail(principal(role=role), ID)
+    assert "security_recovery_source_review" not in detail
+    assert "must-not-expose-source" not in json.dumps(detail)
+    assert detail["security_status"]["promotion_blocked"] is True
+    for items in (
+        service.summaries(principal(role=role)).items,
+        service.releases(principal(role=role), "game").items,
+    ):
+        assert "must-not-expose-source" not in json.dumps(items)
+        assert items[0]["security_status"]["promotion_blocked"] is True

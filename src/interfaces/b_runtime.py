@@ -222,6 +222,10 @@ def main(argv):
             "approve-recovery",
             "execute-recovery",
             "inspect-recovery",
+            "approve-source-review",
+            "check-source-review",
+            "inspect-source-review",
+            "revoke-source-review",
             "verify-restricted-database",
             "retire-runtime",
             "inspect-runtime-retirement",
@@ -310,6 +314,12 @@ def main(argv):
         help="Deny recorded runtime role sessions access to this app Secret only",
     )
     security.add_argument("--recovery-runtime-config")
+    security.add_argument("--recovery-source-config")
+    security.add_argument("--source-review-id")
+    security.add_argument("--source-review-ref")
+    security.add_argument("--source-review-seconds", type=int)
+    security.add_argument("--confirm-source-review", action="store_true")
+    security.add_argument("--confirm-source-review-revocation", action="store_true")
     security.add_argument("--recovery-id")
     security.add_argument("--recovery-approval-ref")
     security.add_argument("--recovery-seconds", type=int)
