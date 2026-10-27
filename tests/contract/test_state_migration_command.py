@@ -156,3 +156,22 @@ def test_unsupported_preview_schema_fails_without_diagnostics_or_changes(empty_d
     )
     assert "sky_state" not in output.out + output.err
     assert ledger_rows(empty_database) == before
+
+
+def test_source_build_ledger_migration_is_explicit_and_repeatable(empty_database, capsys):
+    migrate(empty_database)
+    with empty_database() as db:
+        assert db.execute("SELECT to_regclass('sky_state.source_build_approvals')").fetchone()[0] is None
+    with (
+        patch.dict(os.environ, {"SKY_AWS_ACCOUNT_ID": ACCOUNT, "SKY_STATE_WORKSPACE": "team"}),
+        patch(
+            "adapters.state.postgres.PostgresStateSettings.from_environment", return_value=Mock(region=REGION)
+        ),
+        patch("adapters.state.postgres.RotatingDatabaseConnection", return_value=empty_database),
+    ):
+        main(["migrate", "--source-build-approvals"])
+        main(["migrate", "--source-build-approvals"])
+    with empty_database() as db:
+        assert db.execute("SELECT version FROM sky_state.source_build_schema_versions").fetchall() == [(1,)]
+        assert db.execute("SELECT count(*) FROM sky_state.source_build_approvals").fetchone() == (0,)
+    assert "source build consent schema: up to date" in capsys.readouterr().out

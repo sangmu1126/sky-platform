@@ -192,6 +192,11 @@ def main(argv):
         action="store_true",
         help="Explicitly migrate the opt-in shared DB review schema too",
     )
+    migrate.add_argument(
+        "--source-build-approvals",
+        action="store_true",
+        help="Explicitly migrate the opt-in incident source build consent ledger",
+    )
     security = modes.add_parser(
         "security-hold",
         help="Trusted administrator: record a hold, inspect it, or collect an observation",
@@ -222,6 +227,10 @@ def main(argv):
             "approve-recovery",
             "execute-recovery",
             "inspect-recovery",
+            "approve-source-build",
+            "check-source-build",
+            "inspect-source-build",
+            "revoke-source-build",
             "approve-source-review",
             "supersede-source-review",
             "check-source-review",
@@ -316,6 +325,12 @@ def main(argv):
     )
     security.add_argument("--recovery-runtime-config")
     security.add_argument("--recovery-source-config")
+    security.add_argument("--source-build-approval-id")
+    security.add_argument("--source-build-id")
+    security.add_argument("--source-build-ref")
+    security.add_argument("--source-build-seconds", type=int)
+    security.add_argument("--confirm-source-build-approval", action="store_true")
+    security.add_argument("--confirm-source-build-revocation", action="store_true")
     security.add_argument("--source-review-id")
     security.add_argument("--predecessor-review-id")
     security.add_argument("--confirm-source-review-supersession", action="store_true")
@@ -341,6 +356,7 @@ def main(argv):
         return
     if args.mode == "migrate":
         from botocore.exceptions import BotoCoreError, ClientError
+        from psycopg import Error as DatabaseError
 
         from adapters.state.postgres import (
             PostgresDeploymentRecordStore,
@@ -360,6 +376,14 @@ def main(argv):
             run_migrations(
                 RotatingDatabaseConnection(settings), workspace, account_id=account_id, region=settings.region
             )
+            if args.source_build_approvals:
+                from adapters.state.source_build_approvals import PostgresSourceBuildApprovals
+
+                PostgresSourceBuildApprovals(
+                    PostgresDeploymentRecordStore(RotatingDatabaseConnection(settings), workspace=workspace),
+                    revalidate=lambda: None,
+                ).initialize()
+                print("source build consent schema: up to date", flush=True)
             if args.shared_database_reviews:
                 from adapters.state.operations import PostgresOperationStore
                 from adapters.state.shared_database_reviews import PostgresSharedDatabaseReviews
@@ -368,7 +392,7 @@ def main(argv):
                     PostgresOperationStore(RotatingDatabaseConnection(settings), workspace=workspace)
                 )
                 print("shared database review schema: up to date", flush=True)
-        except (OSError, ValueError, BotoCoreError, ClientError):
+        except (OSError, ValueError, BotoCoreError, ClientError, DatabaseError):
             # Do not log query diagnostics, credentials or DDL.
             parser.exit(
                 1, "B state migration failed; check database access, schema version and configuration.\n"

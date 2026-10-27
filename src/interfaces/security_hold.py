@@ -56,6 +56,26 @@ def operator(args):
 
 def run_security_hold(args, parser):
     if args.action in {
+        "approve-source-build",
+        "check-source-build",
+        "inspect-source-build",
+        "revoke-source-build",
+    }:
+        from interfaces.incident_source_build import run_source_build
+
+        return run_source_build(args, parser)
+    if any(
+        (
+            args.source_build_approval_id,
+            args.source_build_id,
+            args.source_build_ref,
+            args.source_build_seconds is not None,
+            args.confirm_source_build_approval,
+            args.confirm_source_build_revocation,
+        )
+    ):
+        parser.error("Build consent options require their dedicated action")
+    if args.action in {
         "approve-source-review",
         "supersede-source-review",
         "check-source-review",
