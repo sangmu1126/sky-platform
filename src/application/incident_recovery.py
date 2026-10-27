@@ -48,7 +48,10 @@ class IncidentRecovery:
         )
         if snapshot.revision != options["expected_revision"]:
             raise RecordConflict("Incident changed since recovery review")
-        if snapshot.record.get("security_recovery_source_review") is not None:
+        if (
+            snapshot.record.get("security_recovery_source_review") is not None
+            or snapshot.record.get("security_recovery_source_review_history") is not None
+        ):
             raise ValueError("New-source review cannot reuse unchanged-image recovery approval")
         if snapshot.record["security_hold"]["reason"] != "credential_exposure":
             raise ValueError(

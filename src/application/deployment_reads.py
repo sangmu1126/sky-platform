@@ -66,6 +66,7 @@ class DeploymentReadService:
                         "security_database_verification",
                         "security_recovery",
                         "security_recovery_source_review",
+                        "security_recovery_source_review_history",
                         "security_incident_history",
                         "security_artifact_review_history",
                     }

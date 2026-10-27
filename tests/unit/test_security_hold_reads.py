@@ -86,11 +86,14 @@ def test_credential_preparation_details_are_operator_cli_only(role):
 
 
 @pytest.mark.parametrize("role", list(Role))
-def test_new_source_review_is_operator_only_and_never_unblocks_promotion(role):
+@pytest.mark.parametrize(
+    "field", ["security_recovery_source_review", "security_recovery_source_review_history"]
+)
+def test_new_source_review_is_operator_only_and_never_unblocks_promotion(role, field):
     job, service = setup(None)
-    job["security_recovery_source_review"] = {"candidate": "must-not-expose-source"}
+    job[field] = {"candidate": "must-not-expose-source"}
     detail = service.detail(principal(role=role), ID)
-    assert "security_recovery_source_review" not in detail
+    assert field not in detail
     assert "must-not-expose-source" not in json.dumps(detail)
     assert detail["security_status"]["promotion_blocked"] is True
     for items in (

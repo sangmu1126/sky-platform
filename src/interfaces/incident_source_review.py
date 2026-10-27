@@ -39,25 +39,38 @@ def run_source_review(args, parser):
         "check_config",
         "recovery_source_config",
         "source_review_id",
+        "predecessor_review_id",
+        "confirm_source_review_supersession",
         "source_review_ref",
         "source_review_seconds",
         "confirm_source_review",
         "confirm_source_review_revocation",
     }
+    supersede = args.action == "supersede-source-review"
     approve = args.action == "approve-source-review"
+    writes_review = approve or supersede
     revoke = args.action == "revoke-source-review"
-    verify = approve or args.action == "check-source-review"
+    verify = writes_review or args.action == "check-source-review"
     try:
         if any(v is not None and v is not False for k, v in vars(args).items() if k not in allowed):
             raise ValueError("Source review cannot include other action options")
-        if args.confirm_source_review is not approve or args.confirm_source_review_revocation is not revoke:
+        if (
+            args.confirm_source_review is not approve
+            or args.confirm_source_review_revocation is not revoke
+            or args.confirm_source_review_supersession is not supersede
+        ):
             raise ValueError("Disjoint explicit review confirmations required")
+        if supersede:
+            if not re.fullmatch(r"[a-f0-9]{32}", args.predecessor_review_id or ""):
+                raise ValueError("Exact predecessor required")
+        elif args.predecessor_review_id is not None:
+            raise ValueError("Predecessor requires explicit supersession")
         if not re.fullmatch(r"[a-f0-9]{16}", args.job_id or "") or not re.fullmatch(
             r"[a-f0-9]{32}", args.source_review_id or ""
         ):
             raise ValueError("Exact source review identity required")
-        if bool(args.source_review_ref) != (approve or revoke) or (
-            not approve and args.source_review_seconds is not None
+        if bool(args.source_review_ref) != (writes_review or revoke) or (
+            not writes_review and args.source_review_seconds is not None
         ):
             raise ValueError("Action-specific source review reference/lifetime required")
         seconds = args.source_review_seconds if args.source_review_seconds is not None else 900
@@ -98,7 +111,7 @@ def run_source_review(args, parser):
         @contextmanager
         def connection():
             with factory() as db:
-                if not approve and not revoke:
+                if not writes_review and not revoke:
                     db.execute("SET TRANSACTION READ ONLY")
                 yield db
 
@@ -121,14 +134,17 @@ def run_source_review(args, parser):
             "expected_boundary": args.expected_boundary,
             "expected_revision": args.expected_revision,
         }
-        if approve:
-            report = service.approve(
+        if writes_review:
+            method = service.supersede if supersede else service.approve
+            predecessor = {"predecessor_review_id": args.predecessor_review_id} if supersede else {}
+            report = method(
                 actor,
                 args.job_id,
                 candidate=candidate,
                 review_id=args.source_review_id,
                 review_ref=args.source_review_ref,
                 seconds=seconds,
+                **predecessor,
                 **options,
             )
         elif revoke:

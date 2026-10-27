@@ -223,6 +223,7 @@ def main(argv):
             "execute-recovery",
             "inspect-recovery",
             "approve-source-review",
+            "supersede-source-review",
             "check-source-review",
             "inspect-source-review",
             "revoke-source-review",
@@ -316,6 +317,8 @@ def main(argv):
     security.add_argument("--recovery-runtime-config")
     security.add_argument("--recovery-source-config")
     security.add_argument("--source-review-id")
+    security.add_argument("--predecessor-review-id")
+    security.add_argument("--confirm-source-review-supersession", action="store_true")
     security.add_argument("--source-review-ref")
     security.add_argument("--source-review-seconds", type=int)
     security.add_argument("--confirm-source-review", action="store_true")

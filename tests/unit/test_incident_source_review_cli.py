@@ -29,6 +29,14 @@ def arguments(action):
     ]
     if action == "approve-source-review":
         args += ["--confirm-source-review", "--source-review-ref", "REVIEW-1"]
+    if action == "supersede-source-review":
+        args += [
+            "--confirm-source-review-supersession",
+            "--source-review-ref",
+            "SUCCESSOR-1",
+            "--predecessor-review-id",
+            "b" * 32,
+        ]
     if action == "revoke-source-review":
         args += ["--confirm-source-review-revocation", "--source-review-ref", "REVOKE-1"]
     return args
@@ -47,11 +55,17 @@ def descriptor(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     "action",
-    ["approve-source-review", "check-source-review", "inspect-source-review", "revoke-source-review"],
+    [
+        "approve-source-review",
+        "supersede-source-review",
+        "check-source-review",
+        "inspect-source-review",
+        "revoke-source-review",
+    ],
 )
 def test_preflight_has_no_provider_calls(configured_cli, descriptor, action, monkeypatch, capsys):
     args = arguments(action)
-    if action in {"approve-source-review", "check-source-review"}:
+    if action in {"approve-source-review", "supersede-source-review", "check-source-review"}:
         args += ["--recovery-source-config", descriptor]
     else:
         monkeypatch.delenv("SKY_ARTIFACTS_BUCKET")
@@ -110,3 +124,30 @@ def test_provider_errors_never_print_secret(configured_cli, capsys):
         main(arguments("inspect-source-review"))
     assert result.value.code == 1
     assert "DO-NOT-PRINT" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("change", ["no-confirm", "missing-predecessor", "bad-predecessor", "mixed-confirm"])
+def test_supersession_requires_its_own_confirmation_and_predecessor(configured_cli, descriptor, change):
+    args = arguments("supersede-source-review") + ["--recovery-source-config", descriptor, "--check-config"]
+    if change == "no-confirm":
+        args.remove("--confirm-source-review-supersession")
+    elif change == "missing-predecessor":
+        index = args.index("--predecessor-review-id")
+        del args[index : index + 2]
+    elif change == "bad-predecessor":
+        args[args.index("--predecessor-review-id") + 1] = "bad"
+    else:
+        args += ["--confirm-source-review"]
+    with patch("boto3.client", side_effect=AssertionError("AWS")), pytest.raises(SystemExit) as result:
+        main(args)
+    assert result.value.code == 2
+
+
+@pytest.mark.parametrize("action", ["check-source-review", "inspect-source-review", "revoke-source-review"])
+def test_read_and_revoke_cannot_smuggle_supersession(configured_cli, descriptor, action):
+    args = arguments(action) + ["--predecessor-review-id", "b" * 32, "--check-config"]
+    if action == "check-source-review":
+        args += ["--recovery-source-config", descriptor]
+    with pytest.raises(SystemExit) as result:
+        main(args)
+    assert result.value.code == 2

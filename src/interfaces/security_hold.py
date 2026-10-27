@@ -57,6 +57,7 @@ def operator(args):
 def run_security_hold(args, parser):
     if args.action in {
         "approve-source-review",
+        "supersede-source-review",
         "check-source-review",
         "inspect-source-review",
         "revoke-source-review",
@@ -68,6 +69,8 @@ def run_security_hold(args, parser):
         (
             args.recovery_source_config,
             args.source_review_id,
+            args.predecessor_review_id,
+            args.confirm_source_review_supersession,
             args.source_review_ref,
             args.source_review_seconds is not None,
             args.confirm_source_review,

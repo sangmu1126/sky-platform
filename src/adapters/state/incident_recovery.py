@@ -45,7 +45,10 @@ class PostgresIncidentRecoveryCompletion(PostgresIncidentExecutionControl):
                 db, principal, job_id, incident_id, expected_boundary, expected_revision, lock=True
             )
             recovery = snapshot.record.get(FIELD)
-            if snapshot.record.get("security_recovery_source_review") is not None:
+            if (
+                snapshot.record.get("security_recovery_source_review") is not None
+                or snapshot.record.get("security_recovery_source_review_history") is not None
+            ):
                 raise ValueError("New-source review cannot be completed by unchanged-image recovery")
             if (
                 not isinstance(recovery, dict)

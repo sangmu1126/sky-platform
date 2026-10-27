@@ -14,6 +14,8 @@ from ports.remote_builds import digest
 from ports.state import RecordConflict
 
 FIELD = "security_recovery_source_review"
+HISTORY = "security_recovery_source_review_history"
+MAX_HISTORY = 8
 
 
 def parent_digest(job):
@@ -42,6 +44,8 @@ def validate_review(value):
         "revoked_by",
         "revocation_ref",
     }
+    if isinstance(value, dict) and type(value.get("version")) is int and value["version"] == 2:
+        fields |= {"supersedes_review_id", "history_digest"}
     if not isinstance(value, dict) or set(value) != fields:
         raise ValueError("Exact new-source review record required")
     validate_release_request(
@@ -54,7 +58,7 @@ def validate_review(value):
     candidate = SourceArtifact.from_record(value["candidate"])
     if (
         type(value["version"]) is not int
-        or value["version"] != 1
+        or value["version"] not in {1, 2}
         or value["scope"] != "review_new_source_snapshot_only"
         or candidate.kind != "original"
         or candidate.upload_id != value["candidate_revision"]
@@ -73,6 +77,13 @@ def validate_review(value):
         or candidate.source_digest == value["prior_source_digest"]
     ):
         raise ValueError("Bounded distinct-source review binding required")
+    if value["version"] == 2 and (
+        not isinstance(value["supersedes_review_id"], str)
+        or not re.fullmatch(r"[a-f0-9]{32}", value["supersedes_review_id"])
+        or not isinstance(value["history_digest"], str)
+        or not re.fullmatch(r"[a-f0-9]{64}", value["history_digest"])
+    ):
+        raise ValueError("Exact predecessor and history binding required")
     approved, expires = (
         datetime.fromisoformat(value["approved_at"]),
         datetime.fromisoformat(value["expires_at"]),
@@ -124,7 +135,49 @@ class IncidentSourceReview:
             raise ValueError("New-source review requires an artifact or compromise incident")
         if snapshot.record.get("security_recovery") is not None:
             raise ValueError("Existing recovery execution requires inspection before source review")
+        self._history(snapshot.record, job_id)
         return snapshot
+
+    @staticmethod
+    def _history(job, job_id):
+        history = job.get(HISTORY)
+        current = job.get(FIELD)
+        if history is None:
+            if isinstance(current, dict) and current.get("version") == 2:
+                raise ValueError("Successor review requires preserved history")
+            return []
+        if not isinstance(history, list) or not 1 <= len(history) <= MAX_HISTORY:
+            raise ValueError("Bounded nonempty source review history required")
+        if current is None:
+            raise ValueError("Source review history requires a current review")
+        seen = set()
+        previous = None
+        for index, item in enumerate([*history, current]):
+            validate_review(item)
+            artifact = SourceArtifact.from_record(item["candidate"])
+            if (
+                (item["job_id"], item["incident_id"], item["boundary_id"])
+                != (job_id, job["security_hold"]["incident_id"], job["security_review_boundary"]["id"])
+                or (artifact.organization_id, artifact.application_id)
+                != (job["organization_id"], job["application_id"])
+                or item["id"] in seen
+            ):
+                raise ValueError("Source review history scope or identity mismatch")
+            if index == 0:
+                if item["version"] != 1:
+                    raise ValueError("Source review history root required")
+            elif (
+                item["version"] != 2
+                or item["supersedes_review_id"] != previous["id"]
+                or item["history_digest"] != digest(history[:index])
+                or item["prior_metadata_revision"] < previous["approved_metadata_revision"]
+                or datetime.fromisoformat(item["approved_at"])
+                < datetime.fromisoformat(previous["revoked_at"] or previous["expires_at"])
+            ):
+                raise ValueError("Source review successor chain invalid")
+            seen.add(item["id"])
+            previous = item
+        return history
 
     @staticmethod
     def _candidate(job, candidate):
@@ -159,6 +212,45 @@ class IncidentSourceReview:
         guard()
 
     def approve(self, actor, job_id, *, candidate, review_id, review_ref, seconds=900, **options):
+        return self._approve(
+            actor,
+            job_id,
+            candidate=candidate,
+            review_id=review_id,
+            review_ref=review_ref,
+            seconds=seconds,
+            predecessor=None,
+            options=options,
+        )
+
+    def supersede(
+        self,
+        actor,
+        job_id,
+        *,
+        predecessor_review_id,
+        candidate,
+        review_id,
+        review_ref,
+        seconds=900,
+        **options,
+    ):
+        if not isinstance(predecessor_review_id, str) or not re.fullmatch(
+            r"[a-f0-9]{32}", predecessor_review_id
+        ):
+            raise ValueError("Exact predecessor review required")
+        return self._approve(
+            actor,
+            job_id,
+            candidate=candidate,
+            review_id=review_id,
+            review_ref=review_ref,
+            seconds=seconds,
+            predecessor=predecessor_review_id,
+            options=options,
+        )
+
+    def _approve(self, actor, job_id, *, candidate, review_id, review_ref, seconds, predecessor, options):
         started = self.clock()
         validate_release_request(
             options["incident_id"],
@@ -175,8 +267,29 @@ class IncidentSourceReview:
         ):
             raise ValueError("Exact source review identity and bounded lifetime required")
         snapshot = self._snapshot(actor, job_id, options)
-        if snapshot.record.get(FIELD) is not None:
-            raise ValueError("Existing source review must be inspected, not replaced")
+        history = self._history(snapshot.record, job_id)
+        previous = snapshot.record.get(FIELD)
+        changes = {}
+        if predecessor is None:
+            if previous is not None:
+                raise ValueError("Existing source review must be inspected, not replaced")
+        else:
+            previous = validate_review(previous)
+            if previous["id"] != predecessor:
+                raise ValueError("Exact current predecessor required")
+            artifact = SourceArtifact.from_record(previous["candidate"])
+            if (
+                (previous["job_id"], previous["incident_id"], previous["boundary_id"])
+                != (job_id, options["incident_id"], options["expected_boundary"])
+                or (artifact.organization_id, artifact.application_id)
+                != (actor.organization_id, snapshot.record["application_id"])
+                or datetime.fromisoformat(started)
+                < datetime.fromisoformat(previous["revoked_at"] or previous["expires_at"])
+            ):
+                raise ValueError("Predecessor must be scoped and revoked or expired")
+            if len(history) >= MAX_HISTORY or review_id in {item["id"] for item in [*history, previous]}:
+                raise ValueError("History capacity or single-use review identity exhausted")
+            changes[HISTORY] = [*history, previous]
         prior = self._candidate(snapshot.record, candidate)
         expires = datetime.fromisoformat(started) + timedelta(seconds=seconds)
 
@@ -196,7 +309,7 @@ class IncidentSourceReview:
         if not beginning <= now < expires or now > beginning + timedelta(seconds=300):
             raise ValueError("Source review expired during snapshot verification")
         record = {
-            "version": 1,
+            "version": 2 if predecessor is not None else 1,
             "scope": "review_new_source_snapshot_only",
             "id": review_id,
             "job_id": job_id,
@@ -208,7 +321,7 @@ class IncidentSourceReview:
             "expires_at": expires.isoformat(),
             "prior_metadata_revision": snapshot.revision,
             "approved_metadata_revision": snapshot.revision + 1,
-            "parent_digest": parent_digest(snapshot.record),
+            "parent_digest": parent_digest({**snapshot.record, **changes}),
             "prior_source_digest": prior,
             "candidate": candidate.record(),
             "candidate_revision": candidate.upload_id,
@@ -216,10 +329,13 @@ class IncidentSourceReview:
             "revoked_by": None,
             "revocation_ref": None,
         }
+        if predecessor is not None:
+            record.update(supersedes_review_id=predecessor, history_digest=digest(changes[HISTORY]))
         validate_review(record)
+        self._history({**snapshot.record, **changes, FIELD: record}, job_id)
         guard()
         # Metadata CAS only: no operation/outbox, source overwrite or native execution.
-        receipt = self.scope.writer.patch(actor, job_id, snapshot.revision, {FIELD: record})
+        receipt = self.scope.writer.patch(actor, job_id, snapshot.revision, {**changes, FIELD: record})
         return self._report(record, receipt.revision, "review_recorded", verified=True, changed=True)
 
     def _review(self, actor, job_id, review_id, options):
@@ -294,6 +410,7 @@ class IncidentSourceReview:
             raise RecordConflict("Source review changed during inspection")
         return {
             **self._report(review, snapshot.revision, status, verified=False, changed=False),
+            "history_count": len(self._history(snapshot.record, job_id)),
             "snapshot_binding_current": snapshot.revision == review["approved_metadata_revision"]
             and parent_digest(snapshot.record) == review["parent_digest"],
         }

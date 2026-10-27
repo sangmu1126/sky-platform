@@ -17,7 +17,10 @@ REASONS = frozenset({"suspected_compromise", "credential_exposure", "untrusted_a
 
 
 def require_no_security_hold(job):
-    if job.get("security_recovery_source_review") is not None:
+    if (
+        job.get("security_recovery_source_review") is not None
+        or job.get("security_recovery_source_review_history") is not None
+    ):
         raise ValueError("New-source review is not execution or security clearance")
     if job.get("security_recovery") is not None:
         raise ValueError("Single-use incident recovery requires its dedicated execution boundary")
@@ -110,7 +113,10 @@ class SecurityHold:
         validate_release_request(incident_id, review_ref, expected_revision, expected_boundary, now)
         snapshot = self.writer.snapshot(principal, job_id)
         job = snapshot.record
-        if job.get("security_recovery_source_review") is not None:
+        if (
+            job.get("security_recovery_source_review") is not None
+            or job.get("security_recovery_source_review_history") is not None
+        ):
             raise ValueError("New-source review cannot be cleared by false-positive release")
         if job.get("security_artifact_review") is not None:
             raise ValueError("Artifact review requires dedicated recovery, not false-positive release")
@@ -368,7 +374,10 @@ def security_hold_projection(job, *, include_details=False):
     if job.get("security_recovery") is not None:
         value["promotion_blocked"] = True
         value["status"] = "incident_recovery_review_required"
-    if job.get("security_recovery_source_review") is not None:
+    if (
+        job.get("security_recovery_source_review") is not None
+        or job.get("security_recovery_source_review_history") is not None
+    ):
         value["promotion_blocked"] = True
         value["status"] = "new_source_review_requires_recovery"
     return value
