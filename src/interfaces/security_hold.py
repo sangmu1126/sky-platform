@@ -55,6 +55,10 @@ def operator(args):
 
 
 def run_security_hold(args, parser):
+    if args.action == "inspect-recovery":
+        from interfaces.incident_recovery_inspection import run_recovery_inspection
+
+        return run_recovery_inspection(args, parser)
     if args.action in {"approve-recovery", "execute-recovery"}:
         from interfaces.incident_recovery import run_incident_recovery
 

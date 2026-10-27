@@ -221,6 +221,7 @@ def main(argv):
             "inspect-runtime-containment",
             "approve-recovery",
             "execute-recovery",
+            "inspect-recovery",
             "verify-restricted-database",
             "retire-runtime",
             "inspect-runtime-retirement",
