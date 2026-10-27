@@ -155,3 +155,28 @@ def test_opt_in_migration_database_error_is_sanitized(configured_cli, builder, c
         main(["migrate", "--source-build-approvals"])
     assert result.value.code == 1
     assert "DO-NOT-PRINT" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("action", ["execute-source-build", "observe-source-build"])
+def test_source_build_execution_preflight_uses_explicit_local_session_without_reading_token(
+    configured_cli, builder, action, capsys
+):
+    args = arguments("inspect-source-build")
+    args[1] = action
+    args += ["--operator-github-session", "--check-config"]
+    if action == "execute-source-build":
+        args += ["--confirm-source-build-execution"]
+    with (
+        patch("subprocess.run", side_effect=AssertionError("Token command")),
+        patch("boto3.client", side_effect=AssertionError("AWS")),
+    ):
+        main(args)
+    assert "no AWS/DB calls" in capsys.readouterr().out
+
+
+def test_execute_source_build_requires_own_confirmation(configured_cli, builder):
+    args = arguments("inspect-source-build")
+    args[1] = "execute-source-build"
+    with pytest.raises(SystemExit) as result:
+        main(args + ["--operator-github-session", "--check-config"])
+    assert result.value.code == 2

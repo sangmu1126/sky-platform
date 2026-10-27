@@ -56,6 +56,8 @@ def operator(args):
 
 def run_security_hold(args, parser):
     if args.action in {
+        "execute-source-build",
+        "observe-source-build",
         "approve-source-build",
         "check-source-build",
         "inspect-source-build",
@@ -66,6 +68,8 @@ def run_security_hold(args, parser):
         return run_source_build(args, parser)
     if any(
         (
+            args.confirm_source_build_execution,
+            args.operator_github_session,
             args.source_build_approval_id,
             args.source_build_id,
             args.source_build_ref,

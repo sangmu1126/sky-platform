@@ -227,6 +227,8 @@ def main(argv):
             "approve-recovery",
             "execute-recovery",
             "inspect-recovery",
+            "execute-source-build",
+            "observe-source-build",
             "approve-source-build",
             "check-source-build",
             "inspect-source-build",
@@ -325,6 +327,12 @@ def main(argv):
     )
     security.add_argument("--recovery-runtime-config")
     security.add_argument("--recovery-source-config")
+    security.add_argument("--confirm-source-build-execution", action="store_true")
+    security.add_argument(
+        "--operator-github-session",
+        action="store_true",
+        help="Explicit local operator gh session; never forwarded to user code",
+    )
     security.add_argument("--source-build-approval-id")
     security.add_argument("--source-build-id")
     security.add_argument("--source-build-ref")
@@ -378,10 +386,15 @@ def main(argv):
             )
             if args.source_build_approvals:
                 from adapters.state.source_build_approvals import PostgresSourceBuildApprovals
+                from adapters.state.source_build_execution import PostgresSourceBuildExecutions
 
-                PostgresSourceBuildApprovals(
-                    PostgresDeploymentRecordStore(RotatingDatabaseConnection(settings), workspace=workspace),
-                    revalidate=lambda: None,
+                PostgresSourceBuildExecutions(
+                    PostgresSourceBuildApprovals(
+                        PostgresDeploymentRecordStore(
+                            RotatingDatabaseConnection(settings), workspace=workspace
+                        ),
+                        revalidate=lambda: None,
+                    )
                 ).initialize()
                 print("source build consent schema: up to date", flush=True)
             if args.shared_database_reviews:

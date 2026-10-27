@@ -25,9 +25,11 @@ from ports.state import RecordConflict
 
 
 def run_source_build(args, parser):
+    execute = args.action == "execute-source-build"
+    observe = args.action == "observe-source-build"
     approve = args.action == "approve-source-build"
     revoke = args.action == "revoke-source-build"
-    verify = approve or args.action == "check-source-build"
+    verify = approve or execute or observe or args.action == "check-source-build"
     allowed = {
         "mode",
         "action",
@@ -47,6 +49,8 @@ def run_source_build(args, parser):
         "source_build_seconds",
         "confirm_source_build_approval",
         "confirm_source_build_revocation",
+        "confirm_source_build_execution",
+        "operator_github_session",
     }
     if approve:
         allowed.add("source_review_id")
@@ -56,6 +60,7 @@ def run_source_build(args, parser):
         if (
             args.confirm_source_build_approval is not approve
             or args.confirm_source_build_revocation is not revoke
+            or args.confirm_source_build_execution is not execute
         ):
             raise ValueError("Separate explicit build consent required")
         for value, length in [(args.job_id, 16), (args.source_build_approval_id, 32)]:
@@ -69,6 +74,23 @@ def run_source_build(args, parser):
                 raise ValueError("Exact reviewed source required")
         elif args.source_build_id is not None or args.source_build_seconds is not None:
             raise ValueError("Build identity and lifetime require approval action")
+        if args.operator_github_session and not (execute or observe):
+            raise ValueError("Operator GitHub session requires execution or observation")
+        token = None
+        if execute or observe:
+            if args.operator_github_session:
+                from adapters.github.operator_session import OperatorGitHubSession
+
+                token = OperatorGitHubSession()
+            else:
+                from adapters.github.remote_build import InstallationToken
+
+                token = InstallationToken(
+                    os.environ.get("SKY_GITHUB_APP_ID", ""),
+                    os.environ.get("SKY_GITHUB_INSTALLATION_ID", ""),
+                    os.environ.get("SKY_GITHUB_APP_PRIVATE_KEY", ""),
+                    os.environ.get("SKY_BUILDER_REPOSITORY", ""),
+                )
         seconds = args.source_build_seconds if args.source_build_seconds is not None else 900
         if type(seconds) is not int or not 1 <= seconds <= 900:
             raise ValueError("Bounded build consent lifetime required")
@@ -108,7 +130,7 @@ def run_source_build(args, parser):
         @contextmanager
         def connection():
             with factory() as db:
-                if not approve and not revoke:
+                if not approve and not revoke and not execute and not observe:
                     db.execute("SET TRANSACTION READ ONLY")
                 yield db
 
@@ -142,7 +164,25 @@ def run_source_build(args, parser):
             "expected_revision": args.expected_revision,
         }
         common = dict(approval_id=args.source_build_approval_id, **options)
-        if approve:
+        if execute or observe:
+            from adapters.aws.build_objects import S3BuildObjects
+            from adapters.aws.source_build_image import EcrSourceBuildVerifier
+            from adapters.github.remote_build import GitHubApi, GitHubRemoteBuild
+            from adapters.state.source_build_execution import PostgresSourceBuildExecutions
+            from application.incident_source_build_execution import IncidentSourceBuildExecution
+
+            execution = IncidentSourceBuildExecution(
+                service,
+                PostgresSourceBuildExecutions(ledger),
+                reviews.sources,
+                GitHubRemoteBuild(settings, GitHubApi(token)),
+                S3BuildObjects(storage),
+                EcrSourceBuildVerifier(settings),
+                clock=lambda: datetime.now(UTC).isoformat(),
+            )
+            method = execution.execute if execute else execution.observe
+            report = method(actor, args.job_id, **common)
+        elif approve:
             report = service.approve(
                 actor,
                 args.job_id,
