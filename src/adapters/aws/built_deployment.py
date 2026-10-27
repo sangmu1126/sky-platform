@@ -103,8 +103,28 @@ class BuiltImageDeployment:
             status = service.get("status", {}).get("statusCode")
             if status in {"FAILED", "INACTIVE"}:
                 raise ValueError("Deployment is not healthy; reconciliation required")
-            if status != "ACTIVE" or service.get("currentDeployment"):
+            if status != "ACTIVE":
                 return None
+            deployment = service.get("currentDeployment")
+            if deployment:
+                prefix = f"arn:aws:ecs:{self.settings.region}:{self.settings.account_id}:service-deployment/default/{intent['payload']['serviceName']}/"
+                if not isinstance(deployment, str) or not re.fullmatch(
+                    re.escape(prefix) + r"[A-Za-z0-9_-]{1,128}", deployment
+                ):
+                    raise ValueError("Current deployment belongs to another service")
+                observed = self.ecs.describe_service_deployments(serviceDeploymentArns=[deployment])
+                deployments = observed.get("serviceDeployments", [])
+                if (
+                    observed.get("failures")
+                    or len(deployments) != 1
+                    or deployments[0].get("serviceDeploymentArn") != deployment
+                    or deployments[0].get("serviceArn") != intent["service_arn"]
+                ):
+                    raise ValueError("Exact current deployment observation required")
+                if deployments[0].get("status") in {"PENDING", "IN_PROGRESS"}:
+                    return None
+                if deployments[0].get("status") != "SUCCESSFUL":
+                    raise ValueError("Current deployment did not complete successfully")
             configs = service.get("activeConfigurations", [])
             if len(configs) != 1:
                 return None

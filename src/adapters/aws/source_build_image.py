@@ -45,7 +45,7 @@ class EcrSourceBuildVerifier(EcrBuildVerifier):
 
         manifest = json.loads(raw, object_pairs_hook=unique)
         if not isinstance(manifest, dict) or not isinstance(manifest.get("config"), dict):
-            raise ValueError("Single manifest config required")
+            raise TypeError("Single manifest config required")
         descriptor = manifest["config"]
         if (
             type(manifest.get("schemaVersion")) is not int

@@ -204,3 +204,27 @@ def test_unhealthy_http_is_not_success(prepared):
     adapter.probe.side_effect = OSError("unhealthy")
     with pytest.raises(OSError):
         adapter.observe(intent)
+
+
+@pytest.mark.parametrize("status", ["SUCCESSFUL", "IN_PROGRESS", "ROLLBACK_SUCCESSFUL"])
+def test_current_deployment_reference_may_remain_after_success(prepared, status):
+    adapter, request, result = prepared
+    intent = adapter.prepare(request, result)
+    service = ready(adapter, intent)
+    arn = (
+        "arn:aws:ecs:ap-northeast-2:123456789012:service-deployment/default/"
+        + intent["payload"]["serviceName"]
+        + "/completed"
+    )
+    service["currentDeployment"] = arn
+    adapter.ecs.describe_service_deployments.return_value = {
+        "serviceDeployments": [
+            {"serviceDeploymentArn": arn, "serviceArn": intent["service_arn"], "status": status}
+        ]
+    }
+    if status == "ROLLBACK_SUCCESSFUL":
+        with pytest.raises(ValueError):
+            adapter.observe(intent)
+    else:
+        value = adapter.observe(intent)
+        assert (value is not None) == (status == "SUCCESSFUL")
