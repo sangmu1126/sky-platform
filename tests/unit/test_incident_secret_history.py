@@ -157,3 +157,32 @@ def test_malformed_historical_identity_set_never_reaches_aws(operating_review_se
     with pytest.raises(ValueError):
         f.adapter.preflight(f.context, guard=lambda: None)
     assert all(not client.method_calls for client in f.clients.values())
+
+
+def test_postgresql_source_recovery_archive_preserves_old_role_denials(operating_review_setup):
+    from ports.remote_builds import digest
+
+    f = fixture(operating_review_setup)
+    first, _ = archive_and_replace_roles(f)
+    audit = f.records.job["security_incident_history"][0]
+    old = audit["controls"].pop("security_recovery")
+    plan = {"image": "new-verified-image"}
+    audit["kind"] = "source_recovery"
+    audit["controls"]["security_source_recovery"] = {
+        "recovery_id": old["id"],
+        "phase": "verified",
+        "scope": "new_source_recovery_only",
+        "profile": "postgresql",
+        "job_id": f.records.job["id"],
+        "organization_id": f.records.job["organization_id"],
+        "incident_id": audit["incident_id"],
+        "boundary_id": audit["prior_boundary"],
+        "plan": plan,
+        "plan_digest": digest(plan),
+        "result": {"image": plan["image"], "verification": {"database_authentication": "verified"}},
+    }
+    current = access_context(f.records.job, f.registration)
+    assert current["prior_role_ids"] == sorted(first["target"]["roles"].values())
+    audit["controls"]["security_source_recovery"]["profile"] = "stateless-http"
+    with pytest.raises(ValueError):
+        access_context(f.records.job, f.registration)

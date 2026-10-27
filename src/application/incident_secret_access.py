@@ -16,6 +16,7 @@ from application.incident_runtime_inspection import IncidentRuntimeInspection
 from application.security_hold import validate_release_request
 from domain.access import Principal, Role
 from domain.incident_secret_access import IncidentSecretRegistration, runtime_context, validate_access_target
+from ports.remote_builds import digest
 from ports.state import RecordConflict
 
 FIELD = "security_secret_access_fence"
@@ -38,7 +39,31 @@ def access_context(job, registration):
         ):
             raise ValueError("Unique completed incident recovery identity required")
         recovery_ids.add(recovery_id)
-        recovery = audit["controls"].get("security_recovery")
+        source_recovery = audit.get("kind") == "source_recovery"
+        recovery = audit["controls"].get("security_source_recovery" if source_recovery else "security_recovery")
+        if source_recovery:
+            if (not isinstance(recovery, dict) or recovery.get("recovery_id") != recovery_id
+                or recovery.get("phase") != "verified" or recovery.get("scope") != "new_source_recovery_only"
+                or recovery.get("job_id") != job.get("id")
+                or recovery.get("organization_id") != job.get("organization_id")
+                or recovery.get("incident_id") != audit.get("incident_id")
+                or recovery.get("boundary_id") != audit.get("prior_boundary")
+                or recovery.get("plan_digest") != digest(recovery.get("plan"))
+                or recovery.get("result", {}).get("image") != recovery.get("plan", {}).get("image")):
+                raise ValueError("Verified new-source recovery archive required")
+            if recovery.get("profile") == "stateless-http":
+                prior = audit.get("prior_result")
+                if (any(audit["controls"].get(k) is not None for k in (FIELD, RESTRICTION, PREPARATION, "security_database_verification"))
+                    or (prior is not None and not isinstance(prior, dict))
+                    or (isinstance(prior, dict) and prior.get("database"))):
+                    raise ValueError("Stateless history cannot erase database access denial")
+                continue
+            if recovery.get("profile") != "postgresql" or recovery.get("result", {}).get("verification", {}).get("database_authentication") != "verified":
+                raise ValueError("Verified PostgreSQL source recovery archive required")
+            # Adapt only the actual verified archive shape for common role-history
+            # validation. This does not authorize the old recovery executor.
+            recovery = {**recovery, "id": recovery_id, "external_pending": False,
+                        "incident_id": audit.get("incident_id"), "boundary_id": audit.get("prior_boundary")}
         if (
             not isinstance(recovery, dict)
             or recovery.get("id") != recovery_id

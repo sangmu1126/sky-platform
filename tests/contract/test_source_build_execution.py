@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 
+from adapters.state.incident_execution import PostgresIncidentExecutionControl
 from adapters.state.source_build_approvals import PostgresSourceBuildApprovals
 from adapters.state.source_build_execution import PostgresSourceBuildExecutions
 from application.incident_source_build import IncidentSourceBuildApproval
@@ -26,6 +27,16 @@ from tests.unit.test_source_artifacts import MemoryStore, upload
 @pytest.fixture
 def execution(review, store):
     r = attach(review, store)
+    old = store.records.load_job(ID)
+    r.options["expected_revision"] = store.records.save_job(
+        ID, {**old.record, "result": None}, expected_revision=old.revision
+    )
+    prior_operation = store.admit("game", "deploy", "before-incident", {})
+    store.claim(prior_operation.id, prior_operation.attempt_id, "old-worker")
+    fenced = PostgresIncidentExecutionControl(store, revalidate=lambda: r.actor).fence(
+        r.actor, ID, **r.options
+    )
+    r.options["expected_revision"] = fenced["metadata_revision"]
     r.moment[0] = datetime.now(UTC)
     memory = MemoryStore()
     sources = SourceArtifactService(memory)

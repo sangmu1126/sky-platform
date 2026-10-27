@@ -227,6 +227,10 @@ def main(argv):
             "approve-recovery",
             "execute-recovery",
             "inspect-recovery",
+            "finalize-source-recovery",
+            "approve-source-recovery",
+            "execute-source-recovery",
+            "inspect-source-recovery",
             "execute-source-build",
             "observe-source-build",
             "approve-source-build",
@@ -327,6 +331,14 @@ def main(argv):
     )
     security.add_argument("--recovery-runtime-config")
     security.add_argument("--recovery-source-config")
+    security.add_argument("--source-recovery-id")
+    security.add_argument("--source-recovery-ref")
+    security.add_argument("--source-recovery-seconds", type=int)
+    security.add_argument("--source-recovery-profile", choices=("stateless-http", "postgresql"))
+    security.add_argument("--confirm-source-recovery-approval", action="store_true")
+    security.add_argument("--confirm-source-recovery-execution", action="store_true")
+    security.add_argument("--confirm-source-recovery-finalization", action="store_true")
+    security.add_argument("--allow-public-source-recovery", action="store_true")
     security.add_argument("--confirm-source-build-execution", action="store_true")
     security.add_argument(
         "--operator-github-session",
@@ -395,6 +407,20 @@ def main(argv):
                         ),
                         revalidate=lambda: None,
                     )
+                ).initialize()
+                from adapters.state.operations import PostgresOperationStore
+                from adapters.state.source_recovery import PostgresSourceRecovery
+
+                PostgresSourceRecovery(
+                    PostgresSourceBuildExecutions(
+                        PostgresSourceBuildApprovals(
+                            PostgresDeploymentRecordStore(
+                                RotatingDatabaseConnection(settings), workspace=workspace
+                            ),
+                            revalidate=lambda: None,
+                        )
+                    ),
+                    PostgresOperationStore(RotatingDatabaseConnection(settings), workspace=workspace),
                 ).initialize()
                 print("source build consent schema: up to date", flush=True)
             if args.shared_database_reviews:

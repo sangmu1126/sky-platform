@@ -45,14 +45,11 @@ class IncidentSourceBuildExecution:
         snapshot, approval = self._current(actor, job_id, approval_id, options)
         original = SourceArtifact.from_record(approval["candidate"])
         with self.sources.restore(actor, original) as project:
-            if inspect_infrastructure(project).requirements:
-                raise ValueError(
-                    "New-source build execution currently requires stateless HTTP; preserve resource requirements"
-                )
+            profile = inspect_infrastructure(project)
             plan = asdict(analyze(project))
-            if plan["required_env"]:
-                raise ValueError("Source build needs a separately approved environment binding")
-            plan.update(target="aws", replicas=1)
+            # Building does not grant the resources demanded by the app. Preserve
+            # those signals for the separate recovery/runtime approval.
+            plan.update(target="aws", replicas=1, infrastructure_profile=profile.as_dict())
             prepared = self.sources.capture_prepared(
                 actor, original, project, expected_digest=original.source_digest
             )

@@ -56,6 +56,28 @@ def operator(args):
 
 def run_security_hold(args, parser):
     if args.action in {
+        "approve-source-recovery",
+        "execute-source-recovery",
+        "inspect-source-recovery",
+        "finalize-source-recovery",
+    }:
+        from interfaces.incident_source_recovery import run_source_recovery
+
+        return run_source_recovery(args, parser)
+    if any(
+        (
+            args.source_recovery_id,
+            args.source_recovery_ref,
+            args.source_recovery_seconds is not None,
+            args.source_recovery_profile,
+            args.confirm_source_recovery_approval,
+            args.confirm_source_recovery_execution,
+            args.confirm_source_recovery_finalization,
+            args.allow_public_source_recovery,
+        )
+    ):
+        parser.error("Source recovery options require their dedicated action")
+    if args.action in {
         "execute-source-build",
         "observe-source-build",
         "approve-source-build",
