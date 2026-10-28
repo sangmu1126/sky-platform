@@ -113,3 +113,50 @@ def test_foreign_baseline_rejected_before_fencing_or_quiesce():
     with pytest.raises(ValueError, match="baseline"):
         flow.promote(plan, {**plan, "plan_id": "foreign"})
     assert source.enabled and target.enabled and not traffic.closed
+
+
+def test_read_preserving_mode_requires_two_explicit_write_fences():
+    flow, source, target, traffic, _ = fixture()
+    with pytest.raises(TypeError, match="Both registered"):
+        DatabaseCutover(
+            flow.sync,
+            source,
+            target,
+            traffic,
+            guard=lambda: None,
+            journal=lambda _: None,
+            preserve_reads=True,
+        )
+
+
+def test_read_mode_enables_writes_only_after_route_probe():
+    from adapters.database.promotion_write_fence import PostgresPromotionWriteFence
+
+    flow, source, target, traffic, events = fixture()
+
+    class WriteFence(PostgresPromotionWriteFence):
+        def __init__(self, binding):
+            self.binding, self.enabled = binding, True
+
+        def set_writes(self, enabled, *, guard):
+            guard()
+            self.enabled = enabled
+            return {"writes_enabled": enabled, "login_enabled": True}
+
+        def set_login(self, enabled, *, guard):
+            raise AssertionError("Planned read-preserving migration must not change LOGIN")
+
+    source, target = WriteFence(source.binding), WriteFence(target.binding)
+    flow = DatabaseCutover(
+        flow.sync, source, target, traffic, guard=lambda: None, journal=events.append, preserve_reads=True
+    )
+    plan = {"plan_id": "test", "source": asdict(source.binding), "target": asdict(target.binding)}
+    result = flow.promote(plan, plan)
+    stages = [x["stage"] for x in events if x["status"] == "observed"]
+    assert stages.index("probe_target") < stages.index("enable_target") < stages.index("resume_target")
+    assert not source.enabled and target.enabled
+    events.clear()
+    flow.rollback(plan, result["baseline"])
+    stages = [x["stage"] for x in events if x["status"] == "observed"]
+    assert stages.index("probe_source") < stages.index("enable_source") < stages.index("resume_source")
+    assert source.enabled and not target.enabled

@@ -8,12 +8,21 @@ requires reconciliation rather than automatic replay. No schema changes or CDC.
 from dataclasses import asdict
 
 from domain.database import DatabaseBinding
+from ports.database_promotion import ReadPreservingWriteFence
 
 
 class DatabaseCutover:
-    def __init__(self, synchronizer, source_fence, target_fence, traffic, *, guard, journal):
+    def __init__(
+        self, synchronizer, source_fence, target_fence, traffic, *, guard, journal, preserve_reads=False
+    ):
         self.sync, self.source, self.target, self.traffic = synchronizer, source_fence, target_fence, traffic
         self.guard, self.journal = guard, journal
+        if type(preserve_reads) is not bool:
+            raise ValueError("Explicit read preservation mode required")
+        if preserve_reads:
+            if not all(isinstance(fence, ReadPreservingWriteFence) for fence in (source_fence, target_fence)):
+                raise TypeError("Both registered read-preserving write fences required")
+        self.preserve_reads = preserve_reads
 
     def _step(self, name, action):
         self.guard()
@@ -24,6 +33,8 @@ class DatabaseCutover:
         return result
 
     def _login(self, fence, enabled):
+        if self.preserve_reads:
+            return fence.set_writes(enabled, guard=self.guard)
         return fence.set_login(enabled, guard=self.guard)
 
     def _validate(self, plan, baseline):
@@ -50,9 +61,12 @@ class DatabaseCutover:
         final = self._step(
             "final_sync", lambda: self.sync.refresh(plan, expected_destination=baseline, guard=self.guard)
         )
-        self._step("enable_target", lambda: self._login(self.target, True))
+        if not self.preserve_reads:
+            self._step("enable_target", lambda: self._login(self.target, True))
         self._step("activate_target", lambda: self.traffic.activate(plan["source"], plan["target"]))
         self._step("probe_target", lambda: self.traffic.probe(plan["target"]))
+        if self.preserve_reads:
+            self._step("enable_target", lambda: self._login(self.target, True))
         self._step("resume_target", lambda: self.traffic.resume(plan["target"]))
         receipt = {
             "plan_id": plan["plan_id"],
@@ -85,10 +99,13 @@ class DatabaseCutover:
                 plan, expected_destination=final_baseline, guard=self.guard, reverse=True
             ),
         )
-        self._step("enable_source", lambda: self._login(self.source, True))
+        if not self.preserve_reads:
+            self._step("enable_source", lambda: self._login(self.source, True))
         if active != plan["source"]:
             self._step("activate_source", lambda: self.traffic.activate(active, plan["source"]))
         self._step("probe_source", lambda: self.traffic.probe(plan["source"]))
+        if self.preserve_reads:
+            self._step("enable_source", lambda: self._login(self.source, True))
         self._step("resume_source", lambda: self.traffic.resume(plan["source"]))
         return {
             "plan_id": plan["plan_id"],

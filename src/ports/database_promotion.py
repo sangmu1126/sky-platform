@@ -1,5 +1,6 @@
 """Trusted dedicated-target preparation; no application traffic or data movement."""
 
+from abc import ABC, abstractmethod
 from typing import Protocol
 
 
@@ -44,3 +45,17 @@ class StableApplicationRouter(Protocol):
     def current(self) -> dict: ...
     def switch(self, expected_binding: dict, target_binding: dict) -> dict: ...
     def probe(self, expected_binding: dict) -> dict: ...
+
+
+class ReadPreservingWriteFence(ABC):
+    """Explicit planned-migration capability; never replaces incident fencing.
+
+    Close the registered application writer gate before disabling writes. Keep
+    CONNECT/LOGIN/ordinary SELECT available, drain pre-existing writers and
+    persist the write restriction beyond the controller process lifetime.
+    Reject unsupported ownership/ACL/schema profiles rather than claim fencing.
+    Restoring writes requires the same approved profile and execution guard.
+    """
+
+    @abstractmethod
+    def set_writes(self, enabled: bool, *, guard) -> dict: ...
