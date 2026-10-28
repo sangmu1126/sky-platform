@@ -30,15 +30,12 @@ from ports.remote_builds import canonical, digest, identity, request_key, valida
 
 
 def command(args, timeout=1200, *, env=None):
-    # Capture bounded diagnostics on disk; never print user build output or credentials.
-    with tempfile.TemporaryFile(mode="w+") as output:
-        result = subprocess.run(
-            args, check=False, stdout=output, stderr=subprocess.STDOUT, text=True, timeout=timeout, env=env
-        )
-        output.seek(0)
-        text = output.read(65536)
+    from adapters.build.process import bounded_command
+
+    # No unbounded temporary log file: a noisy RUN cannot fill the runner disk.
+    returncode, text = bounded_command(args, timeout=timeout, env=env)
     if (
-        result.returncode
+        returncode
         and args[:3] == ["docker", "image", "inspect"]
         and "--platform" in args
         and "unknown flag: --platform" in text
@@ -46,7 +43,7 @@ def command(args, timeout=1200, *, env=None):
         # Old CLI: still check the built single-platform image's actual OS/architecture.
         selected = args.index("--platform")
         return command(args[:selected] + args[selected + 2 :], timeout, env=env)
-    if result.returncode:
+    if returncode:
         raise OSError("Builder command failed")
     return text
 

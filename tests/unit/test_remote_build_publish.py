@@ -300,10 +300,9 @@ def test_command_preserves_scoped_environment_on_inspect_fallback(tmp_path, fall
     def execute(args, **kwargs):
         calls.append((args, kwargs["env"]))
         fail = fallback and len(calls) == 1
-        kwargs["stdout"].write("unknown flag: --platform" if fail else "linux/amd64")
-        return Mock(returncode=1 if fail else 0)
+        return (1 if fail else 0), ("unknown flag: --platform" if fail else "linux/amd64")
 
-    with patch.object(builder.subprocess, "run", side_effect=execute):
+    with patch("adapters.build.process.bounded_command", side_effect=execute):
         value = builder.command(
             ["docker", "image", "inspect", "--platform", "linux/amd64", "fixture"], env=environment
         )
