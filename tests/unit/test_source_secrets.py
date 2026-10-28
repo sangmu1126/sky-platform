@@ -50,3 +50,39 @@ def test_cloud_secret_name_is_rejected_before_requesting_its_value():
     with pytest.raises(ValueError, match="CV-07.*SecretRef"):
         reject_plaintext_cloud_secret_names(["APP_SECRET"], "aws-ecs-express")
     reject_plaintext_cloud_secret_names(["APP_MODE"], "aws-ecs-express")
+
+
+@pytest.mark.parametrize(
+    "name,content",
+    [
+        ("credentials.json", '{"password":"synthetic-secret"}'),
+        ("server.py", "x='ASIA" + "X" * 16 + "'"),
+        ("private.pem", "-----BEGIN RSA PRIVATE KEY-----\nsynthetic-private"),
+        ("server.js", "const pat='github_pat_" + "x" * 30 + "';"),
+    ],
+)
+def test_embedded_credentials_are_rejected_without_echoing_values(tmp_path, name, content):
+    from application.source_secrets import reject_embedded_credentials
+
+    (tmp_path / name).write_text(content)
+    with pytest.raises(ValueError, match="CV-07") as error:
+        reject_embedded_credentials(tmp_path)
+    assert content not in str(error.value)
+
+
+def test_scanner_checks_across_chunk_boundary_and_allows_public_certificates(tmp_path):
+    from application.source_secrets import reject_embedded_credentials
+
+    (tmp_path / "public.pem").write_text("-----BEGIN CERTIFICATE-----\npublic-ca\n-----END CERTIFICATE-----")
+    reject_embedded_credentials(tmp_path)
+    (tmp_path / "server.js").write_text(" " * 65530 + "ASIA" + "X" * 16)
+    with pytest.raises(ValueError, match="CV-07"):
+        reject_embedded_credentials(tmp_path)
+
+
+def test_secret_loading_module_is_not_a_credential_container(tmp_path):
+    from application.source_secrets import reject_embedded_credentials, sensitive_source_path
+
+    (tmp_path / "secrets.py").write_text("import os\nvalue = os.getenv('APP_SECRET')\n")
+    assert not sensitive_source_path(tmp_path / "secrets.py")
+    reject_embedded_credentials(tmp_path)

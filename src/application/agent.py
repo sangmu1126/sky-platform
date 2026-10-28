@@ -29,7 +29,8 @@ from application.consistency import (
     check_sqlite_migration_consistency, check_websocket_state_consistency,
     check_target_resource_consistency, require_health_result)
 from application.source_secrets import (reject_plaintext_cloud_secret_names,
-                                        reject_plaintext_cloud_secrets, reject_supplied_secrets_in_source)
+                                        reject_plaintext_cloud_secrets, reject_supplied_secrets_in_source,
+                                        sensitive_source_path)
 from application.verification_gates import static_consistency_gate
 from application.infrastructure import inspect_infrastructure, validate_infrastructure
 from application.local_sqlite import preflight_local_sqlite
@@ -379,6 +380,7 @@ class DeploymentTools:
         path = PurePosixPath(name)
         custom_dockerfile = name == "Dockerfile" and (self.original / "Dockerfile").is_file()
         if (path.is_absolute() or ".." in path.parts or "\\" in name or not path.parts
+                or sensitive_source_path(Path(name))
                 or any(p.startswith('.') or p in {"node_modules", "dist", "build", "vendor"} for p in path.parts)
                 or (not custom_dockerfile and path.suffix not in SOURCE_SUFFIXES and path.name not in SOURCE_FILENAMES)
                 or path.name in {"package-lock.json", "Gemfile.lock", "poetry.lock", "go.sum", "Cargo.lock"}):
@@ -432,6 +434,9 @@ class DeploymentTools:
             raise ValueError("Patch too large or contains redacted placeholders")
         if target.suffix == '.json':
             json.loads(after)
+        from application.patch_security import check_patch_security
+
+        check_patch_security(path, before, after)
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = None
         try:

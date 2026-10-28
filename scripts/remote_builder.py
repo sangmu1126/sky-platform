@@ -116,9 +116,22 @@ def build(directory, output):
             "AWS_SESSION_TOKEN",
             "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
             "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "AWS_PROFILE",
+            "AWS_DEFAULT_PROFILE",
+            "AWS_SHARED_CREDENTIALS_FILE",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            "OPENAI_API_KEY",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GOOGLE_CREDENTIALS",
+            "AZURE_CLIENT_SECRET",
+            "ACTIONS_RUNTIME_TOKEN",
         )
     ):
-        raise ValueError("Build job must not carry AWS/OIDC credentials")
+        raise ValueError("Build job must not carry AWS/OIDC credentials or other provider credentials")
     payload = (directory / "source.zip").read_bytes()
 
     class Objects:
@@ -138,6 +151,10 @@ def build(directory, output):
         }
     )
     image = "sky-build:" + request["build_id"]
+    offline = os.environ.get("SKY_OFFLINE_BUILD_BASES_JSON")
+    if os.environ.get("SKY_REQUIRE_ISOLATED_BUILDS") == "true" and not offline:
+        raise ValueError("Hosted builds require an explicitly registered isolated build profile")
+    offline_options = {} if offline is None else {"offline_bases": json.loads(offline)}
     with SourceArtifactService(Objects()).restore(principal, artifact) as project:
         ca = None
         if raw_plan.get("database_profile") == "shared-postgres-v1":
@@ -150,13 +167,13 @@ def build(directory, output):
         elif raw_plan.get("database_profile") is not None:
             raise ValueError("Unsupported remote build database profile")
         ImageBuilder(command, lambda *_: None).build(
-            project, plan, image, platform="linux/amd64", extra_ca_bundle=ca
+            project, plan, image, platform="linux/amd64", extra_ca_bundle=ca, **offline_options
         )
     output.mkdir(parents=True, exist_ok=True)
     command(["docker", "save", "-o", str(output / "image.tar"), image])
-    image_id = command(["docker", "image", "inspect", "--format", "{{.Id}}", image]).strip()
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
-        raise ValueError("Invalid built image identity")
+    from adapters.build.saved_archive import validate_saved_archive
+
+    image_id = validate_saved_archive(output / "image.tar", None, image)["config_digest"]
     (output / "build.json").write_bytes(
         canonical(
             {
@@ -203,6 +220,9 @@ def publish(directory, output, *, attestation_output=None):
 
     request, _, _ = inputs(directory)
     image_id = verified_build(request, output)
+    from adapters.build.saved_archive import validate_saved_archive
+
+    archive_identity = validate_saved_archive(output / "image.tar", image_id, "sky-build:" + request["build_id"])
     settings = S3ArtifactSettings(
         os.environ["SKY_ARTIFACTS_BUCKET"], os.environ["AWS_REGION"], os.environ["SKY_AWS_ACCOUNT_ID"]
     )
@@ -254,18 +274,18 @@ def publish(directory, output, *, attestation_output=None):
             local = "sky-build:" + request["build_id"]
             docker_command(["docker", "load", "-i", str(output / "image.tar")])
             loaded_id = docker_command(["docker", "image", "inspect", "--format", "{{.Id}}", local]).strip()
-            if loaded_id != image_id:
+            if loaded_id not in archive_identity["image_identities"]:
                 raise ValueError("Loaded image identity mismatch")
             if (
                 docker_command(
-                    ["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", image_id]
+                    ["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", local]
                 ).strip()
                 != "linux/amd64"
             ):
                 raise ValueError("Unexpected image architecture")
             destination = registry + "/sky-managed:" + tag
-            docker_command(["docker", "tag", image_id, destination])
-            docker_command(["docker", "push", destination], timeout=300)
+            docker_command(["docker", "tag", local, destination])
+            docker_command(["docker", "push", "--platform", "linux/amd64", destination], timeout=300)
             image_digest = ecr.describe_images(
                 registryId=settings.account_id, repositoryName="sky-managed", imageIds=[{"imageTag": tag}]
             )["imageDetails"][0]["imageDigest"]

@@ -72,8 +72,11 @@ def _extract(archive, destination):
 
 
 def _snapshot(project):
+    from application.source_secrets import reject_embedded_credentials
+
     if not project.is_dir() or project.is_symlink():
         raise ValueError("Source project must be a plain directory")
+    reject_embedded_credentials(project)
     entries = []
     for directory, directories, names in os.walk(project, followlinks=False):
         for name in sorted(directories + names):

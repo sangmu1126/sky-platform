@@ -70,20 +70,33 @@ class AISettings:
 
 
 def redact(text: str) -> str:
-    # Best-effort redaction, not a general secret detector; only trusted source is supported.
-    text = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
+    # Defense in depth only: redaction cannot prove that arbitrary source has no secrets.
+    # Redact an unterminated key too; bounded reads may end before its END marker.
+    text = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?(?:-----END [^-]*PRIVATE KEY-----|\Z)",
                   "[REDACTED_PRIVATE_KEY]", text, flags=re.S)
-    text = re.sub(r"\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|AKIA[A-Z0-9]{16})\b",
+    text = re.sub(r"\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,}|(?:AKIA|ASIA)[A-Z0-9]{16})\b",
                   "[REDACTED_TOKEN]", text)
-    text = re.sub(r"(https?://)[^\s/@:]+:[^\s/@]+@", r"\1[REDACTED]@", text)
+    text = re.sub(r"(?i)((?:https?|postgres(?:ql)?|rediss?|mongodb(?:\+srv)?|mysql)://)[^\s/@]+@",
+                  r"\1[REDACTED]@", text)
     text = re.sub(
         r'''(?i)(["']?[\w-]*(?:secret|password|api[_-]?key|token)[\w-]*["']?\s*[:=]\s*)(["'])([^\n]*?)\2''',
         lambda m: m[1] + m[2] + "[REDACTED]" + m[2], text)
+    text = re.sub(
+        r"(?im)^(\s*(?:export\s+)?[A-Z_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|ACCESS_KEY)[A-Z_]*\s*=\s*)([^\s\"'\r\n#]+)",
+        lambda m: m[1] + "[REDACTED]", text)
     return text
 
 
 def source_context(project: Path) -> dict[str, str]:
     """Send a bounded allowlist of project text, never env files or lockfiles."""
+    from application.source_secrets import sensitive_source_path
+
+    if not project.is_dir() or project.is_symlink():
+        raise AnalysisError("AI source must be a plain project directory")
+    # The two special root files must not bypass the general symlink check.
+    for name in ("package.json", "Dockerfile"):
+        if (project / name).is_symlink():
+            raise AnalysisError("AI source cannot contain linked configuration files")
     files = {}
     budget = 48000
     if (project / "package.json").is_file():
@@ -110,6 +123,8 @@ def source_context(project: Path) -> dict[str, str]:
         if path.relative_to(project).as_posix() in files:
             continue
         if (not path.is_file() or path.is_symlink()
+                or not path.resolve().is_relative_to(project.resolve())
+                or sensitive_source_path(path.relative_to(project))
                 or (path.suffix not in ANALYSIS_SUFFIXES and path.name not in SOURCE_FILENAMES
                     and path.name != "pyproject.toml")
                 or any(p.startswith(".") or p in {"node_modules", "dist", "build", "coverage", "vendor"} for p in parts)):

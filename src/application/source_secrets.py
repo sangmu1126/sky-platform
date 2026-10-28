@@ -12,6 +12,54 @@ _SENSITIVE_ENV_NAME = re.compile(
 _SENSITIVE_ENV_EXACT = {"PGPASSWORD", "MYSQL_PWD"}
 
 
+def sensitive_source_path(path: Path) -> bool:
+    """Exclude credential containers even when their extension looks like source.
+
+    This is a conservative filename boundary, not content/secret detection.
+    Application code such as authentication.py is intentionally not excluded.
+    """
+    name = path.name.casefold()
+    stem = path.stem.casefold().replace("_", "-")
+    return (name == ".env" or name.startswith(".env.")
+            or path.suffix.casefold() in {".pem", ".key", ".p12", ".pfx", ".jks"}
+            or (path.suffix.casefold() in {"", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".txt"}
+                and stem in {"credentials", "credential", "secrets", "secret", "service-account",
+                             "service-account-key", "id-rsa", "id-ed25519", "application-default-credentials"}))
+
+
+def reject_embedded_credentials(project: Path) -> None:
+    """Reject known credential containers/key formats before source storage or build.
+
+    This is deliberately not entropy-based scanning or proof arbitrary files have
+    no secrets. Values and file contents are never included in errors.
+    """
+    from application.deployment_core import ignored_source_path
+
+    if not project.is_dir() or project.is_symlink():
+        raise ValueError("CV-07: Deployment source must be a plain directory")
+    pattern = re.compile(rb"-----BEGIN [^-\r\n]*PRIVATE KEY-----|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\b(?:sk-|gh[pousr]_)[A-Za-z0-9_-]{20,}\b")
+    for path in project.rglob("*"):
+        relative = path.relative_to(project)
+        if ignored_source_path(relative):
+            continue
+        if path.is_symlink() or not path.resolve().is_relative_to(project.resolve()):
+            raise ValueError("CV-07: Deployment source contains an unsafe link")
+        if not path.is_file():
+            continue
+        if sensitive_source_path(relative) and path.suffix.casefold() not in {".pem", ".key"}:
+            raise ValueError("CV-07: Move credential files to managed secret references before deployment")
+        try:
+            with path.open("rb") as source:
+                previous = b""
+                while chunk := source.read(65536):
+                    combined = previous + chunk
+                    if pattern.search(combined):
+                        raise ValueError("CV-07: Embedded credentials must be removed before deployment")
+                    previous = combined[-256:]
+        except OSError:
+            raise ValueError("CV-07: Cannot inspect deployment source") from None
+
+
 def sensitive_environment_names(environment: dict[str, str]) -> list[str]:
     """Identify supplied values that require a secret reference in a cloud target."""
     return sorted(name for name, value in environment.items()

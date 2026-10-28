@@ -24,6 +24,12 @@ class GitHubRepository:
     owner: str
     name: str
 
+    def __post_init__(self):
+        if (not isinstance(self.owner, str) or not OWNER.fullmatch(self.owner)
+                or not isinstance(self.name, str) or not REPOSITORY.fullmatch(self.name)
+                or self.name in {".", ".."}):
+            raise ValueError("GitHub repository identity is invalid")
+
     @property
     def url(self) -> str:
         return f"https://github.com/{self.owner}/{self.name}"
@@ -114,7 +120,8 @@ def resolve_revision(repository: GitHubRepository, branch: str | None) -> tuple[
 class GitHubRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         parts = urlsplit(newurl)
-        if parts.scheme != "https" or parts.hostname not in {"github.com", "codeload.github.com"}:
+        if (parts.scheme != "https" or parts.netloc not in {"github.com", "codeload.github.com"}
+                or parts.username or parts.password or parts.fragment):
             raise ValueError("GitHub 아카이브의 이동 주소가 안전하지 않습니다.")
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
@@ -146,6 +153,9 @@ def download_revision(repository: GitHubRepository, commit: str, destination: Pa
                 "공개 GitHub 소스를 다운로드하지 못했습니다. 공개 설정과 커밋을 확인하세요."
             ) from None
         raise ValueError(f"GitHub 소스 다운로드가 실패했습니다 (HTTP {exc.code}).") from None
+    except ValueError:
+        destination.unlink(missing_ok=True)
+        raise
     except (urllib.error.URLError, TimeoutError, OSError):
         destination.unlink(missing_ok=True)
         raise ValueError("GitHub 소스를 다운로드하지 못했습니다. 네트워크를 확인하세요.") from None

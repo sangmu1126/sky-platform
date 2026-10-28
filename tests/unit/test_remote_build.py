@@ -24,6 +24,19 @@ BUILD_CREDENTIAL_ENV = (
     "AWS_SESSION_TOKEN",
     "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
     "ACTIONS_ID_TOKEN_REQUEST_URL",
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "OPENAI_API_KEY",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CREDENTIALS",
+    "AZURE_CLIENT_SECRET",
+    "ACTIONS_RUNTIME_TOKEN",
 )
 
 
@@ -424,7 +437,10 @@ def test_builder_runs_verified_source_in_real_local_docker(build_request, tmp_pa
                 text=True,
             ).stdout
         )[0]
-        image_id = inspected["Id"]
+        from adapters.build.saved_archive import validate_saved_archive
+
+        saved_identity = validate_saved_archive(saved, None, image)
+        image_id = saved_identity["config_digest"]
         assert verified_build(value, tmp_path / "output") == image_id
         with pytest.raises(ValueError, match="Build artifact identity mismatch"):
             verified_build({**value, "build_id": str(uuid4())}, tmp_path / "output")
@@ -441,7 +457,7 @@ def test_builder_runs_verified_source_in_real_local_docker(build_request, tmp_pa
             capture_output=True,
             text=True,
         ).stdout.strip()
-        assert reloaded_id == image_id
+        assert reloaded_id in saved_identity["image_identities"]
         result = subprocess.run(
             [
                 "docker",
@@ -456,7 +472,7 @@ def test_builder_runs_verified_source_in_real_local_docker(build_request, tmp_pa
                 "ALL",
                 "--security-opt",
                 "no-new-privileges",
-                image_id,
+                image,
             ],
             check=False,
             capture_output=True,

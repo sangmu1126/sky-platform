@@ -16,9 +16,12 @@ class ImageBuilder:
         self.command, self.event = command, event
 
     def build(self, project: Path, plan: DeploymentPlan, image: str,
-              platform: str | None = None, extra_ca_bundle: Path | None = None):
+              platform: str | None = None, extra_ca_bundle: Path | None = None, offline_bases=None):
         if not plan.source_digest or source_digest(project) != plan.source_digest:
             raise ValueError("Source changed after analysis; upload and analyze again")
+        from application.source_secrets import reject_embedded_credentials
+
+        reject_embedded_credentials(project)
         if plan.dockerfile_source == "existing" and (project / "Dockerfile").read_text() != plan.dockerfile:
             raise ValueError("Existing Dockerfile changed after analysis")
         with tempfile.TemporaryDirectory(prefix='sky-build-') as temporary:
@@ -46,6 +49,11 @@ class ImageBuilder:
                               + ("!.sky-rds-ca.pem\n" if extra_ca_bundle is not None else ""))
             self.event("building", "Building application image")
             args = ["docker", "build", "--label", "app=sky"]
+            if offline_bases is not None:
+                from adapters.build.offline import validate_offline_dockerfile
+
+                validate_offline_dockerfile((context / "Dockerfile").read_text(), offline_bases, self.command)
+                args += ["--network", "none", "--pull=false"]
             if platform:
                 args += ["--platform", platform]
             self.command(args + ["-t", image, str(context)])
