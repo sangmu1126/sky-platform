@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-
 
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_RETRY_WAIT = 8
@@ -35,7 +35,7 @@ def _retry_after_seconds(headers):
     try:
         when = parsedate_to_datetime(value)
         if when.tzinfo is not None:
-            return max(0, (when - datetime.now(timezone.utc)).total_seconds())
+            return max(0, (when - datetime.now(UTC)).total_seconds())
     except (TypeError, ValueError, OverflowError, IndexError):
         pass
     return None
@@ -57,6 +57,21 @@ def _temporary_error(status, raw):
 
 def read_response(request: urllib.request.Request) -> bytes:
     """Retry only a classified HTTP rejection, before any response is consumed."""
+    if (os.environ.get("SKY_REQUIRE_EFFECT_BUDGETS", "false") != "false"
+            or "SKY_EFFECT_BUDGET_JSON" in os.environ):
+        # The legacy model transport has no trusted operation/lease binding.
+        # Do not bypass a hosted budget or pretend a per-process counter is a
+        # durable tenant budget. Enable only after a dedicated metered executor
+        # is connected; never accept budget/owner claims from model output.
+        raise ValueError("AI calls require a durable operation budget binding in budget-enforced mode")
+    # A proposal, project URL or redirect must never choose the credential sink.
+    if (not isinstance(request, urllib.request.Request)
+            or request.full_url not in {"https://api.openai.com/v1/responses",
+                                        "https://api.openai.com/v1/responses/compact"}
+            or request.get_method() != "POST"
+            or not isinstance(request.data, bytes)
+            or not 0 < len(request.data) <= 1024 * 1024):
+        raise ValueError("AI transport requires a fixed endpoint and bounded POST body")
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
             return None

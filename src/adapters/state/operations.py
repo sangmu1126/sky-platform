@@ -98,6 +98,10 @@ class PostgresOperationStore:
         self.outbox_max_attempts = self._bounded(outbox_max_attempts, 1, 100)
         self.outbox_retry_base = self._bounded(outbox_retry_base, 0, 3600)
         self.outbox_retry_cap = self._bounded(outbox_retry_cap, self.outbox_retry_base, 3600)
+        from adapters.state.effect_budget import EffectBudgetPolicy
+        import os
+
+        self.effect_budget = EffectBudgetPolicy.from_environment(os.environ)
 
     def initialize(self):
         self.records.initialize()
@@ -158,6 +162,9 @@ class PostgresOperationStore:
                 connection.execute("""CREATE TRIGGER incident_execution_barrier BEFORE INSERT OR UPDATE
                     ON sky_state.operations FOR EACH ROW EXECUTE FUNCTION sky_state.guard_incident_execution()""")
                 connection.execute("INSERT INTO sky_state.operation_schema_versions (version) VALUES (3)")
+            from adapters.state.effect_budget import EffectBudgetPolicy
+
+            EffectBudgetPolicy.initialize(connection)
 
     def _application_lock(self, connection, application_id):
         # All mutation admissions and external-intent writes serialize with an
@@ -415,6 +422,22 @@ class PostgresOperationStore:
             ).fetchone()[0]
             if pending:
                 raise ValueError("An external request already requires observation")
+            if self.effect_budget is not None:
+                operation = self._select(connection, lease.operation_id)
+                binding = {"operation": str(operation.id), "attempt": str(operation.attempt_id), "intent": intent}
+                intent_digest = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
+                fresh = self.effect_budget.reserve(
+                    connection, workspace=self.workspace,
+                    effect_key=str(operation.id) + ":" + intent_digest,
+                    organization_id=operation.command.get("organization_id"),
+                    user_id=operation.command.get("created_by"), kind=intent.get("kind"), binding=binding,
+                )
+                if not fresh:
+                    raise ValueError("External effect was already reserved; reconcile instead of replaying")
+                # A contended global budget lock can outlast the worker lease.
+                # Raising rolls back both reservation and intent atomically.
+                if not self._owned(connection, lease):
+                    raise ValueError("Execution ownership expired during budget reservation")
             connection.execute(
                 """UPDATE sky_state.operations SET external_pending=true,
                 external_intent=%s,external_receipt=NULL,row_version=row_version+1
