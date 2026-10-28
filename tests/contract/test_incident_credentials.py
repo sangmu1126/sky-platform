@@ -76,6 +76,7 @@ def test_uncertain_preparation_inspection_uses_readonly_metadata_and_does_not_re
     from contextlib import contextmanager
     from dataclasses import asdict
     from unittest.mock import Mock
+    from uuid import uuid4
 
     from adapters.state.operations import PostgresOperationStore
     from adapters.state.postgres import PostgresDeploymentRecordStore
@@ -84,7 +85,7 @@ def test_uncertain_preparation_inspection_uses_readonly_metadata_and_does_not_re
     from tests.unit.test_operating_review import ID, NOW
 
     _params, _names, _roles, _held, binding, restriction = workload_apps
-    store = PostgresOperationStore(database, workspace="credential-inspection-contract")
+    store = PostgresOperationStore(database, workspace="credential-inspection-" + uuid4().hex)
     records, actor, restriction_service, args = prepare(database, store, binding, restriction)
     restricted = restriction_service.restrict(actor, ID, **args)
     preparation = Mock(

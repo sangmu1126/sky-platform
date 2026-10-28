@@ -1,7 +1,6 @@
 """New-source recovery commits only verified runtime results under the old barrier."""
 
 from copy import deepcopy
-from datetime import UTC, datetime
 from unittest.mock import Mock, patch
 
 import pytest
@@ -59,7 +58,14 @@ def recovery(execution, store):
     }
     ledger = PostgresSourceRecovery(c.executions, store)
     ledger.initialize()
-    service = IncidentSourceRecovery(c.service, ledger, runtime, clock=lambda: datetime.now(UTC).isoformat())
+
+    # Approval validity is enforced against the DB clock. A local VM and the
+    # host need not have sub-millisecond clock agreement, even on one machine.
+    def clock():
+        with store.records._connection() as connection:
+            return connection.execute("SELECT clock_timestamp()").fetchone()[0].isoformat()
+
+    service = IncidentSourceRecovery(c.service, ledger, runtime, clock=clock)
     c.recovery, c.recovery_store, c.runtime = service, ledger, runtime
     c.recovery_id = "a" * 32
     return c
