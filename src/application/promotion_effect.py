@@ -66,6 +66,30 @@ class PromotionEffectReview:
                 and 0 <= (current - checked).total_seconds() <= max_health_age_seconds
             )
         healthy = latest.get("healthy") if fresh else None
+        measured = None
+        stored = job.get("promotion_performance_review")
+        if isinstance(stored, dict) and stored.get("deployment_binding") == deployment_observation_binding(
+            job
+        ):
+            from application.promotion_performance import compare_windows
+
+            try:
+                if stored.get("operation_id") != operation_id:
+                    raise ValueError("Different performance review operation")
+                measured = compare_windows(
+                    stored["before"],
+                    stored["after"],
+                    source=projection["baseline"]["source"],
+                    target=projection["binding"],
+                    source_revision=job["source_digest"],
+                    image_digest=None
+                    if stored["before"]["scope"] == "postgresql_application_read"
+                    and stored["before"]["image_digest"] is None
+                    else job["result"]["image_digest"],
+                    now=now,
+                )
+            except (KeyError, TypeError, ValueError):
+                pass
         report = {
             "operation_id": operation_id,
             "reviewed_at": now,
@@ -78,7 +102,7 @@ class PromotionEffectReview:
             else "recovery_review_required"
             if healthy is False
             else "insufficient_evidence",
-            "performance_improvement": "unverified",
+            "performance_improvement": measured["outcome"] if measured is not None else "unverified",
             "data_read_path": active.get("verification", {}).get("application_data_path", "unverified"),
             "automatic_action": False,
             "automation_reenabled": False,

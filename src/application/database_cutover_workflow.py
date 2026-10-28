@@ -168,7 +168,15 @@ class PromotionCutoverWorker:
         owner,
         clock,
         ownership=None,
+        performance_observer=None,
     ):
+        from ports.promotion_performance import PromotionPerformanceObserver
+
+        if performance_observer is not None and not isinstance(
+            performance_observer, PromotionPerformanceObserver
+        ):
+            raise TypeError("Trusted promotion performance observer required")
+        self.performance_observer = performance_observer
         self.records, self.operations, self.registrations = records, operations, registrations
         self.flow_factory, self.owner, self.clock, self.ownership = flow_factory, owner, clock, ownership
         self.validator = PromotionPreparationWorker(
@@ -241,7 +249,53 @@ class PromotionCutoverWorker:
                 # occur only after the durable external intent below.
                 flow = self.flow_factory(plan, registration, guard=guard, journal=journal)
                 journal.begin(plan)
+                before = None
+                if self.performance_observer is not None:
+                    try:
+                        from application.promotion_performance import validate_window
+
+                        before = self.performance_observer.measure(plan, plan["source"], guard=guard)
+                        validate_window(before)
+                    except Exception:  # noqa: BLE001 -- optional telemetry cannot invent a benefit
+                        guard()  # Execution/approval loss must still abort before cutover.
+                        before = None
+                guard()
                 receipt = flow.promote(plan, registration["baseline"])
+                performance = None
+                if self.performance_observer is not None:
+                    performance = {
+                        "status": "unverified",
+                        "reason": "collection_unavailable",
+                        "automatic_action": False,
+                    }
+                    if before is not None:
+                        try:
+                            from application.promotion_performance import compare_windows
+
+                            after = self.performance_observer.measure(plan, plan["target"], guard=guard)
+                            performance = compare_windows(
+                                before,
+                                after,
+                                source=plan["source"],
+                                target=plan["target"],
+                                source_revision=plan["source_revision"],
+                                image_digest=before["image_digest"],
+                                now=self.clock(),
+                            )
+                            expected_image = receipt.get("active_runtime", {}).get("image_digest")
+                            if (
+                                before["image_digest"] is not None
+                                and before["image_digest"] != expected_image
+                            ):
+                                raise ValueError("Measured image differs from the published runtime")
+                        except Exception:  # noqa: BLE001 -- preserve successful cutover, report missing evidence
+                            guard()
+                            performance = {
+                                "status": "unverified",
+                                "reason": "incomparable_or_unavailable",
+                                "automatic_action": False,
+                            }
+                    guard()
                 if (
                     not isinstance(receipt, dict)
                     or set(receipt)
@@ -289,19 +343,29 @@ class PromotionCutoverWorker:
                     "controller_id": registration["controller_id"],
                     **receipt,
                 }
+                changes = {
+                    "workload_database_binding": plan["target"],
+                    "database_promotion": projection,
+                    "result": {
+                        **(active if active is not None else snapshot.record["result"]),
+                        "database_promotion": projection,
+                    },
+                    "promotion_automation_consent": None,
+                }
+                if performance is not None:
+                    from application.operating_review import deployment_observation_binding
+
+                    changes["promotion_performance_review"] = {
+                        **performance,
+                        "operation_id": operation_id,
+                        "reviewed_at": self.clock(),
+                        "deployment_binding": deployment_observation_binding({**snapshot.record, **changes}),
+                    }
                 saved = DeploymentMetadataWriter(self.records).patch(
                     principal,
                     approval["job_id"],
                     revision,
-                    {
-                        "workload_database_binding": plan["target"],
-                        "database_promotion": projection,
-                        "result": {
-                            **(active if active is not None else snapshot.record["result"]),
-                            "database_promotion": projection,
-                        },
-                        "promotion_automation_consent": None,
-                    },
+                    changes,
                 )
                 revision, metadata_written = saved.revision, True
                 # Metadata and operation are separate transactions. Failure here
