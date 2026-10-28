@@ -31,14 +31,99 @@ _TYPES = {
 }
 
 
+def _identities(connection):
+    values = connection.execute("""SELECT t.relname,a.attname,a.attidentity,a.atttypid,s.relname,n.nspname,
+        q.seqtypid,q.seqstart,q.seqincrement,q.seqmax,q.seqmin,q.seqcache,q.seqcycle
+        FROM pg_attribute a JOIN pg_class t ON t.oid=a.attrelid
+        JOIN pg_namespace tn ON tn.oid=t.relnamespace
+        JOIN pg_depend d ON d.refclassid='pg_class'::regclass AND d.refobjid=t.oid
+          AND d.refobjsubid=a.attnum AND d.classid='pg_class'::regclass AND d.deptype='i'
+        JOIN pg_class s ON s.oid=d.objid AND s.relkind='S'
+        JOIN pg_namespace n ON n.oid=s.relnamespace JOIN pg_sequence q ON q.seqrelid=s.oid
+        WHERE tn.nspname='public' AND a.attidentity<>'' ORDER BY t.relname,a.attnum""").fetchall()
+    result = {}
+    for (
+        table,
+        column,
+        identity,
+        oid,
+        sequence,
+        schema,
+        seqtype,
+        start,
+        step,
+        maximum,
+        minimum,
+        cache,
+        cycle,
+    ) in values:
+        if (
+            identity != "d"
+            or oid not in {20, 23}
+            or seqtype != oid
+            or schema != "public"
+            or (start, step, minimum, cache, cycle) != (1, 1, 1, 1, False)
+            or maximum != (2**63 - 1 if oid == 20 else 2**31 - 1)
+            or (table, column) in result
+        ):
+            raise ValueError("Unsupported identity sequence settings")
+        result[table, column] = sequence, maximum
+    if len(result) > 100:
+        raise ValueError("Unsupported identity sequence count")
+    return result
+
+
+def _sequence_positions(connection):
+    result = []
+    for (table, column), (sequence, maximum) in _identities(connection).items():
+        value, called = connection.execute(
+            sql.SQL("SELECT last_value,is_called FROM {}").format(sql.Identifier("public", sequence))
+        ).fetchone()
+        if (
+            type(value) is not int
+            or type(called) is not bool
+            or not 1 <= value <= maximum
+            or (called and value == maximum)
+        ):
+            raise ValueError("Unsupported exhausted or invalid identity sequence")
+        result.append({"table": table, "column": column, "next_value": value + int(called)})
+    return result
+
+
+def _restart_sequences(connection, positions, *, guard):
+    identities = _identities(connection)
+    if [(p["table"], p["column"]) for p in positions] != list(identities):
+        raise ValueError("Identity sequence inventory differs from source")
+    for position in positions:
+        guard()
+        sequence, maximum = identities[position["table"], position["column"]]
+        value = position["next_value"]
+        if type(value) is not int or not 1 <= value <= maximum:
+            raise ValueError("Unsupported identity restart position")
+        # Unlike setval(), ALTER RESTART rolls back with the data transaction.
+        connection.execute(
+            sql.SQL("ALTER SEQUENCE {} RESTART WITH {}").format(
+                sql.Identifier("public", sequence), sql.Literal(value)
+            )
+        )
+    if _sequence_positions(connection) != positions:
+        raise ValueError("Copied identity sequence state differs from source")
+
+
 def _inventory(connection):
-    # Views, sequences, generated/default expressions, functions, triggers,
+    # Views, unowned/custom sequences, generated/default expressions, functions, triggers,
     # foreign keys and non-primary indexes need a richer schema migration path.
     objects = connection.execute("""SELECT c.relname,c.relkind,c.relpersistence,c.relrowsecurity
         FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
         WHERE n.nspname='public' AND c.relkind NOT IN ('i') ORDER BY c.relname""").fetchall()
-    if any(kind != "r" or persistence != "p" or rls for _, kind, persistence, rls in objects):
+    identities = _identities(connection)
+    owned = {sequence for sequence, _ in identities.values()}
+    if any(
+        (kind != "r" and not (kind == "S" and name in owned)) or persistence != "p" or rls
+        for name, kind, persistence, rls in objects
+    ):
         raise ValueError("Unsupported relation, persistence or row security")
+    objects = [item for item in objects if item[1] == "r"]
     if connection.execute("""SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT IN
         ('public','information_schema') AND nspname NOT LIKE 'pg_%') OR
         EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public') OR
@@ -58,8 +143,13 @@ def _inventory(connection):
             (sql.Identifier("public", name).as_string(connection),),
         ).fetchall()
         if not columns or any(
-            oid not in _TYPES or mod != -1 or default or identity or generated or not collation
-            for _, oid, mod, _, default, identity, generated, collation in columns
+            oid not in _TYPES
+            or mod != -1
+            or default
+            or generated
+            or not collation
+            or (identity and (identity != "d" or (name, column) not in identities))
+            for column, oid, mod, _, default, identity, generated, collation in columns
         ):
             raise ValueError("Unsupported column type, precision, collation or default")
         constraints = connection.execute(
@@ -85,7 +175,18 @@ def _inventory(connection):
             raise ValueError("Unsupported dropped column layout")
         primary = [columns[i - 1][0] for kind, keys, *_ in constraints for i in keys]
         tables.append(
-            (name, [(name, _TYPES[oid], required) for name, oid, _, required, *_ in columns], primary)
+            (
+                name,
+                [
+                    (
+                        column,
+                        _TYPES[oid] + (" GENERATED BY DEFAULT AS IDENTITY" if identity else ""),
+                        required,
+                    )
+                    for column, oid, _, required, _, identity, *_ in columns
+                ],
+                primary,
+            )
         )
     return tables
 
@@ -127,6 +228,63 @@ class PostgresPromotionCopy:
             raise ValueError("Explicit bounded copy limits required")
         self.source_connect, self.target_connect = source_connect, target_connect
         self.max_rows, self.max_bytes = max_rows, max_bytes
+
+    def revalidate_destination(self, plan, previous_plan, baseline, *, guard):
+        """Rebind an unchanged copied destination to a fresh review, read-only.
+
+        A refreshed health/price review may have a new plan ID. It must not
+        recreate an already-owned RDS or overwrite its copied data. Source,
+        destination, source revision and schema must remain identical. This
+        does not claim the destination includes writes made after the copy.
+        """
+        if (
+            any(plan.get(key) != previous_plan.get(key) for key in ("source", "target", "source_revision"))
+            or any(baseline.get(key) != previous_plan.get(key) for key in ("source", "target", "plan_id"))
+            or baseline.get("verified_scope")
+            not in {"locked_table_snapshot_copy", "revalidated_destination_snapshot"}
+            or baseline.get("requires_final_write_freeze") is not True
+        ):
+            raise ValueError("Original same-source copy provenance required")
+        guard()
+        with self.source_connect() as src, self.target_connect() as dst:
+            for connection, key in [(src, "source"), (dst, "target")]:
+                connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                connection.execute("SET LOCAL statement_timeout='30s'")
+                if connection.execute("SELECT current_database()").fetchone() != (
+                    plan[key]["database_name"],
+                ):
+                    raise ValueError("Connected database differs from revalidated binding")
+                connection.execute("SET LOCAL TIME ZONE 'UTC'")
+                connection.execute("SET LOCAL datestyle='ISO, YMD'")
+            tables = _inventory(src)
+            if (
+                not tables
+                or _inventory(dst) != tables
+                or hashlib.sha256(json.dumps(tables, sort_keys=True).encode()).hexdigest()
+                != baseline["schema_sha256"]
+            ):
+                raise ValueError("Copy schema changed before fresh review")
+            evidence = []
+            rows, size = self.max_rows, self.max_bytes
+            for table, _, _ in tables:
+                guard()
+                value = _digest(dst, table, rows, size)
+                evidence.append({"table": table, **value})
+                rows -= value["rows"]
+                size -= dst.execute(
+                    sql.SQL("SELECT COALESCE(sum(octet_length(row_to_json(t)::text)),0) FROM {} t").format(
+                        sql.Identifier("public", table)
+                    )
+                ).fetchone()[0]
+            if evidence != baseline["tables"] or _sequence_positions(dst) != baseline.get("sequences", []):
+                raise ValueError("Copied destination changed; refuse baseline replacement")
+            guard()
+        return {
+            **baseline,
+            "plan_id": plan["plan_id"],
+            "verified_scope": "revalidated_destination_snapshot",
+            "source_snapshot_plan_id": baseline.get("source_snapshot_plan_id", previous_plan["plan_id"]),
+        }
 
     def copy(self, plan, *, guard):
         source, target = DatabaseBinding(**plan["source"]), DatabaseBinding(**plan["target"])
@@ -209,6 +367,8 @@ class PostgresPromotionCopy:
                 raise ValueError("Source schema changed during copy")
             if _inventory(dst) != tables:
                 raise ValueError("Copied schema differs from source")
+            sequences = _sequence_positions(src)
+            _restart_sequences(dst, sequences, guard=guard)
             guard()
             dst.commit()  # Source writes remain blocked until after this commit.
         return {
@@ -222,4 +382,5 @@ class PostgresPromotionCopy:
             "routing_changed": False,
             "ready_to_cutover": False,
             "requires_final_write_freeze": True,
+            **({"sequences": sequences} if sequences else {}),
         }

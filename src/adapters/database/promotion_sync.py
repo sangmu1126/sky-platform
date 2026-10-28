@@ -5,7 +5,13 @@ import json
 
 from psycopg import sql
 
-from adapters.database.promotion_copy import PostgresPromotionCopy, _digest, _inventory
+from adapters.database.promotion_copy import (
+    PostgresPromotionCopy,
+    _digest,
+    _inventory,
+    _restart_sequences,
+    _sequence_positions,
+)
 from domain.database import DatabaseBinding
 
 
@@ -66,6 +72,8 @@ class PostgresPromotionSynchronizer(PostgresPromotionCopy):
                 baseline_bytes -= used
             if destination != expected_destination.get("tables"):
                 raise ValueError("Destination changed since baseline; refuse overwrite")
+            if _sequence_positions(dst) != expected_destination.get("sequences", []):
+                raise ValueError("Destination identity sequence changed since baseline; refuse overwrite")
             guard()
             dst.execute(sql.SQL("TRUNCATE {}").format(names))
             evidence = []
@@ -94,6 +102,8 @@ class PostgresPromotionSynchronizer(PostgresPromotionCopy):
                 rows -= before["rows"]
                 size -= used
                 evidence.append({"table": name, **before})
+            sequences = _sequence_positions(src)
+            _restart_sequences(dst, sequences, guard=guard)
             guard()
             dst.commit()
         return {
@@ -102,4 +112,5 @@ class PostgresPromotionSynchronizer(PostgresPromotionCopy):
             "verified_scope": "reverse_recovery_copy" if reverse else "final_locked_refresh",
             "routing_changed": False,
             "ready_to_cutover": False,
+            **({"sequences": sequences} if sequences else {}),
         }
