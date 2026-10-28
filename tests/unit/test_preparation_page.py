@@ -15,7 +15,7 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const html=fs.readFileSync(process.argv[1],'utf8'),script=html.match(/<script>([\s\S]*)<\/script>/)[1];
 assert(html.includes('app-shell'));assert(!html.includes('id="approve"'));assert(!html.includes('id="submit"'));
 function setup(mode){
- const ids=['file','deploy','reset','message','jobSection','stage','visit','details','jobId','history','securityNotice','refreshHistory'];
+ const ids=['file','deploy','reset','message','jobSection','stage','visit','details','jobId','history','securityNotice','refreshHistory','operate','operationsFrame'];
  const els=Object.fromEntries(ids.map(id=>[id,{value:'',disabled:false,hidden:false,textContent:'',files:[]}]));
  els.file.files=[{name:'web.zip',size:100,lastModified:1}];
  const saved=new Map(),calls=[],timers=[];let first=true,security=mode==='held'?'held':mode==='released'?'released_false_positive':'not_recorded';
@@ -40,7 +40,7 @@ function setup(mode){
  assert.equal(write[0].path,'/api/deployments');
  assert(!html.includes('id="port"'));assert(!html.includes('id="health"'));
  assert.equal(write[0].options.headers['X-Application-Id'],'app-web');
- assert.equal(s.els.stage.textContent,'배포 완료');assert.equal(s.els.visit.hidden,false);assert.equal(s.els.visit.href,'https://example.com/');
+ assert.equal(s.els.operate.hidden,false);s.els.operate.onclick();assert.equal(s.els.operationsFrame.src,'/operations?job='+'a'.repeat(16));assert.equal(s.els.operationsFrame.hidden,false);assert.equal(s.els.stage.textContent,'배포 완료');assert.equal(s.els.visit.hidden,false);assert.equal(s.els.visit.href,'https://example.com/');
  const held=setup('held');await held.els.deploy.onclick();assert.equal(held.els.securityNotice.hidden,false);assert(held.els.history.textContent.includes('보안 검토로 이전 보류'));assert(held.els.securityNotice.textContent.includes('이전 작업이 보류'));assert(held.els.securityNotice.textContent.includes('접속 차단 여부'));assert.equal(held.els.visit.hidden,false);const posts=held.calls.filter(c=>c.options.method==='POST').length;await held.els.refreshHistory.onclick();assert.equal(held.calls.filter(c=>c.options.method==='POST').length,posts);held.setSecurity('database_restriction_review_required');await held.els.refreshHistory.onclick();assert(held.els.securityNotice.textContent.includes('DB 접근 제한 작업'));assert(held.els.history.textContent.includes('DB 접근 제한 검토 필요'));assert.equal(held.els.visit.hidden,false);held.setSecurity('released_false_positive');await held.els.refreshHistory.onclick();assert.equal(held.els.securityNotice.hidden,false);assert(held.els.securityNotice.textContent.includes('관리자가 오탐으로 판단'));assert(held.els.securityNotice.textContent.includes('새 상태 확인과 승인'));assert(held.els.history.textContent.includes('관리자 검토로 보류 해제'));assert.equal(held.els.stage.textContent,'배포 완료');assert.equal(held.els.visit.hidden,false);assert.equal(held.calls.filter(c=>c.options.method==='POST').length,posts);held.els.reset.onclick();assert.equal(held.els.securityNotice.hidden,true);assert.equal(held.els.securityNotice.textContent,'');
  const released=setup('released');await released.els.deploy.onclick();assert(released.els.securityNotice.textContent.includes('새 상태 확인과 승인'));assert.equal(released.els.visit.href,'https://example.com/');assert.equal(released.calls.filter(c=>c.options.method==='POST').length,1);
  const b=setup('blocked');await b.els.deploy.onclick();assert(b.els.message.textContent.includes('DB 연결 필요'));assert.equal(b.calls.filter(c=>c.options.method==='POST').length,1);

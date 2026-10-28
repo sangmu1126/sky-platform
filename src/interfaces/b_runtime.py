@@ -478,6 +478,7 @@ def main(argv):
         if (
             os.environ.get("SKY_DEDICATED_PREPARATION_ENABLED", "false") != "false"
             and not args.shared_database_pool_config
+            and not (args.enable_preparation and "SKY_SHARED_DATABASE_POOL_JSON" in os.environ)
         ):
             parser.error("Dedicated preparation intake requires hosted shared database API")
         if args.enable_sqlite_preparation and not args.enable_preparation:
@@ -485,11 +486,11 @@ def main(argv):
         if (
             "SKY_DATABASE_CUTOVER_REGISTRATIONS_JSON" in os.environ
             or os.environ.get("SKY_DATABASE_CUTOVER_ENABLED", "false") != "false"
-        ) and not args.shared_database_pool_config:
+        ) and not (args.shared_database_pool_config or args.enable_preparation):
             parser.error("Cutover intake requires hosted shared database API")
         if (
             args.operating_review_policy_config or "SKY_OPERATING_REVIEW_POLICIES_JSON" in os.environ
-        ) and not args.shared_database_pool_config:
+        ) and not (args.shared_database_pool_config or args.enable_preparation):
             parser.error("Operating reviews require hosted shared database intake")
         if args.shared_database_pool_config:
             from interfaces.shared_database_api import run_shared_database_api

@@ -25,6 +25,13 @@ class SnapshotPage:
     next_cursor: ReadCursor | None
 
 
+@dataclass(frozen=True)
+class OperatingLifecycleSnapshot:
+    deployment: DeploymentSnapshot
+    operations: tuple[dict, ...]
+    has_more: bool
+
+
 class DeploymentReads(Protocol):
     def detail(self, organization_id: str, job_id: str) -> DeploymentSnapshot | None: ...
     def page(

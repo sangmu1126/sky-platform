@@ -6,8 +6,8 @@ from interfaces.http.mutation_requests import read_json_object
 from interfaces.http.shared_database import handler_for_shared_database
 
 
-def handler_for_operating_review(app, controller):
-    class Handler(handler_for_shared_database(app)):
+def handler_for_operating_review(app, controller, *, base_handler=None):
+    class Handler(base_handler or handler_for_shared_database(app)):
         def do_GET(self):
             route = re.fullmatch(r"/api/jobs/([a-f0-9]{16})/operating-review", self.path)
             if route:

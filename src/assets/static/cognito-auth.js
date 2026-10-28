@@ -1,6 +1,8 @@
 /* Access tokens stay in memory. Session storage contains only a short-lived PKCE transaction. */
 (() => {
   'use strict';
+  // A same-origin operating panel reuses the parent's in-memory session.
+  try { if (window.parent && window.parent !== window && window.parent.location.origin === window.location.origin && window.parent.skyAuth) { window.skyAuth = window.parent.skyAuth; return; } } catch {}
   const nativeFetch = window.fetch.bind(window), transactionKey = 'sky-cognito-pkce-v1';
   const callbackParams = new URLSearchParams(window.location.search), callbackFragment = window.location.hash;
   const isCallback = window.location.pathname === '/auth/callback';

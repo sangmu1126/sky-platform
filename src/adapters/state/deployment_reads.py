@@ -8,7 +8,7 @@ import re
 from contextlib import contextmanager
 
 from domain.access import owner_from_record
-from ports.deployment_reads import DeploymentSnapshot, ReadCursor, SnapshotPage
+from ports.deployment_reads import DeploymentSnapshot, OperatingLifecycleSnapshot, ReadCursor, SnapshotPage
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _JOIN = """SELECT j.record_id, j.document, h.document, j.revision,
@@ -74,6 +74,59 @@ class PostgresDeploymentReads:
                 _JOIN + " AND j.record_id=%s", (self.workspace, organization_id, job_id)
             ).fetchone()
         return _snapshot(row) if row else None
+
+    def lifecycle(self, organization_id, job_id):
+        """One read-only MVCC snapshot; commands and external receipts never leave SQL.
+
+        Application identity alone is insufficient: a later release of the same
+        application must not inherit the earlier release's operation controls.
+        Active operations sort first so a bounded history cannot hide a hold.
+        """
+        _identifier(organization_id)
+        _identifier(job_id)
+        with self._connection() as connection:
+            connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            row = connection.execute(
+                _JOIN + " AND j.record_id=%s", (self.workspace, organization_id, job_id)
+            ).fetchone()
+            if row is None:
+                return None
+            snapshot = _snapshot(row)
+            job = snapshot.job
+            rows = connection.execute(
+                """SELECT id::text, kind, status, attempt_id::text, row_version,
+                    external_pending, COALESCE(checkpoint->>'stage',
+                        checkpoint->'cutover_steps'->-1->>'stage'), created_at::text
+                FROM sky_state.operations WHERE workspace=%s AND application_id=%s
+                AND ((command->>'job_id'=%s AND command->'requested_by'->>'organization_id'=%s)
+                  OR (command->'approval'->>'job_id'=%s
+                    AND command->'approval'->'requested_by'->>'organization_id'=%s)
+                  OR id::text=%s)
+                ORDER BY (status IN ('queued','running','needs_attention')) DESC,
+                    created_at DESC, id DESC LIMIT 51""",
+                (
+                    self.workspace,
+                    job.get("application_id", job_id),
+                    job_id,
+                    organization_id,
+                    job_id,
+                    organization_id,
+                    job.get("operation_id", ""),
+                ),
+            ).fetchall()
+            names = (
+                "id",
+                "kind",
+                "status",
+                "attempt_id",
+                "row_version",
+                "external_pending",
+                "stage",
+                "created_at",
+            )
+            return OperatingLifecycleSnapshot(
+                snapshot, tuple(dict(zip(names, item, strict=True)) for item in rows[:50]), len(rows) > 50
+            )
 
     def page(self, organization_id, *, application_id=None, limit=50, cursor=None):
         _identifier(organization_id)

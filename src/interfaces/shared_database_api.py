@@ -7,17 +7,16 @@ from http.server import ThreadingHTTPServer
 from adapters.state.deployment_reads import PostgresDeploymentReads
 from adapters.state.operations import PostgresOperationStore
 from adapters.state.postgres import (
-    PostgresDeploymentRecordStore,
     PostgresStateSettings,
     RotatingDatabaseConnection,
 )
 from adapters.state.shared_database_reviews import PostgresSharedDatabaseReviews
 from application.deployment_reads import DeploymentReadService
-from interfaces.database_cutover import DatabaseCutoverController, load_cutover_api_configuration
-from interfaces.database_preparation import DatabasePreparationController, load_preparation_api_configuration
+from interfaces.database_cutover import load_cutover_api_configuration
+from interfaces.database_preparation import load_preparation_api_configuration
 from interfaces.http.mutation_requests import validate_origin
 from interfaces.http.shared_database import SharedDatabaseApp, handler_for_shared_database
-from interfaces.operating_review import OperatingReviewController, load_operating_policies
+from interfaces.operating_review import load_operating_policies
 from interfaces.shared_database_worker import load_hosted_identity, load_pool_configuration
 
 
@@ -43,8 +42,8 @@ def run_shared_database_api(args, parser):
             if policy_path or "SKY_OPERATING_REVIEW_POLICIES_JSON" in os.environ
             else None
         )
-        preparation = load_preparation_api_configuration(policies=policies, source=settings)
-        registrations = load_cutover_api_configuration(
+        load_preparation_api_configuration(policies=policies, source=settings)
+        load_cutover_api_configuration(
             policies=policies,
             account_id=settings.pool.account_id,
             region=state.region,
@@ -67,42 +66,18 @@ def run_shared_database_api(args, parser):
         app = SharedDatabaseApp(
             reads, reviews, authenticator=authenticator, origin=origin, workspace=workspace
         )
-        handler = handler_for_shared_database(app)
-        if policies is not None:
-            from interfaces.http.operating_review import handler_for_operating_review
+        from interfaces.operating_lifecycle import compose_operating_lifecycle
 
-            records = PostgresDeploymentRecordStore(connection, workspace=workspace)
-            controller = OperatingReviewController(records, policies)
-            handler = handler_for_operating_review(app, controller)
-            if preparation is not None:
-                app.database_preparation_page = "/database-preparation"
-                from application.database_promotion_workflow import PromotionPreparationAdmission
-                from interfaces.http.database_preparation import handler_for_database_preparation
-
-                admission = PromotionPreparationAdmission(
-                    records, operations, policies, enabled=True, clock=lambda: datetime.now(UTC).isoformat()
-                )
-                handler = handler_for_database_preparation(
-                    app,
-                    controller,
-                    DatabasePreparationController(controller, admission, settings.pool),
-                    base_handler=handler,
-                )
-            if registrations is not None:
-                from application.database_cutover_workflow import PromotionCutoverAdmission
-                from interfaces.http.database_cutover import handler_for_database_cutover
-
-                admission = PromotionCutoverAdmission(
-                    records,
-                    operations,
-                    policies,
-                    registrations,
-                    clock=lambda: datetime.now(UTC).isoformat(),
-                    enabled=True,
-                )
-                handler = handler_for_database_cutover(
-                    app, controller, DatabaseCutoverController(controller, admission), base_handler=handler
-                )
+        handler = compose_operating_lifecycle(
+            app,
+            handler_for_shared_database(app),
+            connection,
+            operations,
+            account_id=settings.pool.account_id,
+            region=state.region,
+            policy_path=policy_path,
+            pool_settings=settings,
+        )
         server = ThreadingHTTPServer((args.host, args.port), handler)
         print(f"Sky shared database review: {origin}/shared-database", flush=True)
         try:

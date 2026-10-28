@@ -112,7 +112,30 @@ def run_preparation_api(args):
         sqlite_jobs=sqlite_jobs,
     )
     app.cognito_browser = browser
-    server = ThreadingHTTPServer((args.host, args.port), handler_for_preparation(app))
+    from interfaces.operating_lifecycle import compose_operating_lifecycle
+
+    pool_settings = None
+    if "SKY_SHARED_DATABASE_POOL_JSON" in os.environ:
+        from interfaces.shared_database_worker import load_pool_configuration
+
+        pool_settings, _ = load_pool_configuration(None)
+        if (
+            pool_settings.pool.account_id != artifacts.account_id
+            or pool_settings.pool.region != database.region
+            or pool_settings.pool.control_database == database.database
+        ):
+            raise ValueError("Separate workload pool registration required")
+    handler = compose_operating_lifecycle(
+        app,
+        handler_for_preparation(app),
+        connection,
+        operations,
+        account_id=artifacts.account_id,
+        region=database.region,
+        policy_path=getattr(args, "operating_review_policy_config", None),
+        pool_settings=pool_settings,
+    )
+    server = ThreadingHTTPServer((args.host, args.port), handler)
     print(
         f"Sky preparation API: http://{args.host}:{args.port}/prepare; deployment consumer is not included",
         flush=True,

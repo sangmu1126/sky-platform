@@ -75,6 +75,7 @@ def handler_for_preparation(app):
                             "deployment_consumer_enabled": os.environ.get("SKY_DEPLOYMENT_CONSUMER_ENABLED")
                             == "true",
                             "one_action_upload": True,
+                            "operating_lifecycle_page": getattr(app, "operating_lifecycle_page", None),
                             "targets": ["aws"],
                         },
                     )
