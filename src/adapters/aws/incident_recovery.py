@@ -142,7 +142,11 @@ class AwsIncidentRecovery:
                 existing_policy = self._call(
                     "iam", "get_role_policy", guard, RoleName=name, PolicyName=policy_name
                 )["PolicyDocument"]
-                if not old_policy_within_profile(existing_policy, policy):
+                if not old_policy_within_profile(
+                    existing_policy,
+                    policy,
+                    log_stream=f"arn:aws:logs:{r.region}:{r.account_id}:log-group:/sky/workloads/{r.organization_id}/{r.application_id}/{r.job_id}:log-stream:app/*",
+                ):
                     raise ValueError(
                         "Old runtime requires separate IAM credential revocation before recovery"
                     )
@@ -620,13 +624,27 @@ def normalized_container(value):
     return result
 
 
-def old_policy_within_profile(value, allowed):
+def old_policy_within_profile(value, allowed, *, log_stream=None):
     if (
         not isinstance(value, dict)
         or set(value) != {"Version", "Statement"}
         or value["Version"] != "2012-10-17"
         or not isinstance(value["Statement"], list)
-        or not len(value["Statement"]) <= 4
+        or not len(value["Statement"]) <= (5 if log_stream is not None else 4)
     ):
         return False
-    return all(statement in allowed["Statement"] for statement in value["Statement"])
+    statements = list(allowed["Statement"])
+    if log_stream is not None:
+        if not re.fullmatch(
+            r"arn:aws:logs:[a-z0-9-]+:[0-9]{12}:log-group:/sky/workloads/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[a-f0-9]{16}:log-stream:app/\*",
+            log_stream,
+        ):
+            return False
+        statements.append(
+            {
+                "Effect": "Allow",
+                "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                "Resource": log_stream,
+            }
+        )
+    return all(statement in statements for statement in value["Statement"])

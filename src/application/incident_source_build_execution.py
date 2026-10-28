@@ -50,6 +50,14 @@ class IncidentSourceBuildExecution:
             # Building does not grant the resources demanded by the app. Preserve
             # those signals for the separate recovery/runtime approval.
             plan.update(target="aws", replicas=1, infrastructure_profile=profile.as_dict())
+            facts = profile.as_dict()
+            if set(facts.get("requirements", [])) == {"database"} and set(
+                facts.get("database_engines", [])
+            ) == {"postgresql"}:
+                # Trust roots are build inputs, not DB provisioning or permission
+                # to connect. Runtime/credential approvals remain separate.
+                plan["database_profile"] = "shared-postgres-v1"
+
             prepared = self.sources.capture_prepared(
                 actor, original, project, expected_digest=original.source_digest
             )

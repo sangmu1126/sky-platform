@@ -19,9 +19,8 @@ class ImageBuilder:
               platform: str | None = None, extra_ca_bundle: Path | None = None):
         if not plan.source_digest or source_digest(project) != plan.source_digest:
             raise ValueError("Source changed after analysis; upload and analyze again")
-        if plan.dockerfile_source == "existing":
-            if (project / "Dockerfile").read_text() != plan.dockerfile:
-                raise ValueError("Existing Dockerfile changed after analysis")
+        if plan.dockerfile_source == "existing" and (project / "Dockerfile").read_text() != plan.dockerfile:
+            raise ValueError("Existing Dockerfile changed after analysis")
         with tempfile.TemporaryDirectory(prefix='sky-build-') as temporary:
             context = Path(temporary) / 'app'
             shutil.copytree(project, context, symlinks=True)
@@ -35,6 +34,7 @@ class ImageBuilder:
                 dockerfile = context / 'Dockerfile'
                 content = dockerfile.read_text()
                 directive = (f'\nCOPY .sky-rds-ca.pem {RDS_CA_CONTAINER_PATH}\n'
+                             'COPY .sky-rds-ca.pem /etc/ssl/certs/sky-rds-global-bundle.pem\n'
                              f'ENV NODE_EXTRA_CA_CERTS={RDS_CA_CONTAINER_PATH}\n')
                 if plan.runtime in {'python', 'python-asgi', 'python-wsgi'}:
                     directive += f'ENV PGSSLROOTCERT={RDS_CA_CONTAINER_PATH}\n'
@@ -63,7 +63,7 @@ class ImageBuilder:
                 except Exception:
                     try:
                         self.command(["docker", "image", "rm", image], timeout=30)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 -- preserve build error after best-effort image cleanup
                         self.event("cleanup", "플랫폼 확인 실패 후 로컬 이미지 정리 확인 필요: " + image)
                     raise
         return image

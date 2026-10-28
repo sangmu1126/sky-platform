@@ -205,3 +205,28 @@ def test_revoked_consent_blocks_pending_observation(execution):
     with pytest.raises(RecordConflict):
         c.service.observe(c.r.actor, ID, approval_id=c.approval_id, **c.r.options)
     c.builder.observe.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "requirements,engines,expected",
+    [
+        (["database"], ["postgresql"], True),
+        ([], [], False),
+        (["database", "durable-volume"], ["postgresql"], False),
+        (["database"], ["sqlite"], False),
+    ],
+)
+def test_postgres_trust_bundle_profile_preserves_resource_requirements(
+    execution, requirements, engines, expected
+):
+    import json
+
+    facts = {"requirements": requirements, "database_engines": engines}
+    profile = Mock()
+    profile.as_dict.return_value = facts
+    with patch("application.incident_source_build_execution.inspect_infrastructure", return_value=profile):
+        run(execution)
+    plan = json.loads(execution.builder.dispatch.call_args.args[0]["approved_plan_json"])
+    assert (plan.get("database_profile") == "shared-postgres-v1") is expected
+    assert plan["infrastructure_profile"] == facts
+    assert execution.executions.records.load_job(ID).record["security_hold"] is not None
