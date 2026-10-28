@@ -7,6 +7,10 @@ from pathlib import PurePosixPath
 
 def check_patch_security(path, before, after):
     name = PurePosixPath(path).name
+    if PurePosixPath(path).suffix == ".py":
+        from application.patch_invariants import check_python_patch
+
+        check_python_patch(before, after)
     if name == "package.json":
         original, candidate = json.loads(before or "{}"), json.loads(after)
         for value in (original, candidate):

@@ -45,3 +45,43 @@ def test_node_lifecycle_hook_patch_does_not_change_source_or_checkpoint(tmp_path
 def test_supported_port_and_startup_repair_remains_allowed():
     check_patch_security("server.py", "app.run(host='127.0.0.1')", "app.run(host='0.0.0.0')")
     check_patch_security("package.json", '{"scripts":{}}', '{"scripts":{"start":"node server.js"}}')
+
+
+AUTHENTICATED = """@login_required
+def route(user):
+    if not verify_token(user):
+        raise HTTPException(status_code=401)
+    return database.read()
+"""
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        AUTHENTICATED.replace("@login_required\n", ""),
+        AUTHENTICATED.replace("if not verify_token(user):", "if False:"),
+        AUTHENTICATED.replace(
+            "    if not verify_token(user):", "    return 'ok'\n    if not verify_token(user):"
+        ),
+        AUTHENTICATED.replace("status_code=401", "status_code=200"),
+        AUTHENTICATED.replace("verify_token(user)", "verify_token(user, verify=False)"),
+    ],
+)
+def test_recognized_python_authentication_cannot_be_removed_or_bypassed(candidate):
+    with pytest.raises(ValueError, match="authentication"):
+        check_patch_security("app.py", AUTHENTICATED, candidate)
+
+
+def test_async_database_repair_after_authentication_remains_possible():
+    candidate = AUTHENTICATED.replace("def route", "async def route").replace(
+        "return database.read()", "return await database.read()"
+    )
+    check_patch_security("app.py", AUTHENTICATED, candidate)
+
+
+@pytest.mark.parametrize(
+    "expression", ["eval(payload)", "exec(payload)", "os.system(payload)", "subprocess.run(payload)"]
+)
+def test_deployment_repair_cannot_introduce_dynamic_execution(expression):
+    with pytest.raises(ValueError, match="dynamic execution"):
+        check_patch_security("app.py", "result = 1", "result = " + expression)
