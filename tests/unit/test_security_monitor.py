@@ -80,3 +80,20 @@ def test_truncated_collection_is_never_a_clean_result(monitor):
     result = service.observe(now="2026-10-29T00:01:00+00:00")
     assert trail.lookup_events.call_count == 3 and not result["collection_complete"]
     assert not result["absence_of_compromise_proven"]
+
+
+@pytest.mark.parametrize("field", ["userIdentity", "requestParameters"])
+def test_nullable_optional_scope_is_not_a_matching_incident(monitor, field):
+    service, trail, event = monitor
+    event[field] = None
+    trail.lookup_events.return_value = {"Events": [{"CloudTrailEvent": json.dumps(event)}]}
+    result = service.observe(now="2026-10-29T00:01:00+00:00")
+    assert not result["requires_operator_review"]
+
+
+@pytest.mark.parametrize("payload", [[], "invalid", {"userIdentity": ["invalid"]}])
+def test_malformed_event_cannot_return_a_clean_collection(monitor, payload):
+    service, trail, _ = monitor
+    trail.lookup_events.return_value = {"Events": [{"CloudTrailEvent": json.dumps(payload)}]}
+    with pytest.raises(ValueError):
+        service.observe(now="2026-10-29T00:01:00+00:00")

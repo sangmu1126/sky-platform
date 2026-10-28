@@ -65,3 +65,72 @@ def test_wrong_config_digest_or_tag_is_rejected(tmp_path):
         validate_saved_archive(path, "sha256:" + "0" * 64, "sky-build:test")
     with pytest.raises(ValueError):
         validate_saved_archive(path, identity, "sky-build:other")
+
+
+def test_duplicate_json_fields_are_rejected_even_when_last_value_matches(tmp_path):
+    path = tmp_path / "image.tar"
+    config = b'{"os":"linux","architecture":"arm64","architecture":"amd64"}'
+    name = hashlib.sha256(config).hexdigest() + ".json"
+    files = {
+        name: config,
+        "manifest.json": json.dumps(
+            [{"Config": name, "RepoTags": ["sky-build:test"], "Layers": []}]
+        ).encode(),
+    }
+    with tarfile.open(path, "w", format=tarfile.USTAR_FORMAT) as output:
+        for key, payload in files.items():
+            item = tarfile.TarInfo(key)
+            item.size = len(payload)
+            output.addfile(item, io.BytesIO(payload))
+    with pytest.raises(ValueError):
+        validate_saved_archive(path, "sha256:" + hashlib.sha256(config).hexdigest(), "sky-build:test")
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+def test_containerd_index_must_bind_one_platform_manifest_to_receipt(tmp_path, ambiguous):
+    files = {}
+
+    def blob(document):
+        payload = json.dumps(document).encode()
+        digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+        files["blobs/sha256/" + digest.split(":")[1]] = payload
+        return {"digest": digest, "size": len(payload)}
+
+    config = blob({"os": "linux", "architecture": "amd64"})
+    manifest = blob({"schemaVersion": 2, "config": config, "layers": []})
+    manifest["mediaType"] = "application/vnd.oci.image.manifest.v1+json"
+    manifest["platform"] = {"os": "linux", "architecture": "amd64"}
+    root = blob({"schemaVersion": 2, "manifests": [manifest] * (2 if ambiguous else 1)})
+    root["mediaType"] = "application/vnd.oci.image.index.v1+json"
+    files["index.json"] = json.dumps({"schemaVersion": 2, "manifests": [root]}).encode()
+    files["manifest.json"] = json.dumps(
+        [
+            {
+                "Config": "blobs/sha256/" + config["digest"].split(":")[1],
+                "RepoTags": ["sky-build:test"],
+                "Layers": [],
+            }
+        ]
+    ).encode()
+    path = tmp_path / "image.tar"
+    with tarfile.open(path, "w", format=tarfile.USTAR_FORMAT) as output:
+        for key, payload in files.items():
+            item = tarfile.TarInfo(key)
+            item.size = len(payload)
+            output.addfile(item, io.BytesIO(payload))
+    if ambiguous:
+        with pytest.raises(ValueError):
+            validate_saved_archive(path, config["digest"], "sky-build:test")
+    else:
+        result = validate_saved_archive(path, config["digest"], "sky-build:test")
+        assert set(result["image_identities"]) == {config["digest"], manifest["digest"], root["digest"]}
+
+
+def test_aggregate_metadata_bound_prevents_many_small_members(tmp_path, monkeypatch):
+    import adapters.build.saved_archive as validator
+
+    path = tmp_path / "image.tar"
+    identity = archive(path)
+    monkeypatch.setattr(validator, "MAX_TOTAL_METADATA", 32)
+    with pytest.raises(ValueError, match="aggregate bound"):
+        validate_saved_archive(path, identity, "sky-build:test")

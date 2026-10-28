@@ -222,7 +222,9 @@ def publish(directory, output, *, attestation_output=None):
     image_id = verified_build(request, output)
     from adapters.build.saved_archive import validate_saved_archive
 
-    archive_identity = validate_saved_archive(output / "image.tar", image_id, "sky-build:" + request["build_id"])
+    archive_identity = validate_saved_archive(
+        output / "image.tar", image_id, "sky-build:" + request["build_id"]
+    )
     settings = S3ArtifactSettings(
         os.environ["SKY_ARTIFACTS_BUCKET"], os.environ["AWS_REGION"], os.environ["SKY_AWS_ACCOUNT_ID"]
     )

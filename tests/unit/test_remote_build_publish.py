@@ -2,7 +2,9 @@
 
 import base64
 import hashlib
+import io
 import subprocess
+import tarfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -12,11 +14,14 @@ from botocore.exceptions import ClientError
 from ports.image_manifests import MANIFEST_TYPES
 from ports.remote_builds import canonical, digest
 
+IMAGE_CONFIG = canonical({"os": "linux", "architecture": "amd64", "config": {}})
+IMAGE_ID = "sha256:" + hashlib.sha256(IMAGE_CONFIG).hexdigest()
+
 IMAGE_MANIFEST = canonical(
     {
         "schemaVersion": 2,
         "mediaType": MANIFEST_TYPES[0],
-        "config": {"digest": "sha256:" + "f" * 64},
+        "config": {"digest": IMAGE_ID},
         "layers": [],
     }
 )
@@ -38,13 +43,21 @@ def publisher(monkeypatch, tmp_path):
         "workflow_sha": "c" * 40,
         "platform_code_sha": "d" * 40,
     }
-    (tmp_path / "image.tar").write_bytes(b"fixture archive")
+    with tarfile.open(tmp_path / "image.tar", "w", format=tarfile.USTAR_FORMAT) as archive:
+        config_name = IMAGE_ID.removeprefix("sha256:") + ".json"
+        metadata = canonical(
+            [{"Config": config_name, "RepoTags": ["sky-build:" + request["build_id"]], "Layers": []}]
+        )
+        for name, content in ((config_name, IMAGE_CONFIG), ("manifest.json", metadata)):
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
     (tmp_path / "build.json").write_bytes(
         canonical(
             {
                 "version": 1,
                 "request_digest": digest(request),
-                "image_id": "sha256:" + "f" * 64,
+                "image_id": IMAGE_ID,
                 "archive_digest": remote_builder.archive_digest(tmp_path / "image.tar"),
             }
         )
@@ -81,7 +94,7 @@ def publisher(monkeypatch, tmp_path):
         patch.object(remote_builder.subprocess, "run", return_value=Mock(returncode=0)),
         patch.object(remote_builder, "command") as command,
     ):
-        command.side_effect = lambda args, **_: "sha256:" + "f" * 64 if "{{.Id}}" in args else "linux/amd64"
+        command.side_effect = lambda args, **_: IMAGE_ID if "{{.Id}}" in args else "linux/amd64"
         yield remote_builder, ecr, objects, command
 
 
@@ -105,7 +118,7 @@ def test_publish_failure_logs_out_and_does_not_publish_result(publisher, tmp_pat
         if args[1] == stage:
             raise OSError("injected failure")
         if "{{.Id}}" in args:
-            return "sha256:" + "f" * 64
+            return IMAGE_ID
         return "linux/arm64" if stage == "architecture" else "linux/amd64"
 
     command.side_effect = execute
@@ -142,7 +155,9 @@ def test_publish_success_records_digest_reference_then_logs_out(publisher, tmp_p
     assert result["image"].endswith("/sky-managed@" + REGISTRY_DIGEST)
     assert result["run_id"] == 42
     tagged = [call for call in command.call_args_list if call.args[0][1] == "tag"]
-    assert tagged[0].args[0][2] == "sha256:" + "f" * 64
+    assert tagged[0].args[0][2] == "sky-build:00000000-0000-4000-8000-000000000001"
+    pushed = [call for call in command.call_args_list if call.args[0][1] == "push"]
+    assert pushed[0].args[0][2:4] == ["--platform", "linux/amd64"]
     assert command.call_args.args[0][1] == "logout"
 
 
@@ -153,7 +168,7 @@ def test_publish_cleanup_only_failure_fails_job(publisher, tmp_path):
         if args[1] == "logout":
             raise OSError("logout failed")
         if "{{.Id}}" in args:
-            return "sha256:" + "f" * 64
+            return IMAGE_ID
         return "linux/amd64"
 
     command.side_effect = execute
@@ -259,7 +274,7 @@ def test_publish_auth_is_private_and_removed_on_every_exit(publisher, tmp_path, 
         assert kwargs["env"]["DOCKER_CONFIG"] == str(captured[0])
         if args[1] == failure:
             raise OSError("injected failure")
-        return "sha256:" + "f" * 64 if "{{.Id}}" in args else "linux/amd64"
+        return IMAGE_ID if "{{.Id}}" in args else "linux/amd64"
 
     builder.subprocess.run.side_effect = login
     command.side_effect = execute
