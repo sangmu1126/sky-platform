@@ -12,6 +12,8 @@ import re
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import quote
+from uuid import uuid4
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -86,9 +88,41 @@ def query(packages):
     return findings
 
 
+def cyclonedx(packages, *, observed_at):
+    """Inventory only: do not invent licenses, file hashes or dependency edges.
+
+    Schema: https://raw.githubusercontent.com/CycloneDX/specification/1.6/schema/bom-1.6.schema.json
+    This describes this trusted Python environment, not OS or workload packages.
+    """
+    return {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "version": 1,
+        "serialNumber": "urn:uuid:" + str(uuid4()),
+        "metadata": {
+            "timestamp": observed_at,
+            "properties": [
+                {"name": "sky:inventory:scope", "value": "trusted-installed-python-environment-only"},
+                {"name": "sky:inventory:os-included", "value": "false"},
+            ],
+        },
+        "components": [
+            {
+                "type": "library",
+                "name": item["name"],
+                "version": item["version"],
+                "bom-ref": "pkg:pypi/" + quote(item["name"], safe="") + "@" + quote(item["version"], safe=""),
+                "purl": "pkg:pypi/" + quote(item["name"], safe="") + "@" + quote(item["version"], safe=""),
+            }
+            for item in packages
+        ],
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--sbom-output", type=Path)
     args = parser.parse_args()
     packages = inventory(importlib.metadata.distributions())
     report = {
@@ -99,6 +133,12 @@ def main():
         "os_image_scanned": False,
         "malware_absence_proven": False,
     }
+    if args.sbom_output is not None:
+        if args.sbom_output.resolve() == args.output.resolve():
+            parser.error("SBOM and vulnerability report require different paths")
+        args.sbom_output.write_text(
+            json.dumps(cyclonedx(packages, observed_at=report["observed_at"]), indent=2) + "\n"
+        )
     try:
         report["findings"] = query(packages)
         report["status"] = (

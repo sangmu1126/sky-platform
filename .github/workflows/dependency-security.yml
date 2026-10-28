@@ -20,11 +20,13 @@ jobs:
       - run: python -m pip install --upgrade 'pip>=26.2,<27'
       - run: pip install -e '.[aws-native,state-postgres]'
       - name: Audit trusted service Python dependencies
-        run: python scripts/audit_python_dependencies.py --output python-dependency-audit.json
+        run: python scripts/audit_python_dependencies.py --output python-dependency-audit.json --sbom-output python-sbom.cdx.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: python-dependency-audit
-          path: python-dependency-audit.json
+          path: |
+            python-dependency-audit.json
+            python-sbom.cdx.json
           if-no-files-found: error
           retention-days: 14
