@@ -17,7 +17,7 @@ from ports.state import RecordConflict
 
 
 class PostgresDeploymentAdmission:
-    def __init__(self, operations: PostgresOperationStore, *, account_id: str, region: str):
+    def __init__(self, operations: PostgresOperationStore, *, account_id: str, region: str, limits=None):
         if not isinstance(account_id, str) or not re.fullmatch(r"[0-9]{12}", account_id):
             raise ValueError("Invalid deployment account")
         if not isinstance(region, str) or not re.fullmatch(r"[a-z]{2}(?:-[a-z]+)+-\d+", region):
@@ -25,6 +25,13 @@ class PostgresDeploymentAdmission:
         self.operations = operations
         self.account_id = account_id
         self.region = region
+        from adapters.state.admission_limits import AdmissionLimits
+
+        import os
+
+        self.limits = AdmissionLimits.from_environment(os.environ) if limits is None else limits
+        if not isinstance(self.limits, AdmissionLimits):
+            raise ValueError("Trusted admission limits required")
 
     def initialize(self):
         """Explicit, additive migration; never called by admit or a service startup."""
@@ -145,6 +152,8 @@ class PostgresDeploymentAdmission:
     ):
         """Caller owns the transaction; usable alongside locked approval consumption."""
         self._owner(connection, principal, artifact.application_id)
+        self.limits.check(connection, workspace=self.operations.workspace, principal=principal,
+                          key=key, kind="deployment", application_id=artifact.application_id)
         operation = self.operations._admit_in_transaction(
             connection, artifact.application_id, "deploy", key, command
         )

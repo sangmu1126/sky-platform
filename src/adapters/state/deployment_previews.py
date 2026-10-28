@@ -109,6 +109,8 @@ class PostgresDeploymentPreviews:
         identity, owner = str(uuid4()), str(uuid4())
         with self.operations.records._connection() as connection:
             self.admission._owner(connection, principal, application_id)
+            self.admission.limits.check(connection, workspace=self.operations.workspace,
+                                        principal=principal, key=scoped, kind="preview")
             connection.execute(
                 """INSERT INTO sky_state.deployment_previews
                 (workspace,id,request_key,fingerprint,organization_id,created_by,application_id,account_id,region,options)

@@ -5,6 +5,7 @@ Clients submit only a stored approval ID and request key, never approval claims.
 """
 
 import json
+from adapters.state.admission_limits import AdmissionLimitExceeded
 import re
 from dataclasses import asdict
 from urllib.parse import urlsplit
@@ -137,6 +138,8 @@ def handler_for_approvals(app: DatabaseApprovalApp):
                 self.json_response(409, {"error": "Approval cannot be admitted or changed"})
             except OSError:
                 self.json_response(503, {"error": "Deployment admission temporarily unavailable"})
+            except AdmissionLimitExceeded:
+                self.json_response(429, {"error": "Deployment admission limit reached; inspect active or existing work"})
             except ValueError:
                 self.json_response(500, {"error": "Invalid stored approval configuration"})
 

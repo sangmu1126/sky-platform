@@ -13,6 +13,7 @@ from ports.deployment_approvals import ApprovalUnavailable
 from ports.deployment_previews import PreviewBusy, PreviewUnavailable
 from ports.operations import ApplicationBusy, IdempotencyConflict
 from ports.state import RecordConflict
+from adapters.state.admission_limits import AdmissionLimitExceeded
 
 
 class DatabasePreparationApp(DatabaseApprovalApp):
@@ -318,6 +319,8 @@ def handler_for_preparation(app):
                     self.json_response(
                         503, {"error": "Preparation temporarily unavailable; retry the same request"}
                     )
+                except AdmissionLimitExceeded:
+                    self.json_response(429, {"error": "Preparation admission limit reached; inspect existing work"})
                 except ValueError:
                     self.json_response(400, {"error": "ZIP or deployment settings cannot be prepared"})
             finally:
