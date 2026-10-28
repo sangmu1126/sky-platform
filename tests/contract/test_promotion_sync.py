@@ -56,3 +56,24 @@ def test_guard_loss_after_truncate_rolls_back(databases):
         PostgresPromotionSynchronizer(src, dst).refresh(plan, expected_destination=baseline, guard=guard)
     with dst() as db:
         assert db.execute("SELECT count(*) FROM scores").fetchone() == (2,)
+
+
+def test_refresh_keeps_committed_destination_readable_during_delete_and_copy(databases):
+    (src, dst), plan = databases
+    seed(src)
+    baseline = PostgresPromotionCopy(src, dst).copy(plan, guard=lambda: None)
+    with src() as db:
+        db.execute("INSERT INTO scores VALUES(3,100,'late',NULL)")
+    observations = []
+
+    def guard():
+        # An independent connection with a short timeout catches both an
+        # ACCESS EXCLUSIVE lock and any partially visible DELETE/COPY state.
+        with dst() as reader:
+            reader.execute("SET LOCAL statement_timeout='500ms'")
+            observations.append(reader.execute("SELECT count(*) FROM scores").fetchone()[0])
+
+    PostgresPromotionSynchronizer(src, dst).refresh(plan, expected_destination=baseline, guard=guard)
+    assert len(observations) >= 4 and set(observations) == {2}
+    with dst() as db:
+        assert db.execute("SELECT count(*) FROM scores").fetchone() == (3,)

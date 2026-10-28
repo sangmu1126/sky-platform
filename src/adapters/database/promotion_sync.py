@@ -50,7 +50,7 @@ class PostgresPromotionSynchronizer(PostgresPromotionCopy):
                 raise ValueError("Supported matching schemas required")
             names = sql.SQL(",").join(sql.Identifier("public", name) for name, _, _ in tables)
             src.execute(sql.SQL("LOCK TABLE {} IN SHARE MODE").format(names))
-            dst.execute(sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE").format(names))
+            dst.execute(sql.SQL("LOCK TABLE {} IN EXCLUSIVE MODE").format(names))
             schema_hash = hashlib.sha256(json.dumps(tables, sort_keys=True).encode()).hexdigest()
             if (
                 _inventory(src) != tables
@@ -75,7 +75,10 @@ class PostgresPromotionSynchronizer(PostgresPromotionCopy):
             if _sequence_positions(dst) != expected_destination.get("sequences", []):
                 raise ValueError("Destination identity sequence changed since baseline; refuse overwrite")
             guard()
-            dst.execute(sql.SQL("TRUNCATE {}").format(names))
+            # MVCC DELETE preserves the last committed snapshot for readers.
+            # TRUNCATE/ACCESS EXCLUSIVE used to block even ordinary SELECT.
+            for name, _, _ in tables:
+                dst.execute(sql.SQL("DELETE FROM {}").format(sql.Identifier("public", name)))
             evidence = []
             rows, size = self.max_rows, self.max_bytes
             for name, _, _ in tables:
