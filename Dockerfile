@@ -27,13 +27,11 @@ ENTRYPOINT ["sky-service"]
 CMD ["--host", "0.0.0.0", "--port", "8080", "--state-dir", "/.sky"]
 
 # Hosted API/publisher runtime: remote builders own image builds; no Docker socket or CLI.
-FROM docker.io/library/python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS hosted
-# Keep the immutable base, then apply available Debian security updates.
-# Strip privilege-escalation bits; residual vendor findings still require review.
-RUN apt-get update \
-    && apt-get upgrade -y --no-install-recommends \
-    && find / -xdev -type f -perm /6000 -exec chmod a-s {} + \
-    && rm -rf /var/lib/apt/lists/*
+FROM docker.io/library/python:3.12-alpine3.23@sha256:e0e17c55a255d32e515d3ae66577578f2a439ebe92cd4a8b69fc29421bbdba7d AS hosted
+# The hosted service needs Python libraries, not Debian mount/namespace utilities.
+# Apply available security fixes and remove SUID/SGID bits without extra privileges at runtime.
+RUN apk upgrade --no-cache \
+    && find / -xdev -type f \( -perm -4000 -o -perm -2000 \) -exec chmod a-s {} +
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 AWS_PAGER=""
 WORKDIR /app
 COPY pyproject.toml ./

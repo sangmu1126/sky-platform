@@ -90,7 +90,14 @@ except OSError:
     pass
 else:
     raise AssertionError('Hosted root filesystem is writable')
-import boto3,psycopg
+import boto3,psycopg,sqlite3,ssl,jwt
+from cryptography.hazmat.primitives.asymmetric import ec
+assert sqlite3.connect(':memory:').execute('select 1').fetchone()==(1,)
+assert psycopg.pq.version()>0
+ssl.create_default_context(cafile='/etc/ssl/certs/sky-rds-global-bundle.pem')
+key=ec.generate_private_key(ec.SECP256R1())
+token=jwt.encode({'sub':'synthetic-smoke'},key,algorithm='ES256')
+assert jwt.decode(token,key.public_key(),algorithms=['ES256'])['sub']=='synthetic-smoke'
 from interfaces.b_preparation_runtime import run_preparation_api
 print('PASS: hosted non-root image; no Docker/AWS/Git CLI, socket, state volume or writable root')
 """
@@ -112,6 +119,38 @@ print('PASS: hosted non-root image; no Docker/AWS/Git CLI, socket, state volume 
                 inspection,
             )
         )
+        # Inspect all final image files, including directories unreadable by the service UID.
+        # The separate inspector has no network, host mounts, or writable root filesystem.
+        assert not docker(
+            "run",
+            "--rm",
+            "--user",
+            "0:0",
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--cap-add",
+            "DAC_OVERRIDE",
+            "--security-opt",
+            "no-new-privileges",
+            "--entrypoint",
+            "find",
+            image,
+            "/",
+            "-xdev",
+            "-type",
+            "f",
+            "(",
+            "-perm",
+            "-4000",
+            "-o",
+            "-perm",
+            "-2000",
+            ")",
+            "-print",
+        ).strip(), "Hosted image contains SUID/SGID files"
         rejection = subprocess.run(
             [
                 "docker",
