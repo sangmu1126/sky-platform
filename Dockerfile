@@ -5,6 +5,7 @@ FROM docker.io/amazon/aws-cli:latest@sha256:3dacc5db57c923c4223e949795f538ecf1f2
 FROM docker.io/library/python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS runtime
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 AWS_PAGER=""
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ca-certificates git dnsutils \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
@@ -27,6 +28,12 @@ CMD ["--host", "0.0.0.0", "--port", "8080", "--state-dir", "/.sky"]
 
 # Hosted API/publisher runtime: remote builders own image builds; no Docker socket or CLI.
 FROM docker.io/library/python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS hosted
+# Keep the immutable base, then apply available Debian security updates.
+# Strip privilege-escalation bits; residual vendor findings still require review.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && find / -xdev -type f -perm /6000 -exec chmod a-s {} + \
+    && rm -rf /var/lib/apt/lists/*
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 AWS_PAGER=""
 WORKDIR /app
 COPY pyproject.toml ./

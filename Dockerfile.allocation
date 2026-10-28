@@ -1,6 +1,10 @@
 # Trusted allocation worker only: no Docker daemon/socket, AWS CLI or user source execution.
 FROM public.ecr.aws/docker/library/python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && find / -xdev -type f -perm /6000 -exec chmod a-s {} + \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
