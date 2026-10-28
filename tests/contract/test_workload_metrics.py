@@ -37,6 +37,14 @@ def test_metrics_read_only_owned_database_with_registered_quota(databases):
         assert result["values"]["connections"] == 0 and result["values"]["storage_bytes"] > 0
         assert result["values"]["storage_limit_bytes"] == 100000000
         assert "latency_p95_ms" not in result["values"]
+        pressure = collector.resource_pressure(binding)
+        assert pressure["values"] == {
+            "active_queries": 0,
+            "longest_query_seconds": 0.0,
+            "idle_transactions": 0,
+            "longest_idle_seconds": 0.0,
+        }
+        assert pressure["automatic_action"] is False and pressure["malicious_activity_proven"] is False
         with pytest.raises(ValueError, match="quotas"):
             collector.collect(
                 replace(binding, owner_ref="allocation-foreign", database_name="sky_app_foreign")

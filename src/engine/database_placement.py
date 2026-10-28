@@ -15,6 +15,22 @@ def _digest(value):
 def select_shared_database(
     job: dict, pool: SharedDatabasePool, *, config_digest: str, connection_limit=5
 ) -> dict:
+    security = job.get("database_security_requirements")
+    if security is not None:
+        if (
+            not isinstance(security, dict)
+            or set(security) != {"data_sensitivity", "tenant_trust", "physical_isolation_required"}
+            or security["data_sensitivity"] not in ("low", "moderate", "high", "unknown")
+            or security["tenant_trust"] not in ("trusted", "untrusted", "unknown")
+            or type(security["physical_isolation_required"]) is not bool
+        ):
+            raise ValueError("Explicit database security requirements are invalid")
+        if (
+            security["data_sensitivity"] in {"high", "unknown"}
+            or security["tenant_trust"] != "trusted"
+            or security["physical_isolation_required"]
+        ):
+            raise ValueError("Shared database cannot satisfy the registered isolation requirements")
     if job.get("target") != "aws-ecs-express" or job.get("status") not in {"planned", "queued", "failed"}:
         raise ValueError("Shared allocation requires an inactive AWS container deployment")
     if any(
@@ -61,4 +77,6 @@ def select_shared_database(
         "deployment_ready": False,
         "migration_status": "not_started",
     }
+    if security is not None:
+        result["security_requirements_digest"] = _digest(security)
     return {**result, "selection_id": "DBS-" + _digest(result)[:24]}

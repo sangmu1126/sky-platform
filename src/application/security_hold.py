@@ -68,7 +68,7 @@ class SecurityHold:
     def __init__(self, records):
         self.writer = DeploymentMetadataWriter(records)
 
-    def place(self, principal, job_id, *, incident_id, reason, now):
+    def place(self, principal, job_id, *, incident_id, reason, now, expected_revision=None):
         if not isinstance(principal, Principal) or principal.role is not Role.ADMIN:
             raise PermissionError("Only an organization administrator may record a security hold")
         recorded_at = validate_hold_request(incident_id, reason, now)
@@ -82,6 +82,10 @@ class SecurityHold:
             ):
                 return deepcopy(previous)
             raise ValueError("An existing security hold requires operator review")
+        if expected_revision is not None and (
+            type(expected_revision) is not int or snapshot.revision != expected_revision
+        ):
+            raise ValueError("Security signal no longer matches the current deployment record")
         hold = {
             "incident_id": incident_id,
             "reason": reason,

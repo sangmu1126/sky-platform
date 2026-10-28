@@ -78,3 +78,35 @@ class PostgresWorkloadMetrics:
             "observed_at": self.clock(),
             "values": values,
         }
+
+    def resource_pressure(self, binding):
+        """Read only app-bound activity ages; never return SQL text or cancel a session.
+
+        Long queries are capacity signals, not proof of malicious intent. No CPU
+        attribution or hard per-tenant resource guarantee is derived here.
+        """
+        baseline = self.collect(binding)
+        role = "sky_login_" + binding.owner_ref.removeprefix("allocation-")
+        try:
+            with self.connect() as db:
+                db.execute("SET TRANSACTION READ ONLY")
+                db.execute("SET LOCAL statement_timeout='5s'")
+                if db.execute("SELECT current_database()").fetchone() != (self.pool_database,):
+                    raise ValueError("Registered pool connection required")
+                values = db.execute(
+                    """SELECT count(*) FILTER(WHERE state='active'),
+                    coalesce(max(extract(epoch FROM clock_timestamp()-query_start))
+                        FILTER(WHERE state='active'),0),
+                    count(*) FILTER(WHERE state='idle in transaction'),
+                    coalesce(max(extract(epoch FROM clock_timestamp()-state_change))
+                        FILTER(WHERE state='idle in transaction'),0)
+                    FROM pg_stat_activity WHERE datname=%s AND usename=%s""",
+                    (binding.database_name, role),
+                ).fetchone()
+            return {"schema_version": 1, "collector_id": self.collector_id,
+                    "database_binding": baseline["database_binding"], "observed_at": self.clock(),
+                    "values": {"active_queries": values[0], "longest_query_seconds": float(values[1]),
+                               "idle_transactions": values[2], "longest_idle_seconds": float(values[3])},
+                    "automatic_action": False, "malicious_activity_proven": False}
+        except psycopg.Error:
+            raise OSError("Owned workload pressure metrics unavailable") from None
