@@ -151,6 +151,11 @@ def main(argv):
         help="Read app-scoped workload DB capacity during an operating review",
     )
     worker.add_argument("--pool-config")
+    worker.add_argument(
+        "--enqueue-dedicated-preparation",
+        action="store_true",
+        help="Queue only reviews covered by current bounded automation consent",
+    )
     worker.add_argument("--dedicated-config")
     worker.add_argument("--recovery-config", help="Operator-audited immutable executor profile registration")
     worker.add_argument("--recovery-user-id", help="Current administrator requesting preparation recovery")
@@ -581,6 +586,8 @@ def main(argv):
         return
     if args.collect_capacity_metrics:
         parser.error("Capacity collection requires operating review mode")
+    if args.enqueue_dedicated_preparation:
+        parser.error("Automatic preparation admission requires operating review mode")
     if args.worker_mode == "dedicated-database-recovery-status":
         from interfaces.preparation_recovery_status import run_preparation_recovery_status
 

@@ -26,7 +26,7 @@ def run_operating_review(args, parser):
             or args.initialize_pool
             or args.operation_id
             or args.attempt_id
-            or args.dedicated_config
+            or (args.dedicated_config and not args.enqueue_dedicated_preparation)
         ):
             raise ValueError("Operating review requires one bounded pass without mutation options")
         state = PostgresStateSettings.from_environment()
@@ -41,6 +41,24 @@ def run_operating_review(args, parser):
         policies = load_operating_policies(
             args.operating_review_policy_config, account_id=source.pool.account_id, region=state.region
         )
+        if args.enqueue_dedicated_preparation:
+            from adapters.aws.job_queue import SqsOperationQueue
+            from interfaces.dedicated_database_worker import load_dedicated_configuration
+
+            settings = load_dedicated_configuration(args.dedicated_config, source)
+            if any(policy.target_configuration_digest != settings.digest for policy in policies.values()):
+                raise ValueError("Operating target differs from registered preparation capacity/network")
+            url = os.environ.get("SKY_DEDICATED_DATABASE_QUEUE_URL", "")
+            if url in {
+                os.environ.get(name, "")
+                for name in (
+                    "SKY_JOB_QUEUE_URL",
+                    "SKY_SHARED_DATABASE_QUEUE_URL",
+                    "SKY_DATABASE_CUTOVER_QUEUE_URL",
+                )
+            }:
+                raise ValueError("Automatic preparation requires a separate registered queue")
+            SqsOperationQueue(url, region=state.region, account_id=source.pool.account_id, client=object())
         workspace = os.environ.get("SKY_STATE_WORKSPACE", "team")
         PostgresDeploymentRecordStore(None, workspace=workspace)
     except (ValueError, TypeError, KeyError, OSError):
@@ -97,11 +115,34 @@ def run_operating_review(args, parser):
                 CapacityObservationRecorder(controller.service, metrics).collect(principal, job_id, policy)
 
         coordinator = PostgresOperatingReviewLocks(connection, workspace=workspace)
+        admission = None
+        if args.enqueue_dedicated_preparation:
+            from adapters.state.operations import PostgresOperationStore
+            from application.database_promotion_workflow import PromotionPreparationAdmission
+
+            check_database_ready(connection, operations=True)
+            admission = PromotionPreparationAdmission(
+                records,
+                PostgresOperationStore(connection, workspace=workspace),
+                policies,
+                clock=lambda: datetime.now(UTC).isoformat(),
+                enabled=True,
+            )
+        options = {"collect": collect, "coordinate": coordinator.acquire}
+        if admission is not None:
+            options["prepare"] = admission
         report = controller.review_automations_once(
-            lambda user, org: current_membership(identity, user, org),
-            collect=collect,
-            coordinate=coordinator.acquire,
+            lambda user, org: current_membership(identity, user, org), **options
         )
-        print(json.dumps({"reviews": report, "execution_enabled": False}), flush=True)
+        print(
+            json.dumps(
+                {
+                    "reviews": report,
+                    "preparation_admission_enabled": admission is not None,
+                    "execution_enabled": False,
+                }
+            ),
+            flush=True,
+        )
     except (OSError, ValueError, BotoCoreError, ClientError):
         parser.exit(1, "Operating review unavailable; check state, membership and telemetry permissions.\n")

@@ -75,6 +75,21 @@ def test_before_schedule_no_proposal_is_written(operating_review_setup):
     assert records.save_calls == 0
 
 
+def test_verified_hosted_deployed_state_can_enter_operating_review(operating_review_setup):
+    records, policy, service = operating_review_setup
+    records.job["deployment_state"] = "deployed"
+    records.job["result"]["verification"] = {"http": "verified"}
+    records.health[-1]["deployment_binding"] = deployment_observation_binding(records.job)
+    assert service.review(principal(), ID, policy, now=NOW)["status"] == "pending_approval"
+
+
+def test_unverified_hosted_state_cannot_enter_operating_review(operating_review_setup):
+    records, policy, service = operating_review_setup
+    records.job["deployment_state"] = "deployed"
+    with pytest.raises(ValueError, match="runtime HTTP"):
+        service.review(principal(), ID, policy, now=NOW)
+
+
 @pytest.mark.parametrize(
     "change",
     [

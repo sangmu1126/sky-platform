@@ -114,12 +114,17 @@ def _binding(job):
     require_no_security_hold(job)
     if (
         job.get("status") != "succeeded"
-        or job.get("deployment_state") != "active"
+        or job.get("deployment_state") not in {"active", "deployed"}
         or not isinstance(job.get("result"), dict)
         or not job["result"]
         or job.get("release_rollback_state") in {"running", "needs_attention"}
     ):
         raise ValueError("Operating review requires an active, settled deployment")
+    if (
+        job["deployment_state"] == "deployed"
+        and job["result"].get("verification", {}).get("http") != "verified"
+    ):
+        raise ValueError("Hosted deployment requires runtime HTTP verification before operating review")
     raw = job.get("workload_database_binding")
     if not isinstance(raw, dict):
         raise ValueError("A recorded workload database binding is required")  # noqa: TRY004 -- missing evidence

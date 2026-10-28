@@ -1,5 +1,6 @@
 """Operator-configured policies; browser requests cannot choose a DB target."""
 
+import hashlib
 import json
 import os
 import re
@@ -113,6 +114,13 @@ class OperatingReviewController:
             principal, job_id, proposal_id, self._policy(principal, job_id), now=self.clock()
         )
 
+    def review_effect(self, principal, job_id, operation_id, operations):
+        from application.promotion_effect import PromotionEffectReview
+
+        return PromotionEffectReview(self.records, operations).review(
+            principal, job_id, operation_id, now=self.clock()
+        )
+
     def grant_automation(self, principal, job_id, *, max_incremental_monthly_cents, expires_at):
         return self.service.grant_automation(
             principal,
@@ -143,7 +151,7 @@ class OperatingReviewController:
             "automation_consent": snapshot.record.get("promotion_automation_consent"),
         }
 
-    def review_automations_once(self, resolve_principal, *, collect=None, coordinate=None):
+    def review_automations_once(self, resolve_principal, *, collect=None, coordinate=None, prepare=None):
         """Bounded metadata-only pass; current consent actor is reauthorized.
 
         CAS and idempotent proposal IDs prevent duplicate approvals from two
@@ -194,6 +202,33 @@ class OperatingReviewController:
                         "status": proposal["status"] if proposal else "criteria_not_met",
                         "proposal_id": proposal["proposal_id"] if proposal else None,
                     }
+                    if prepare is not None and proposal and proposal["status"] == "approved":
+                        # A timer cannot turn an unrelated/manual approval into
+                        # provisioning. Revalidate the same bounded user consent
+                        # after all telemetry and metadata work.
+                        guard()
+                        self.service.check_automation(principal, job_id, policy, consent, now=self.clock())
+                        if (
+                            proposal.get("decision", {}).get("automatic_approval", {}).get("eligible")
+                            is not True
+                        ):
+                            raise PermissionError("Automatic preparation requires eligible current consent")
+                        refreshed = resolve_principal(principal.user_id, principal.organization_id)
+                        if not isinstance(refreshed, Principal) or refreshed != principal:
+                            raise PermissionError("Consent actor changed before preparation admission")
+                        guard()
+                        operation = prepare.admit(
+                            principal,
+                            job_id,
+                            proposal["proposal_id"],
+                            "auto-prepare-"
+                            + hashlib.sha256((job_id + ":" + proposal["proposal_id"]).encode()).hexdigest(),
+                        )
+                        outcome.update(
+                            status="preparation_" + operation.status,
+                            operation_id=operation.id,
+                            deployment_completed=False,
+                        )
                 report.append(outcome)
             except (ValueError, TypeError, PermissionError, FileNotFoundError, OSError):
                 report.append({"job_id": job_id, "status": "review_blocked"})
