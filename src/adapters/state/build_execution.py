@@ -5,6 +5,61 @@ from adapters.state.operations import PostgresOperationStore
 
 
 class PostgresBuildExecutionStore(PostgresOperationStore):
+    def reconcile_deployment(self, principal, expected, snapshot, result):
+        """Atomic publication after trusted read-only runtime revalidation.
+
+        This boundary cannot observe AWS or stop an old executor; the dedicated
+        application service must establish those prerequisites before calling.
+        """
+        from application.deployment_writes import authorize_job_snapshot
+        from domain.access import Role
+        from ports.state import RecordConflict
+
+        if principal.role is not Role.ADMIN:
+            raise PermissionError("Administrator required for deployment reconciliation")
+        result = self._document(result)
+        with self.records._connection() as connection:
+            self._application_lock(connection, expected.application_id)
+            if not self._execution_allowed(connection, expected.application_id):
+                raise RecordConflict("Application execution is fenced")
+            operation = self._select(connection, expected.id, lock=True)
+            if operation != expected or operation.status != "needs_attention" or not operation.external_pending:
+                raise RecordConflict("Deployment changed since runtime observation")
+            job = self._job(connection, operation)
+            authorize_job_snapshot(principal, c_job_id(operation), snapshot)
+            revision = connection.execute("SELECT revision FROM sky_state.metadata_records WHERE workspace=%s AND kind='job' AND record_id=%s",
+                (self.workspace, c_job_id(operation))).fetchone()[0]
+            if (revision != snapshot.revision or job != snapshot.record or job.get("security_hold") is not None
+                    or job.get("security_database_restriction") is not None):
+                raise RecordConflict("Job changed since runtime observation")
+            if result.get("verification", {}).get("http") != "verified" or result.get("verification", {}).get("image") != "verified":
+                raise ValueError("Current runtime HTTP/image verification required")
+            database = result.get("database")
+            if database is not None:
+                from domain.database import DatabaseBinding
+                binding = DatabaseBinding(**database["binding"])
+                if (database.get("protocol") != "shared-postgres-deployment-v1" or database.get("tls_verified") is not True
+                        or database.get("cross_database_access_denied") is not True
+                        or result.get("verification", {}).get("database_authentication") != "verified"
+                        or result.get("image_identity", {}).get("status") != "passed"
+                        or (binding.organization_id, binding.application_id, binding.account_id, binding.region, binding.role)
+                        != (operation.command["organization_id"], operation.application_id,
+                            operation.command["account_id"], operation.command["region"], "shared_workload")):
+                    raise ValueError("Verified PostgreSQL ownership required")
+                job["workload_database_binding"] = database["binding"]
+            checkpoint = {**operation.checkpoint, "stage": "deployed", "deployment_result": result,
+                          "reconciliation": {"resolved_by": principal.user_id, "original_version": operation.row_version,
+                                             "resubmission": False}}
+            job.update(status="succeeded", deployment_state="deployed", result=result,
+                       build_result=checkpoint["build_result"])
+            connection.execute("UPDATE sky_state.metadata_records SET document=%s,revision=revision+1,modified_at=clock_timestamp() WHERE workspace=%s AND kind='job' AND record_id=%s",
+                (self._json(self._document(job)), self.workspace, c_job_id(operation)))
+            connection.execute("UPDATE sky_state.operations SET checkpoint=%s,status='succeeded',result=%s,external_receipt=%s,external_pending=false,lease_owner=NULL,lease_until=NULL,row_version=row_version+1 WHERE workspace=%s AND id=%s",
+                (self._json(self._document(checkpoint)),self._json(result),self._json(result),self.workspace,operation.id))
+            connection.execute("DELETE FROM sky_state.mutation_scopes WHERE workspace=%s AND operation_id=%s",
+                (self.workspace, operation.id))
+            self._event(connection, operation.id, "deployment_reconciled")
+
     def _job(self, connection, operation):
         c = operation.command
         row = connection.execute("""SELECT j.document FROM sky_state.metadata_records j

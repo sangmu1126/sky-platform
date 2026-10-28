@@ -14,7 +14,11 @@ class StatelessSourceRecovery:
         guard()
         intent = self.deployer.prepare(build["request"], build["result"])
         owner = build["request"]["build_id"].replace("-", "")[:16]
-        intent["payload"]["tags"].append({"key": "sky-attempt", "value": owner})
+        existing = [t for t in intent["payload"]["tags"] if t["key"] == "sky-attempt"]
+        if existing and existing != [{"key": "sky-attempt", "value": owner}]:
+            raise ValueError("Recovery deployment ownership differs from the reviewed build")
+        if not existing:
+            intent["payload"]["tags"].append({"key": "sky-attempt", "value": owner})
         guard()
         return {
             "version": 1,

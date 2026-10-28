@@ -7,8 +7,12 @@ from ports.remote_builds import digest, validate_request
 
 
 class BuiltImageDeployment:
-    def __init__(self, settings, *, ecs=None, stacks=None, identity=None, probe=None, database_profile=None):
+    def __init__(self, settings, *, ecs=None, stacks=None, identity=None, probe=None, database_profile=None, deployment_id=None):
         self.settings = settings
+        if deployment_id is not None:
+            from ports.remote_builds import identity as validate_identity
+            validate_identity(deployment_id)
+        self.deployment_id = deployment_id
         if database_profile is not None:
             from adapters.aws.postgres_build_profile import SharedPostgresBuildProfile
             if not isinstance(database_profile, SharedPostgresBuildProfile):
@@ -70,11 +74,15 @@ class BuiltImageDeployment:
         for role, logical in zip(roles, ("ExecutionRole", "InfrastructureRole")):
             if not re.fullmatch(r"arn:aws:iam::" + self.settings.account_id + r":role/sky-core-" + logical + r"-[A-Za-z0-9]+", role):
                 raise ValueError("Managed core role changed")
-        service = "sky-b-" + request["build_id"].replace("-", "")
+        deployment_id = self.deployment_id or request["build_id"]
+        service = "sky-b-" + deployment_id.replace("-", "")
         arn = f"arn:aws:ecs:{self.settings.region}:{self.settings.account_id}:service/default/{service}"
-        tags = {"sky-managed": "true", "sky-operation": request["build_id"],
+        tags = {"sky-managed": "true", "sky-operation": deployment_id,
+                "sky-attempt": deployment_id.replace("-", "")[:16],
                 "sky-workspace": request["workspace"], "sky-application": artifact.application_id,
                 "sky-organization": artifact.organization_id}
+        if self.deployment_id is not None:
+            tags["sky-build"] = request["build_id"]
         payload = {"serviceName": service, "cluster": "default", "executionRoleArn": roles[0],
                    "infrastructureRoleArn": roles[1], "cpuArchitecture": "X86_64",
                    "healthCheckPath": plan["health_path"],
@@ -152,16 +160,24 @@ class BuiltImageDeployment:
                 return None
             c, payload = configs[0], intent["payload"]
             container = c.get("primaryContainer", {})
-            if (any(container.get(k) != v for k, v in payload["primaryContainer"].items())
-                    or container.get("secrets", []) != payload["primaryContainer"].get("secrets", [])
+            def same_container_field(key, expected):
+                value = container.get(key, [] if key in {"environment", "secrets"} else None)
+                if key in {"environment", "secrets"}:
+                    if not isinstance(value, list) or len({x.get("name") for x in value}) != len(value):
+                        return False
+                    return sorted(value, key=lambda x: x["name"]) == sorted(expected, key=lambda x: x["name"])
+                return value == expected
+            if (any(not same_container_field(k, v) for k, v in payload["primaryContainer"].items())
+                    or not same_container_field("secrets", payload["primaryContainer"].get("secrets", []))
                     or container.get("command") or container.get("repositoryCredentials")
                     or any(c.get(k) != payload[k] for k in ("executionRoleArn", "healthCheckPath"))
                     or any(c.get("scalingTarget", {}).get(k) != v for k, v in payload["scalingTarget"].items())
                     or c.get("taskRoleArn")):
                 raise ValueError("Deployment configuration differs from approval")
             if "database_registration" in intent:
-                if self.database_profile is None or c.get("networkConfiguration") != payload.get("networkConfiguration"):
+                if self.database_profile is None:
                     raise ValueError("Database network or runtime registration changed")
+                self.database_profile.verify_network(intent, c.get("networkConfiguration"))
             task = c.get("taskDefinitionArn", "")
             if not re.fullmatch(r"arn:aws:ecs:" + self.settings.region + ":" + self.settings.account_id + r":task-definition/[A-Za-z0-9_-]+:[0-9]+", task):
                 raise ValueError("Deployment task definition changed")
@@ -185,6 +201,8 @@ class BuiltImageDeployment:
                 raise ValueError("Deployment endpoint is outside ECS Express")
             self.probe(url + payload["healthCheckPath"])
             result = {"target": "aws-ecs-express", "service": payload["serviceName"], "service_arn": intent["service_arn"],
+                    "owner_attempt": next((t["value"] for t in payload["tags"] if t["key"] == "sky-attempt"),
+                                          payload["serviceName"].removeprefix("sky-b-")[:16]),
                     "url": url, "health_url": url + payload["healthCheckPath"], "public": True,
                     "image": intent["image"], "image_digest": intent["image"].split("@")[1],
                     "task_definition_arn": task, "account": self.settings.account_id, "region": self.settings.region,

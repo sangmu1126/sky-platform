@@ -181,6 +181,40 @@ def test_secret_rotation_between_intent_and_observation_requires_review(postgres
         profile.verify(intent)
 
 
+def test_only_owned_ecs_managed_additional_group_is_accepted(postgres):
+    adapter, profile, request, result, _, allocator, _ = postgres
+    intent = adapter.prepare(request, result)
+    group = {
+        "GroupId": "sg-22222222",
+        "OwnerId": profile.binding.account_id,
+        "VpcId": allocator.settings.vpc_id,
+        "Description": "Security group for ECS service: " + intent["service_arn"],
+        "Tags": [{"Key": x["key"], "Value": x["value"]} for x in intent["payload"]["tags"]]
+        + [{"Key": "AmazonECSManaged", "Value": "true"}],
+        "IpPermissions": [
+            {
+                "IpProtocol": "tcp",
+                "FromPort": 8080,
+                "ToPort": 8080,
+                "UserIdGroupPairs": [{"UserId": profile.binding.account_id, "GroupId": "sg-33333333"}],
+            }
+        ],
+    }
+    allocator.clients["ec2"].describe_security_groups.return_value = {"SecurityGroups": [group]}
+    actual = {"subnets": list(reversed(profile.subnets)), "securityGroups": ["sg-22222222", profile.group]}
+    profile.verify_network(intent, actual)
+    group["Tags"] = [x for x in group["Tags"] if x["Key"] != "sky-operation"]
+    with pytest.raises(ValueError, match="not owned"):
+        profile.verify_network(intent, actual)
+
+
+def test_stateless_adapter_does_not_drop_declared_database_requirements(postgres):
+    adapter, _, request, result, *_ = postgres
+    adapter.database_profile = None
+    with pytest.raises(ValueError):
+        adapter.prepare(request, result)
+
+
 def test_actual_task_digest_mismatch_does_not_pass_definition_only_verification(postgres):
     adapter, _, request, result, *_ = postgres
     intent = adapter.prepare(request, result)

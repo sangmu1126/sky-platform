@@ -11,6 +11,11 @@ from adapters.state.service_volume import (
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "reconcile-build":
+        from interfaces.build_reconciliation import main as reconcile_build
+
+        reconcile_build(sys.argv[2:])
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "aws-backend":
         from interfaces.native_aws import main as run_native
 

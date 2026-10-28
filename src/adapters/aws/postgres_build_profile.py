@@ -61,6 +61,21 @@ def verify_postgres_task(ecs, intent, definition):
 
 
 class SharedPostgresBuildProfile:
+    DATABASE_ROLE = "shared_workload"
+    PLAN_PROFILE = "shared-postgres-v1"
+    PROTOCOL = "shared-postgres-deployment-v1"
+
+    @staticmethod
+    def registered_scope(allocator):
+        settings = allocator.settings
+        return (
+            settings.pool.account_id,
+            settings.pool.region,
+            settings.pool.instance_id,
+            settings.vpc_id,
+            settings.allowed_client_groups,
+        )
+
     ENVIRONMENT = frozenset(
         {"PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGSSLMODE", "PGSSLROOTCERT"}
     )
@@ -78,8 +93,9 @@ class SharedPostgresBuildProfile:
         iam,
         logs=None,
     ):
-        if not isinstance(binding, DatabaseBinding) or binding.role != "shared_workload":
+        if not isinstance(binding, DatabaseBinding) or binding.role != self.DATABASE_ROLE:
             raise ValueError("Existing shared workload binding required")
+        account, region, instance, vpc, groups = self.registered_scope(allocator)
         if (
             not re.fullmatch(r"[a-f0-9]{16}", job_id)
             or not re.fullmatch(r"sg-[a-f0-9]{8,17}", security_group)
@@ -87,19 +103,20 @@ class SharedPostgresBuildProfile:
                 rf"arn:aws:iam::{binding.account_id}:role/sky-workload-[A-Za-z0-9_-]+", execution_role
             )
             or not re.fullmatch(r"AROA[A-Z0-9]{17}", execution_role_id)
-            or security_group not in allocator.settings.allowed_client_groups
+            or security_group not in groups
             or not isinstance(subnets, tuple)
             or not 2 <= len(subnets) <= 3
             or len(set(subnets)) != len(subnets)
             or any(not re.fullmatch(r"subnet-[a-f0-9]{8,17}", value) for value in subnets)
-            or allocator.settings.pool.account_id != binding.account_id
-            or allocator.settings.pool.region != binding.region
-            or allocator.settings.pool.instance_id != binding.instance_id
+            or account != binding.account_id
+            or region != binding.region
+            or instance != binding.instance_id
         ):
             raise ValueError("Pinned workload execution registration required")
         self.allocator, self.binding, self.job = allocator, binding, job_id
         self.group, self.role, self.role_id, self.iam = security_group, execution_role, execution_role_id, iam
         self.subnets = subnets
+        self.vpc_id = vpc
         self.logs = logs
         self.log_group = f"/sky/workloads/{binding.organization_id}/{binding.application_id}/{job_id}"
 
@@ -209,7 +226,7 @@ class SharedPostgresBuildProfile:
                 self.binding.account_id,
                 self.binding.region,
             )
-            or plan.get("database_profile") != "shared-postgres-v1"
+            or plan.get("database_profile") not in {self.PLAN_PROFILE, "shared-postgres-v1"}
             or not isinstance(requirements, list)
             or set(requirements) != {"database"}
             or profile.get("database_engines") != ["postgresql"]
@@ -243,7 +260,7 @@ class SharedPostgresBuildProfile:
             or len(values) != len(self.subnets)
             or len({v.get("AvailabilityZone") for v in values}) < 2
             or any(
-                v.get("VpcId") != self.allocator.settings.vpc_id
+                v.get("VpcId") != self.vpc_id
                 or v.get("OwnerId") != self.binding.account_id
                 or v.get("State") != "available"
                 for v in values
@@ -288,7 +305,53 @@ class SharedPostgresBuildProfile:
             "binding": asdict(self.binding),
             "secret_ref": registration["secret_ref"],
             "secret_version": registration["secret_version"],
-            "protocol": "shared-postgres-deployment-v1",
+            "protocol": self.PROTOCOL,
             "tls_verified": True,
             "cross_database_access_denied": True,
         }
+
+    def verify_network(self, intent, actual):
+        if (
+            not isinstance(actual, dict)
+            or set(actual) != {"securityGroups", "subnets"}
+            or sorted(actual["subnets"]) != sorted(self.subnets)
+            or not isinstance(actual["securityGroups"], list)
+            or len(set(actual["securityGroups"])) != len(actual["securityGroups"])
+            or self.group not in actual["securityGroups"]
+        ):
+            raise ValueError("PostgreSQL deployment network differs from registration")
+        extra = set(actual["securityGroups"]) - {self.group}
+        if len(extra) != 1:
+            raise ValueError("One ECS-managed service security group is required")
+        ec2 = self.allocator.clients["ec2"]
+        described = ec2.describe_security_groups(GroupIds=list(extra))
+        groups = described.get("SecurityGroups", [])
+        if described.get("NextToken") or len(groups) != 1:
+            raise ValueError("Managed service group could not be audited")
+        group = groups[0]
+        tags = {t["Key"]: t["Value"] for t in group.get("Tags", [])}
+        expected = {t["key"]: t["value"] for t in intent["payload"]["tags"]}
+        if (
+            group.get("GroupId") not in extra
+            or group.get("OwnerId") != self.binding.account_id
+            or group.get("VpcId") != self.vpc_id
+            or group.get("Description") != "Security group for ECS service: " + intent["service_arn"]
+            or tags.get("AmazonECSManaged") != "true"
+            or any(tags.get(k) != v for k, v in expected.items())
+        ):
+            raise ValueError("Additional security group is not owned by this managed service")
+        rules = group.get("IpPermissions", [])
+        if len(rules) != 1:
+            raise ValueError("Managed service ingress changed")
+        rule = rules[0]
+        if (
+            rule.get("IpProtocol") != "tcp"
+            or rule.get("FromPort") != intent["payload"]["primaryContainer"]["containerPort"]
+            or rule.get("ToPort") != rule["FromPort"]
+            or rule.get("IpRanges")
+            or rule.get("Ipv6Ranges")
+            or rule.get("PrefixListIds")
+            or len(rule.get("UserIdGroupPairs", [])) != 1
+            or rule["UserIdGroupPairs"][0].get("UserId") != self.binding.account_id
+        ):
+            raise ValueError("Managed service ingress exceeds the registered HTTP profile")
