@@ -54,13 +54,17 @@ class DatabaseCutover:
         self._step("activate_target", lambda: self.traffic.activate(plan["source"], plan["target"]))
         self._step("probe_target", lambda: self.traffic.probe(plan["target"]))
         self._step("resume_target", lambda: self.traffic.resume(plan["target"]))
-        return {
+        receipt = {
             "plan_id": plan["plan_id"],
             "binding": plan["target"],
             "baseline": final,
             "single_writer": True,
             "source_retained": True,
         }
+        publish = getattr(self.traffic, "published_runtime", None)
+        if callable(publish):
+            receipt["active_runtime"] = self._step("publish_target_runtime", lambda: publish(plan["target"]))
+        return receipt
 
     def rollback(self, plan, final_baseline):
         self._validate(plan, final_baseline)

@@ -68,9 +68,10 @@ def execution_registration(registration, plan, now):
     baseline = registration["baseline"]
     if (
         not isinstance(baseline, dict)
-        or set(baseline) != _BASELINE
+        or not _BASELINE <= set(baseline) <= _BASELINE | {"sequences", "source_snapshot_plan_id"}
         or any(baseline[key] != plan[key] for key in ("plan_id", "source", "target"))
-        or baseline["verified_scope"] != "locked_table_snapshot_copy"
+        or baseline["verified_scope"]
+        not in {"locked_table_snapshot_copy", "revalidated_destination_snapshot"}
         or baseline["source_retained"] is not True
         or baseline["routing_changed"] is not False
         or baseline["ready_to_cutover"] is not False
@@ -82,6 +83,12 @@ def execution_registration(registration, plan, now):
     ):
         raise ValueError("Verified initial copy baseline required")
     names = set()
+    original_plan = baseline.get("source_snapshot_plan_id")
+    if (baseline["verified_scope"] == "revalidated_destination_snapshot" and original_plan is None) or (
+        original_plan is not None
+        and (not isinstance(original_plan, str) or not re.fullmatch(r"DBP-[a-f0-9]{16}", original_plan))
+    ):
+        raise ValueError("Original copy plan identity required for a revalidated baseline")
     for table in baseline["tables"]:
         if (
             not isinstance(table, dict)
@@ -96,6 +103,23 @@ def execution_registration(registration, plan, now):
         ):
             raise ValueError("Invalid copy table evidence")
         names.add(table["table"])
+    sequences = baseline.get("sequences", [])
+    if not isinstance(sequences, list) or len(sequences) > 100:
+        raise ValueError("Bounded identity sequence baseline required")
+    sequence_keys = set()
+    for sequence in sequences:
+        if (
+            not isinstance(sequence, dict)
+            or set(sequence) != {"table", "column", "next_value"}
+            or sequence.get("table") not in names
+            or not isinstance(sequence.get("column"), str)
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", sequence["column"])
+            or type(sequence.get("next_value")) is not int
+            or not 1 <= sequence["next_value"] < 2**63
+            or (sequence["table"], sequence["column"]) in sequence_keys
+        ):
+            raise ValueError("Invalid identity sequence baseline")
+        sequence_keys.add((sequence["table"], sequence["column"]))
     encoded = json.dumps(registration, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     if len(encoded) > 65536:
         raise ValueError("Cutover registration too large")
@@ -220,7 +244,18 @@ class PromotionCutoverWorker:
                 receipt = flow.promote(plan, registration["baseline"])
                 if (
                     not isinstance(receipt, dict)
-                    or set(receipt) != {"plan_id", "binding", "baseline", "single_writer", "source_retained"}
+                    or set(receipt)
+                    not in (
+                        {"plan_id", "binding", "baseline", "single_writer", "source_retained"},
+                        {
+                            "plan_id",
+                            "binding",
+                            "baseline",
+                            "single_writer",
+                            "source_retained",
+                            "active_runtime",
+                        },
+                    )
                     or receipt["plan_id"] != plan["plan_id"]
                     or receipt["binding"] != plan["target"]
                     or receipt["single_writer"] is not True
@@ -235,6 +270,19 @@ class PromotionCutoverWorker:
                 execution_registration(checked, plan, self.clock())
                 guard()
                 snapshot = DeploymentMetadataWriter(self.records).snapshot(principal, approval["job_id"])
+                active = receipt.get("active_runtime")
+                if active is not None and (
+                    not isinstance(active, dict)
+                    or active.get("database", {}).get("binding") != plan["target"]
+                    or active.get("image_digest") != snapshot.record["result"].get("image_digest")
+                    or active.get("image_identity", {}).get("status") != "passed"
+                    or any(
+                        active.get("verification", {}).get(key) != "verified"
+                        for key in ("http", "image", "database_authentication", "stable_route")
+                    )
+                    or active.get("traffic_strategy") != "blue_green"
+                ):
+                    raise ValueError("Published runtime must verify the same image and target database")
                 projection = {
                     "operation_id": operation_id,
                     "registration_digest": operation.command["registration_digest"],
@@ -248,7 +296,11 @@ class PromotionCutoverWorker:
                     {
                         "workload_database_binding": plan["target"],
                         "database_promotion": projection,
-                        "result": {**snapshot.record["result"], "database_promotion": projection},
+                        "result": {
+                            **(active if active is not None else snapshot.record["result"]),
+                            "database_promotion": projection,
+                        },
+                        "promotion_automation_consent": None,
                     },
                 )
                 revision, metadata_written = saved.revision, True

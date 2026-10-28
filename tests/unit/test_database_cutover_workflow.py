@@ -22,6 +22,10 @@ pytest_plugins = ["tests.unit.test_operating_review"]
 @pytest.fixture
 def flow(operating_review_setup):
     records, policy, reviews = operating_review_setup
+    records.job["result"]["image_digest"] = "sha256:" + "a" * 64
+    from application.operating_review import deployment_observation_binding
+
+    records.health[-1]["deployment_binding"] = deployment_observation_binding(records.job)
     proposal = reviews.review(principal(), ID, policy, now=NOW)
     approved = reviews.approve(principal(), ID, proposal["proposal_id"], policy, now=NOW)
     plan = approved["plan"]
@@ -228,3 +232,50 @@ def test_revision_change_during_cutover_stops_before_next_external_step(flow):
     assert run(flow)["status"] == "needs_attention"
     assert traffic.closed
     operations.observe_external.assert_not_called()
+
+
+def test_verified_active_runtime_replaces_old_service_and_revokes_automation(flow):
+    _, _, records, _, _, _, traffic, _, operation, _ = flow
+    target = operation.command["approval"]["proposal"]["plan"]["target"]
+    digest = "sha256:" + "a" * 64
+    records.job["result"]["image_digest"] = digest
+    active = {
+        "service": "new-green",
+        "url": "https://fixed",
+        "image_digest": digest,
+        "database": {"binding": target},
+        "image_identity": {"status": "passed"},
+        "traffic_strategy": "blue_green",
+        "verification": {k: "verified" for k in ("http", "image", "database_authentication", "stable_route")},
+    }
+    traffic.published_runtime = lambda binding: deepcopy(active)
+    assert run(flow)["status"] == "succeeded"
+    assert records.job["result"]["service"] == "new-green"
+    assert records.job["result"]["url"] == "https://fixed"
+    assert records.job["promotion_automation_consent"] is None
+
+
+@pytest.mark.parametrize("fault", ["image", "database", "http", "stable_route"])
+def test_unverified_runtime_never_replaces_deployment_metadata(flow, fault):
+    _, _, records, _, _, _, traffic, _, operation, _ = flow
+    target = operation.command["approval"]["proposal"]["plan"]["target"]
+    digest = "sha256:" + "a" * 64
+    records.job["result"]["image_digest"] = digest
+    active = {
+        "service": "new-green",
+        "url": "https://fixed",
+        "image_digest": digest,
+        "database": {"binding": target},
+        "image_identity": {"status": "passed"},
+        "traffic_strategy": "blue_green",
+        "verification": {k: "verified" for k in ("http", "image", "database_authentication", "stable_route")},
+    }
+    if fault == "image":
+        active["image_digest"] = "sha256:" + "b" * 64
+    elif fault == "database":
+        active["database"]["binding"] = operation.command["approval"]["proposal"]["plan"]["source"]
+    else:
+        active["verification"][fault] = "not_verified"
+    traffic.published_runtime = lambda _: active
+    assert run(flow)["status"] == "needs_attention"
+    assert records.job["result"]["service"] == "owned-service"
