@@ -33,13 +33,41 @@ def run_build_consumer(args):
     queue_url = os.environ.get("SKY_JOB_QUEUE_URL", "")
     SqsOperationQueue(queue_url, region=settings.region, account_id=settings.account_id, client=object())
     PostgresBuildExecutionStore(None, workspace=workspace)
-    protection = EcsTaskProtection()
-    token = InstallationToken(
-        os.environ.get("SKY_GITHUB_APP_ID", ""),
-        os.environ.get("SKY_GITHUB_INSTALLATION_ID", ""),
-        os.environ.get("SKY_GITHUB_APP_PRIVATE_KEY", ""),
-        settings.repository,
-    )
+    local_operator = getattr(args, "operator_github_session", False)
+    if local_operator and (
+        os.environ.get("ECS_CONTAINER_METADATA_URI_V4") or os.environ.get("ECS_CONTAINER_METADATA_URI")
+    ):
+        raise ValueError("Operator GitHub sessions cannot be used by hosted workers")
+    if local_operator:
+
+        class LocalProcessProtection:
+            """No ECS task exists; the DB lease and SQS visibility still apply."""
+
+            def set(self, enabled):
+                if type(enabled) is not bool:
+                    raise ValueError("Explicit local process state required")
+
+        protection = LocalProcessProtection()
+    else:
+        protection = EcsTaskProtection()
+    if getattr(args, "operator_github_session", False):
+        from adapters.github.operator_session import OperatorGitHubSession
+
+        token = OperatorGitHubSession()
+    else:
+        token = InstallationToken(
+            os.environ.get("SKY_GITHUB_APP_ID", ""),
+            os.environ.get("SKY_GITHUB_INSTALLATION_ID", ""),
+            os.environ.get("SKY_GITHUB_APP_PRIVATE_KEY", ""),
+            settings.repository,
+        )
+    database_profile = None
+    if getattr(args, "postgres_build_config", None):
+        from interfaces.postgres_build import load_postgres_build_configuration
+
+        database_profile = load_postgres_build_configuration(
+            args.postgres_build_config, args.pool_config, settings, check_only=args.check_config
+        )
     if args.check_config:
         print("Build consumer configuration valid; no AWS/DB/GitHub calls", flush=True)
         return
@@ -51,7 +79,11 @@ def run_build_consumer(args):
     artifacts = S3ArtifactSettings(settings.bucket, settings.region, settings.account_id)
     from adapters.aws.built_deployment import BuiltImageDeployment
 
-    deployer = BuiltImageDeployment(settings) if getattr(args, "deploy_built_image", False) else None
+    deployer = (
+        BuiltImageDeployment(settings, database_profile=database_profile)
+        if getattr(args, "deploy_built_image", False)
+        else None
+    )
     consumer = BuildConsumer(
         store,
         SqsOperationQueue(queue_url, region=settings.region, account_id=settings.account_id),

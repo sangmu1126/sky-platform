@@ -7,8 +7,13 @@ from ports.remote_builds import digest, validate_request
 
 
 class BuiltImageDeployment:
-    def __init__(self, settings, *, ecs=None, stacks=None, identity=None, probe=None):
+    def __init__(self, settings, *, ecs=None, stacks=None, identity=None, probe=None, database_profile=None):
         self.settings = settings
+        if database_profile is not None:
+            from adapters.aws.postgres_build_profile import SharedPostgresBuildProfile
+            if not isinstance(database_profile, SharedPostgresBuildProfile):
+                raise TypeError("Registered shared PostgreSQL build profile required")
+        self.database_profile = database_profile
         if any(client is None for client in (ecs, stacks, identity)):
             import boto3
             from botocore.config import Config
@@ -31,7 +36,7 @@ class BuiltImageDeployment:
         artifact, plan = validate_request(request)
         if (request["account_id"], request["region"]) != (self.settings.account_id, self.settings.region):
             raise ValueError("Deployment account scope changed")
-        if (plan.get("required_env") or plan.get("replicas") != 1
+        if ((plan.get("required_env") and self.database_profile is None) or plan.get("replicas") != 1
                 or type(plan.get("port")) is not int or not 1024 <= plan["port"] <= 65535
                 or not isinstance(plan.get("health_path"), str)
                 or len(plan["health_path"]) > 200
@@ -42,6 +47,13 @@ class BuiltImageDeployment:
         if type(result.get("run_id")) is not int or result["run_id"] < 1:
             raise ValueError("Verified workflow run identity required")
         validate_result(result, request, result["run_id"])
+        profile = plan.get("infrastructure_profile", {})
+        if self.database_profile is None and (
+            plan.get("database_profile") is not None or not isinstance(profile, dict)
+            or profile.get("requirements") or profile.get("database_engines")
+        ):
+            raise ValueError("Stateless deployment cannot discard infrastructure requirements")
+        database = self.database_profile.prepare(request, result, plan) if self.database_profile else None
         try:
             if self.identity.get_caller_identity()["Account"] != self.settings.account_id:
                 raise ValueError("Deployment caller account changed")
@@ -70,6 +82,13 @@ class BuiltImageDeployment:
                                         "environment": [{"name": "PORT", "value": str(plan["port"])}]},
                    "scalingTarget": {"minTaskCount": 1, "maxTaskCount": 1},
                    "tags": [{"key": k, "value": v} for k, v in tags.items()]}
+        if database is not None:
+            selected = self.database_profile.payload(database)
+            payload["executionRoleArn"] = selected["executionRoleArn"]
+            payload["networkConfiguration"] = selected["networkConfiguration"]
+            payload["primaryContainer"]["environment"].extend(selected["environment"])
+            payload["primaryContainer"]["secrets"] = selected["secrets"]
+            payload["primaryContainer"]["awsLogsConfiguration"] = selected["awsLogsConfiguration"]
         # No create retries: Express has no clientToken. An uncertain request is parked by the caller.
         try:
             self.ecs.describe_express_gateway_service(serviceArn=arn, include=["TAGS"])
@@ -80,8 +99,11 @@ class BuiltImageDeployment:
             raise OSError("Deployment identity inspection unavailable") from None
         else:
             raise ValueError("Deployment identity already exists; reconciliation required")
-        return {"kind": "ecs_deployment", "service_arn": arn, "payload": payload,
-                "request_digest": digest(request), "image": result["image"]}
+        intent = {"kind": "ecs_deployment", "service_arn": arn, "payload": payload,
+                  "request_digest": digest(request), "image": result["image"]}
+        if database is not None:
+            intent["database_registration"] = database
+        return intent
 
     def create(self, intent):
         from botocore.exceptions import BotoCoreError, ClientError
@@ -131,11 +153,15 @@ class BuiltImageDeployment:
             c, payload = configs[0], intent["payload"]
             container = c.get("primaryContainer", {})
             if (any(container.get(k) != v for k, v in payload["primaryContainer"].items())
-                    or container.get("secrets") or container.get("command") or container.get("repositoryCredentials")
+                    or container.get("secrets", []) != payload["primaryContainer"].get("secrets", [])
+                    or container.get("command") or container.get("repositoryCredentials")
                     or any(c.get(k) != payload[k] for k in ("executionRoleArn", "healthCheckPath"))
                     or any(c.get("scalingTarget", {}).get(k) != v for k, v in payload["scalingTarget"].items())
                     or c.get("taskRoleArn")):
                 raise ValueError("Deployment configuration differs from approval")
+            if "database_registration" in intent:
+                if self.database_profile is None or c.get("networkConfiguration") != payload.get("networkConfiguration"):
+                    raise ValueError("Database network or runtime registration changed")
             task = c.get("taskDefinitionArn", "")
             if not re.fullmatch(r"arn:aws:ecs:" + self.settings.region + ":" + self.settings.account_id + r":task-definition/[A-Za-z0-9_-]+:[0-9]+", task):
                 raise ValueError("Deployment task definition changed")
@@ -158,10 +184,16 @@ class BuiltImageDeployment:
                     or parsed.path or parsed.query or parsed.fragment):
                 raise ValueError("Deployment endpoint is outside ECS Express")
             self.probe(url + payload["healthCheckPath"])
-            return {"target": "aws-ecs-express", "service": payload["serviceName"], "service_arn": intent["service_arn"],
+            result = {"target": "aws-ecs-express", "service": payload["serviceName"], "service_arn": intent["service_arn"],
                     "url": url, "health_url": url + payload["healthCheckPath"], "public": True,
                     "image": intent["image"], "image_digest": intent["image"].split("@")[1],
                     "task_definition_arn": task, "account": self.settings.account_id, "region": self.settings.region,
                     "verification": {"http": "verified", "image": "verified"}}
+            if "database_registration" in intent:
+                result["database"] = self.database_profile.verify(intent)
+                from adapters.aws.postgres_build_profile import verify_postgres_task
+                result["image_identity"] = verify_postgres_task(self.ecs, intent, task)
+                result["verification"].update(database_authentication="verified", application_data_path="not_verified")
+            return result
         except (BotoCoreError, ClientError):
             raise OSError("Deployment observation unavailable") from None

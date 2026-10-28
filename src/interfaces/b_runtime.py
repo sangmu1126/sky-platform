@@ -179,6 +179,14 @@ def main(argv):
     worker.add_argument("--attempt-id")
     worker.add_argument("--check-config", action="store_true", help="Validate settings without AWS/DB calls")
     worker.add_argument(
+        "--operator-github-session",
+        action="store_true",
+        help="Explicit local operator dispatch; never a hosted worker credential",
+    )
+    worker.add_argument(
+        "--postgres-build-config", help="Operator registration for one existing shared PostgreSQL deployment"
+    )
+    worker.add_argument(
         "--once", action="store_true", help="Process one bounded batch or queue delivery and exit"
     )
     worker.add_argument("--interval", type=int, default=5)
@@ -539,6 +547,10 @@ def main(argv):
         parser.error("--interval must be between 1 and 300 seconds")
     if args.deploy_built_image and args.worker_mode != "build":
         parser.error("--deploy-built-image requires --mode build")
+    if (args.operator_github_session or args.postgres_build_config) and args.worker_mode != "build":
+        parser.error("Build authentication/profile options require --mode build")
+    if args.postgres_build_config and (not args.deploy_built_image or not args.pool_config):
+        parser.error("PostgreSQL build deployment requires --deploy-built-image and --pool-config")
     if args.worker_mode != "dedicated-database-admit" and any(
         getattr(args, name) is not None
         for name in (

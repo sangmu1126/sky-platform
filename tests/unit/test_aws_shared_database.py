@@ -143,6 +143,34 @@ def test_valid_allocation_creates_and_reuses_app_secret_and_returns_only_referen
     connect.assert_not_called()
 
 
+def test_read_only_inspection_never_creates_missing_credentials(aws):
+    adapter, request, clients, *_ = aws
+    with pytest.raises(PoolAllocationError, match="inspection cannot allocate"):
+        adapter._app_credentials(request, create=False)
+    clients["secretsmanager"].create_secret.assert_not_called()
+
+
+def test_existing_inspection_verifies_login_without_sql_or_secret_mutation(aws):
+    adapter, request, clients, records, *_ = aws
+    credentials = adapter._app_credentials(request)
+    records[credentials.secret_ref][0]["VersionIdsToStages"] = {"a" * 32: ["AWSCURRENT"]}
+    clients["secretsmanager"].create_secret.reset_mock()
+    allocator = Mock()
+    allocator.existing_allocation.return_value = request
+    db = MagicMock()
+    allocator.connect_admin.return_value.__enter__ = Mock(return_value=db)
+    allocator.connect_admin.return_value.__exit__ = Mock(return_value=None)
+    with patch.object(adapter, "_allocator", return_value=allocator):
+        result = adapter.inspect_allocation(request.binding())
+    assert result["tls_verified"] and result["cross_database_access_denied"]
+    assert result["secret_version"] == "a" * 32
+    assert credentials.password not in json.dumps(result)
+    db.execute.assert_called_once_with("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+    allocator.allocate.assert_not_called()
+    allocator.initialize.assert_not_called()
+    clients["secretsmanager"].create_secret.assert_not_called()
+
+
 def test_created_secret_metadata_visibility_lag_retries_only_reads(aws):
     adapter, request, clients, records, *_ = aws
     client = clients["secretsmanager"]

@@ -139,7 +139,19 @@ def build(directory, output):
     )
     image = "sky-build:" + request["build_id"]
     with SourceArtifactService(Objects()).restore(principal, artifact) as project:
-        ImageBuilder(command, lambda *_: None).build(project, plan, image, platform="linux/amd64")
+        ca = None
+        if raw_plan.get("database_profile") == "shared-postgres-v1":
+            profile = raw_plan.get("infrastructure_profile", {})
+            if profile.get("requirements") != ["database"] or profile.get("database_engines") != [
+                "postgresql"
+            ]:
+                raise ValueError("Only a prepared PostgreSQL source may request the shared DB build profile")
+            ca = Path(__file__).resolve().parents[1] / "src/assets/infra/rds-global-bundle.pem"
+        elif raw_plan.get("database_profile") is not None:
+            raise ValueError("Unsupported remote build database profile")
+        ImageBuilder(command, lambda *_: None).build(
+            project, plan, image, platform="linux/amd64", extra_ca_bundle=ca
+        )
     output.mkdir(parents=True, exist_ok=True)
     command(["docker", "save", "-o", str(output / "image.tar"), image])
     image_id = command(["docker", "image", "inspect", "--format", "{{.Id}}", image]).strip()

@@ -305,7 +305,7 @@ class AwsSharedDatabaseAllocator:
             raise PoolAllocationError("Invalid pool admin credentials")
         return username, password
 
-    def _app_credentials(self, request):
+    def _app_credentials(self, request, *, create=True):
         settings, pool = self.settings, self.settings.pool
         client = self.clients["secretsmanager"]
         name = f"sky-pool/{pool.id}/{request.id}"
@@ -323,6 +323,8 @@ class AwsSharedDatabaseAllocator:
         except Exception as error:
             if _error_code(error) != "ResourceNotFoundException":
                 raise
+            if not create:
+                raise PoolAllocationError("Existing app secret is required; inspection cannot allocate") from None
             value = {
                 "username": request.login_role,
                 "password": secrets.token_urlsafe(36),
@@ -383,6 +385,34 @@ class AwsSharedDatabaseAllocator:
         ):
             raise PoolAllocationError("App credential identity differs from its allocation")
         return AllocationCredentials(arn, value["password"])
+
+    def inspect_allocation(self, binding):
+        """Verify an existing allocation and TLS login without creating or rotating it."""
+        from dataclasses import asdict
+
+        try:
+            endpoint = self._audit()
+            allocator = self._allocator(endpoint, self._admin_credentials(endpoint[2]))
+            request = allocator.existing_allocation(binding)
+            credentials = self._app_credentials(request, create=False)
+            # _verify performs only SELECTs and checks cross-database privileges.
+            with allocator.connect_admin(self.settings.pool.control_database) as db:
+                db.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                allocator._verify(db, request, credentials)
+            metadata = self.clients["secretsmanager"].describe_secret(SecretId=credentials.secret_ref)
+            current = [key for key, stages in metadata.get("VersionIdsToStages", {}).items() if "AWSCURRENT" in stages]
+            if len(current) != 1 or not re.fullmatch(r"[A-Za-z0-9-]{32,64}", current[0]):
+                raise PoolAllocationError("One current credential version is required")
+            return {"binding": asdict(binding), "secret_ref": credentials.secret_ref,
+                    "secret_version": current[0], "login_role": request.login_role,
+                    "host": endpoint[0], "port": endpoint[1],
+                    "kms_key_arn": self.settings.app_secret_kms_arn,
+                    "resource_id": self.settings.resource_id, "tls_verified": True,
+                    "cross_database_access_denied": True}
+        except PoolAllocationError:
+            raise
+        except Exception:  # noqa: BLE001 -- never expose credentials or SQL diagnostics
+            raise PoolAllocationError("Existing allocation verification unavailable") from None
 
     def _connection(self, host, port, database, username, password):
         connection = self.connect(

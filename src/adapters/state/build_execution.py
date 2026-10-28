@@ -38,6 +38,20 @@ class PostgresBuildExecutionStore(PostgresOperationStore):
             if operation.external_pending or operation.external_receipt != result:
                 raise ValueError("Observe the AWS deployment before completing")
             job = self._job(connection, operation)
+            database = result.get("database")
+            if database is not None:
+                from domain.database import DatabaseBinding
+                binding = DatabaseBinding(**database["binding"])
+                if (database.get("protocol") != "shared-postgres-deployment-v1"
+                        or database.get("tls_verified") is not True
+                        or database.get("cross_database_access_denied") is not True
+                        or result.get("verification", {}).get("database_authentication") != "verified"
+                        or result.get("image_identity", {}).get("status") != "passed"
+                        or (binding.organization_id, binding.application_id, binding.account_id, binding.region, binding.role)
+                        != (operation.command["organization_id"], operation.application_id,
+                            operation.command["account_id"], operation.command["region"], "shared_workload")):
+                    raise ValueError("Verified app-owned PostgreSQL deployment binding required")
+                job["workload_database_binding"] = database["binding"]
             job.update(status="succeeded", deployment_state="deployed", result=result,
                        build_result=checkpoint["build_result"])
             connection.execute("""UPDATE sky_state.metadata_records SET document=%s,
