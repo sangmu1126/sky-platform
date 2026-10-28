@@ -4,7 +4,8 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
-RUN pip install --no-cache-dir '.[state-postgres]' \
+RUN python -m pip install --no-cache-dir --upgrade 'pip>=26.2,<27' \
+    && pip install --no-cache-dir '.[state-postgres]' \
     && mkdir -p /etc/ssl/certs \
     && cp /app/src/assets/infra/rds-global-bundle.pem /etc/ssl/certs/sky-rds-global-bundle.pem
 USER 10001:10001

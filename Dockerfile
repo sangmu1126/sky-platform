@@ -14,7 +14,8 @@ RUN ln -s /usr/local/aws-cli/v2/current/bin/aws /usr/local/bin/aws
 WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
-RUN pip install --no-cache-dir '.[state-postgres]' \
+RUN python -m pip install --no-cache-dir --upgrade 'pip>=26.2,<27' \
+    && pip install --no-cache-dir '.[state-postgres]' \
     && install -m 0644 /app/src/assets/infra/rds-global-bundle.pem /etc/ssl/certs/sky-rds-global-bundle.pem
 # Root is needed for the host Docker socket in the internal A-phase deployment.
 # The EC2 host is dedicated to Sky; do not expose this service unrestricted.
@@ -30,7 +31,8 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 AWS_PAGER=""
 WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
-RUN pip install --no-cache-dir '.[state-postgres]' \
+RUN python -m pip install --no-cache-dir --upgrade 'pip>=26.2,<27' \
+    && pip install --no-cache-dir '.[state-postgres]' \
     && install -m 0644 /app/src/assets/infra/rds-global-bundle.pem /etc/ssl/certs/sky-rds-global-bundle.pem
 USER 65534:65534
 EXPOSE 8080
@@ -43,7 +45,8 @@ CMD ["api", "--host", "0.0.0.0", "--port", "8080", "--auth-mode", "alb", "--enab
 # Linux regression checks; never runs the live AWS/OpenAI test suite.
 FROM runtime AS test
 COPY tests ./tests
-RUN pip install --no-cache-dir '.[dev]'
+RUN python -m pip install --no-cache-dir --upgrade 'pip>=26.2,<27' \
+    && pip install --no-cache-dir '.[dev]'
 ENTRYPOINT ["pytest"]
 
 # Keep a plain docker build pointed at the service image, not the test image.
