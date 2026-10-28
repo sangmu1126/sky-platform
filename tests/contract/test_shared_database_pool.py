@@ -67,6 +67,58 @@ def credentials(request):
     return AllocationCredentials(reference, "disposable-pool-password-for-test")
 
 
+def test_timeout_defaults_are_not_misrepresented_as_hostile_tenant_isolation(database):
+    adapter, _admin, application = database
+    allocation = PoolAllocationRequest(adapter.pool, "team", "timeout-test")
+    adapter.allocate(allocation, credentials(allocation))
+    with application(allocation.database_name, allocation.login_role, credentials(allocation).password) as db:
+        assert db.execute("SHOW statement_timeout").fetchone() == ("30s",)
+        assert db.execute("SHOW lock_timeout").fetchone() == ("5s",)
+        assert db.execute("SHOW idle_in_transaction_session_timeout").fetchone() == ("1min",)
+        db.execute("SET statement_timeout=0")
+        assert db.execute("SHOW statement_timeout").fetchone() == ("0",)
+        # Record the real bypass capability rather than treating role defaults
+        # as enforced protection against an adversarial app.
+
+
+def test_bounded_busy_neighbor_preserves_other_app_reads_and_acl(database):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    adapter, _admin, application = database
+    first = PoolAllocationRequest(adapter.pool, "team-a", "busy-app")
+    second = PoolAllocationRequest(adapter.pool, "team-b", "neighbor")
+    for allocation in (first, second):
+        adapter.allocate(allocation, credentials(allocation))
+    with application(second.database_name, second.login_role, credentials(second).password) as db:
+        db.execute("CREATE TABLE neighbor_data(id integer PRIMARY KEY)")
+        db.execute("INSERT INTO neighbor_data VALUES(1)")
+    started_query = threading.Event()
+
+    def busy():
+        with application(first.database_name, first.login_role, credentials(first).password) as db:
+            db.execute("SET statement_timeout='150ms'")
+            started_query.set()
+            with pytest.raises(psycopg.errors.QueryCanceled):
+                db.execute("SELECT pg_sleep(2)")
+
+    samples = []
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(busy)
+        assert started_query.wait(timeout=5)
+        for _ in range(3):
+            started = time.monotonic()
+            with application(second.database_name, second.login_role, credentials(second).password) as db:
+                assert db.execute("SELECT id FROM neighbor_data").fetchone() == (1,)
+            samples.append(time.monotonic() - started)
+        future.result(timeout=5)
+    with pytest.raises(psycopg.OperationalError):
+        application(second.database_name, first.login_role, credentials(first).password)
+    # Functional check under a bounded sleep only; no CPU/IO isolation assertion.
+    assert len(samples) == 3 and all(sample >= 0 for sample in samples)
+
+
 def test_two_apps_can_write_own_tables_but_cannot_connect_to_each_other(database):
     adapter, admin, application = database
     first = PoolAllocationRequest(adapter.pool, "team-a", "game")

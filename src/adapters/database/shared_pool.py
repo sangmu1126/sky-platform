@@ -270,6 +270,14 @@ class PostgresSharedPool:
                 connection.execute(
                     sql.SQL("COMMENT ON ROLE {} IS {}").format(role, sql.Literal(request.ownership_marker))
                 )
+                # Defaults reduce accidental expensive/abandoned statements.
+                # These USERSET settings are not a hostile-tenant boundary: an
+                # app can override them. Untrusted tenants need stronger isolation.
+                for setting, value in (("statement_timeout", "30s"),
+                                       ("lock_timeout", "5s"),
+                                       ("idle_in_transaction_session_timeout", "60s")):
+                    connection.execute(sql.SQL("ALTER ROLE {} SET {} TO {}").format(
+                        role, sql.Identifier(setting), sql.Literal(value)))
         elif marker[0] != request.ownership_marker:
             raise PoolAllocationConflict("App role is not owned by this allocation")
         self._verify_role(connection, request)
