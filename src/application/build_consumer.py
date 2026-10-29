@@ -192,7 +192,17 @@ class BuildConsumer:
                                     self.queue.delete(delivery)
                                     return "failed"
                                 result = validate_result(self.objects.result(request), request, run["run_id"])
-                                self.verifier.verify(request, result)
+                                verification = self.verifier.verify(request, result)
+                                if (
+                                    isinstance(verification, dict)
+                                    and verification.get("measured_build_usage") is not None
+                                ):
+                                    usage = verification["measured_build_usage"]
+                                    self.store.settle_external_usage(
+                                        lease,
+                                        {"requests": 1, "build_seconds": usage["build_seconds"]},
+                                        digest(usage),
+                                    )
                                 guard()
                                 checkpoint.update(
                                     stage="build_ready",

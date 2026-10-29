@@ -105,13 +105,17 @@ class SignedEcrBuildVerifier(EcrBuildVerifier):
             run_id=result["run_id"],
             now=self.clock(),
         )
-        if self.require_inspection and "security" not in bundle["payload"]["statement"]:
+        if self.require_inspection and (
+            "security" not in bundle["payload"]["statement"]
+            or "usage" not in bundle["payload"]["statement"]["security"]
+        ):
             raise ValueError("Hosted image is missing signed security inspection")
         key = self.key_observer.observe(guard=lambda: None)
         if key.get("key_liveness_checked") is not True or key.get("key_arn") != self.identity.key_arn:
             raise ValueError("Build signing key liveness is not verified")
         return {
             **proof,
+            "measured_build_usage": bundle["payload"]["statement"].get("security", {}).get("usage"),
             "current_registry_manifest_checked": True,
             "key_liveness_checked": True,
             "image_safety_verified": False,

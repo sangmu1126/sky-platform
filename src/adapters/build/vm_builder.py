@@ -1,6 +1,7 @@
 """Credential-free execution orchestration; cloud credentials stay in the controller."""
 
 import json
+import math
 import hashlib
 from dataclasses import asdict
 import os
@@ -136,6 +137,16 @@ class IsolatedVmBuilder:
                         }
                     )
                 )
+                (output / "usage.json").write_bytes(
+                    canonical(
+                        {
+                            "build_seconds": receipt["observed_seconds"],
+                            "source": "trusted_controller_elapsed_upper",
+                            "cost_measured": False,
+                            "reservation_released": False,
+                        }
+                    )
+                )
                 return result
 
     @contextmanager
@@ -168,6 +179,7 @@ class IsolatedVmBuilder:
             stdout=subprocess.DEVNULL,
         )
         self.guard()
+        started = time.monotonic()
         try:
             receipt = self.sandbox.launch(job, key.with_suffix(".pub").read_text())
             self.audit({"stage": "guest_launched", **receipt})
@@ -220,6 +232,7 @@ class IsolatedVmBuilder:
                             raise OSError("Termination remains pending")
                         time.sleep(2)
                     self.sandbox.finalize(receipt)
+                    receipt["observed_seconds"] = max(1, math.ceil(time.monotonic() - started))
                     self.audit({"stage": "guest_terminated", "job_id": job, "confirmed": True})
                 except Exception:
                     self.audit(

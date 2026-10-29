@@ -229,3 +229,23 @@ def test_persistent_resource_commitment_cannot_reset_at_next_hour(database, dime
         )
     with database() as db, pytest.raises(EffectBudgetExceeded):
         reserve(db, budget, workspace, "new", user="another-user")
+
+
+def test_partial_measurement_never_records_unknown_cost_as_zero(database):
+    budget, workspace = policy(), uuid4().hex
+    with database() as db:
+        reserve(db, budget, workspace, "partial")
+    with database() as db:
+        assert budget.record_usage(
+            db,
+            workspace=workspace,
+            effect_key="partial",
+            actual={"requests": 1, "build_seconds": 5},
+            evidence_digest="f" * 64,
+        )
+    with database() as db:
+        reserved, actual = db.execute(
+            "SELECT r.reserved,s.actual FROM sky_state.effect_budget_reservations r JOIN sky_state.effect_budget_settlements s USING(workspace,effect_key) WHERE workspace=%s",
+            (workspace,),
+        ).fetchone()
+    assert reserved["microusd"] == 100 and "microusd" not in actual

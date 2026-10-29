@@ -72,7 +72,16 @@ def test_signed_inspection_cannot_be_detached_from_the_image(context):
     inspected["archive_sha256"] = context.statement["archive_digest"]
     materials = dict.fromkeys(("base_archive_sha256", "context_sha256", "profile_sha256"), "a" * 64)
     materials.update(build_vm_job=str(uuid4()), scanner_vm_job=str(uuid4()))
-    context.statement["security"] = {"report": inspected, "materials": materials}
+    context.statement["security"] = {
+        "report": inspected,
+        "materials": materials,
+        "usage": {
+            "build_seconds": 1,
+            "source": "trusted_controller_elapsed_upper",
+            "cost_measured": False,
+            "reservation_released": False,
+        },
+    }
     verifier, result, objects, _, _ = setup(context)
     verifier.require_inspection = True
     assert verifier.verify(context.request, result)["signature_verified"]

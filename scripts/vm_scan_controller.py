@@ -26,7 +26,7 @@ def scan_in_vm(profile, session, guard, audit, output):
         (root / "scan-settings.json").write_bytes(
             canonical({"archive_sha256": sha(output / "image.tar"), "database_sha256": expected})
         )
-        with controller.guest(job, root) as (guest, _):
+        with controller.guest(job, root) as (guest, receipt):
             for source, name in (
                 (scanner, "trivy"),
                 (database, "scanner-db.tar"),
@@ -40,6 +40,9 @@ def scan_in_vm(profile, session, guard, audit, output):
             guest.download("scan.json", output / "scan.json", limit=8192)
             guest.download("sbom.json", output / "sbom.json", limit=1024 * 1024)
         # Confirmed scanner teardown occurs before any result can authorize publication.
+    usage = checked_document(output / "usage.json", 8192)
+    usage["build_seconds"] += receipt["observed_seconds"]
+    (output / "usage.json").write_bytes(canonical(usage))
     materials = checked_document(output / "materials.json", 8192)
     materials["scanner_vm_job"] = job
     (output / "materials.json").write_bytes(canonical(materials))

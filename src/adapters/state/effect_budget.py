@@ -3,8 +3,9 @@
 Operator policy supplies identical limits for every replica. Unknown outcomes keep
 their entire reservation. No elapsed-time refund, caller usage settlement or
 price inference is allowed. Reservations and external intent share a transaction.
-Limits govern the hour of admission, not ongoing resource charges in later hours.
-This cannot replace active-resource budgets, provider billing or cost settlement.
+Rate dimensions govern the admission window; retained resource commitments span
+windows. Measurements never release reservations. Omitted costs remain unknown,
+and provider billing remains authoritative for actual infrastructure charges.
 """
 
 import hashlib
@@ -240,6 +241,8 @@ class EffectBudgetPolicy:
     def record_usage(connection, *, workspace, effect_key, actual, evidence_digest):
         """Record trusted measured usage once, without releasing the upper bound.
 
+        A subset records only measured dimensions; omitted costs remain unknown,
+        never zero. The entire original reservation stays committed.
         The execution adapter supplies provider usage/process measurements. AI
         output and caller estimates must never enter this interface. Unknown
         results leave no settlement and retain the entire reservation. Settling
@@ -248,14 +251,18 @@ class EffectBudgetPolicy:
         actual = _vector(actual)
         if not isinstance(evidence_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", evidence_digest):
             raise ValueError("Immutable measurement evidence digest required")
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+            ("sky-budget-settlement:" + workspace + ":" + effect_key,),
+        )
         row = connection.execute(
             """SELECT reserved FROM sky_state.effect_budget_reservations
-            WHERE workspace=%s AND effect_key=%s FOR UPDATE""",
+            WHERE workspace=%s AND effect_key=%s""",
             (workspace, effect_key),
         ).fetchone()
-        if row is None or set(actual) != set(row[0]) or any(actual[k] > row[0][k] for k in actual):
+        if row is None or not set(actual) <= set(row[0]) or any(actual[k] > row[0][k] for k in actual):
             raise ValueError(
-                "Actual usage exceeds or differs from its reserved maximum; operator review required"
+                "Measured usage exceeds or differs from its reserved dimensions; operator review required"
             )
         existing = connection.execute(
             """SELECT actual,evidence_digest FROM sky_state.effect_budget_settlements

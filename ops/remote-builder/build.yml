@@ -149,6 +149,7 @@ jobs:
             build-output/materials.json
             build-output/scan.json
             build-output/sbom.json
+            build-output/usage.json
           if-no-files-found: error
           retention-days: 1
   publish:

@@ -75,7 +75,10 @@ def validate_report(report, archive_sha256, *, now=None):
 
 
 def validate_security(security, archive_sha256):
-    if not isinstance(security, dict) or set(security) != {"report", "materials"}:
+    if not isinstance(security, dict) or set(security) not in (
+        {"report", "materials"},
+        {"report", "materials", "usage"},
+    ):
         raise ValueError("Signed image security and build materials required")
     validate_report(security["report"], archive_sha256)
     m = security["materials"]
@@ -95,6 +98,18 @@ def validate_security(security, archive_sha256):
             raise ValueError("Exact isolated stage identity required")
     if m["build_vm_job"] == m["scanner_vm_job"]:
         raise ValueError("Inspection must not reuse the workload execution VM")
+    if "usage" in security:
+        usage = security["usage"]
+        if (
+            not isinstance(usage, dict)
+            or set(usage) != {"build_seconds", "source", "cost_measured", "reservation_released"}
+            or type(usage["build_seconds"]) is not int
+            or not 1 <= usage["build_seconds"] <= 7200
+            or usage["source"] != "trusted_controller_elapsed_upper"
+            or usage["cost_measured"] is not False
+            or usage["reservation_released"] is not False
+        ):
+            raise ValueError("Bounded measured build usage without billing/refund claims required")
     return security
 
 
@@ -110,5 +125,10 @@ def publication_security(output, archive_sha256):
         raise ValueError("Image BOM differs from the inspected artifact")
     validate(bom, Path(__file__).resolve().parents[3] / "security/schemas/cyclonedx-1.6")
     return validate_security(
-        {"report": report, "materials": checked_document(output / "materials.json", 8192)}, archive_sha256
+        {
+            "report": report,
+            "materials": checked_document(output / "materials.json", 8192),
+            "usage": checked_document(output / "usage.json", 8192),
+        },
+        archive_sha256,
     )

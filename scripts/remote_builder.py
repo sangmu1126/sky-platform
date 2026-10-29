@@ -251,6 +251,11 @@ def publish(directory, output, *, attestation_output=None):
         security = publication_security(output, archive_digest(output / "image.tar"))
         if identity is None:
             raise ValueError("Inspected hosted images require signed security receipts")
+        delegation = guard()
+        if delegation is not None and security["usage"]["build_seconds"] > delegation["budget_caps"].get(
+            "build_seconds", 0
+        ):
+            raise ValueError("Measured build exceeded its reservation; reconcile before publication")
     scope_guard()
     published = EcrDataPublisher(
         account_id=settings.account_id,
