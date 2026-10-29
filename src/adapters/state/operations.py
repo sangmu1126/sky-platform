@@ -102,6 +102,11 @@ class PostgresOperationStore:
         import os
 
         self.effect_budget = EffectBudgetPolicy.from_environment(os.environ)
+        self.effect_budget_required = os.environ.get(
+            "SKY_REQUIRE_EFFECT_BUDGETS", "false"
+        ) != "false" or bool(
+            os.environ.get("ECS_CONTAINER_METADATA_URI_V4") or os.environ.get("ECS_CONTAINER_METADATA_URI")
+        )
 
     def initialize(self):
         self.records.initialize()
@@ -412,6 +417,8 @@ class PostgresOperationStore:
         intent = self._document(intent)
         if not intent:
             raise ValueError("External request intent is required")
+        if self.effect_budget_required and self.effect_budget is None:
+            raise ValueError("Hosted external effects require an operator budget; no unmetered fallback")
         with self.records._connection() as connection:
             if not self._owned(connection, lease):
                 return False
@@ -422,15 +429,34 @@ class PostgresOperationStore:
             ).fetchone()[0]
             if pending:
                 raise ValueError("An external request already requires observation")
+            if intent.get("kind") == "model_request":
+                limit = intent.get("max_calls")
+                if type(limit) is not int or not 1 <= limit <= 16 or self.effect_budget is None:
+                    raise ValueError("Bounded durable model call policy required")
+                count = connection.execute(
+                    """SELECT count(*) FROM sky_state.effect_budget_reservations
+                    WHERE workspace=%s AND effect_key LIKE %s AND reserved ? 'input_tokens'""",
+                    (self.workspace, str(lease.operation_id) + ":%"),
+                ).fetchone()[0]
+                if count >= limit:
+                    raise ValueError("Per-operation model repair/call budget exhausted")
             if self.effect_budget is not None:
                 operation = self._select(connection, lease.operation_id)
-                binding = {"operation": str(operation.id), "attempt": str(operation.attempt_id), "intent": intent}
+                binding = {
+                    "operation": str(operation.id),
+                    "attempt": str(operation.attempt_id),
+                    "intent": intent,
+                }
                 intent_digest = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
                 fresh = self.effect_budget.reserve(
-                    connection, workspace=self.workspace,
+                    connection,
+                    workspace=self.workspace,
                     effect_key=str(operation.id) + ":" + intent_digest,
                     organization_id=operation.command.get("organization_id"),
-                    user_id=operation.command.get("created_by"), kind=intent.get("kind"), binding=binding,
+                    user_id=operation.command.get("created_by"),
+                    kind=intent.get("kind"),
+                    binding=binding,
+                    application_id=operation.application_id,
                 )
                 if not fresh:
                     raise ValueError("External effect was already reserved; reconcile instead of replaying")
@@ -465,6 +491,79 @@ class PostgresOperationStore:
                 raise ValueError("No external request awaiting observation")
             self._event(connection, lease.operation_id, "external_observed")
             return True
+
+    def build_delegation(self, lease, request, settings):
+        """Fresh DB-owned facts, only after the exact remote-build reservation."""
+        from datetime import datetime, timedelta
+
+        from ports.remote_builds import digest, request_for
+
+        with self.records._connection() as connection:
+            if not self._owned(connection, lease):
+                raise ValueError("Build delegation execution owner is no longer current")
+            operation = self._select(connection, lease.operation_id)
+            if not operation.external_pending or operation.external_intent.get("kind") != "github_build":
+                return None
+            if digest(request_for(operation, self.workspace, settings)) != digest(request):
+                raise ValueError("Build delegation request differs from the approved command")
+            if self.effect_budget is None:
+                raise ValueError("Build delegation requires a durable reserved budget")
+            binding = {
+                "operation": str(operation.id),
+                "attempt": str(operation.attempt_id),
+                "intent": operation.external_intent,
+            }
+            identifier = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
+            key = str(operation.id) + ":" + identifier
+            row = connection.execute(
+                """SELECT r.reserved,w.policy_digest FROM sky_state.effect_budget_reservations r
+                JOIN sky_state.effect_budget_windows w USING(workspace,window_start)
+                WHERE r.workspace=%s AND r.effect_key=%s""",
+                (self.workspace, key),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Build delegation has no matching committed resource reservation")
+            now, until = connection.execute(
+                """SELECT clock_timestamp(),lease_until FROM sky_state.operations
+                WHERE workspace=%s AND id=%s""",
+                (self.workspace, operation.id),
+            ).fetchone()
+            expiry = min(
+                until,
+                now + timedelta(seconds=45),
+                datetime.fromisoformat(json.loads(self.effect_budget.document)["expires_at"]),
+            )
+            if expiry <= now:
+                raise ValueError("Build delegation budget/lease has expired")
+            return {
+                "issued_at": now.isoformat(),
+                "expires_at": expiry.isoformat(),
+                "budget": {"key": key, "policy_digest": row[1], "caps": row[0]},
+            }
+
+    def settle_external_usage(self, lease, actual, evidence_digest):
+        """Adapter-measured usage only; retaining a reservation never grants replay."""
+        if self.effect_budget is None:
+            raise ValueError("A durable operator budget is required for metered execution")
+        with self.records._connection() as connection:
+            if not self._owned(connection, lease):
+                raise ValueError("Execution ownership expired before usage recording")
+            operation = self._select(connection, lease.operation_id)
+            if not operation.external_pending:
+                raise ValueError("Usage requires the matching pending external effect")
+            binding = {
+                "operation": str(operation.id),
+                "attempt": str(operation.attempt_id),
+                "intent": operation.external_intent,
+            }
+            identity = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
+            return self.effect_budget.record_usage(
+                connection,
+                workspace=self.workspace,
+                effect_key=str(operation.id) + ":" + identity,
+                actual=actual,
+                evidence_digest=evidence_digest,
+            )
 
     def complete(self, lease, result, *, succeeded=True):
         result = self._document(result)

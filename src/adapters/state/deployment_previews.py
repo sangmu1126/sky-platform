@@ -109,8 +109,13 @@ class PostgresDeploymentPreviews:
         identity, owner = str(uuid4()), str(uuid4())
         with self.operations.records._connection() as connection:
             self.admission._owner(connection, principal, application_id)
-            self.admission.limits.check(connection, workspace=self.operations.workspace,
-                                        principal=principal, key=scoped, kind="preview")
+            self.admission.limits.check(
+                connection,
+                workspace=self.operations.workspace,
+                principal=principal,
+                key=scoped,
+                kind="preview",
+            )
             connection.execute(
                 """INSERT INTO sky_state.deployment_previews
                 (workspace,id,request_key,fingerprint,organization_id,created_by,application_id,account_id,region,options)
@@ -147,6 +152,26 @@ class PostgresDeploymentPreviews:
             ).fetchone()
             if claimed is None:
                 raise PreviewBusy("Preview preparation is busy or expired")
+            budget = self.operations.effect_budget
+            if self.operations.effect_budget_required and budget is None:
+                raise ValueError("Hosted source processing requires an operator budget")
+            if budget is not None:
+                # Charge every new lease, including failed/replayed attempts.
+                budget.reserve(
+                    connection,
+                    workspace=self.operations.workspace,
+                    effect_key="source:" + identity + ":" + str(claimed[0]),
+                    organization_id=principal.organization_id,
+                    user_id=principal.user_id,
+                    application_id=application_id,
+                    kind="source_preparation",
+                    binding={
+                        "upload_sha256": upload_sha256,
+                        "fingerprint": fingerprint,
+                        "account_id": self.admission.account_id,
+                        "region": self.admission.region,
+                    },
+                )
             return PreviewLease(str(identity), owner, claimed[0], self.operations.workspace), self._view(row)
 
     def release(self, lease):

@@ -151,3 +151,81 @@ def test_stale_worker_cannot_reserve_or_record_external_intent(store, database):
 def test_missing_or_malformed_required_policy_refuses_configuration(environment):
     with pytest.raises(ValueError):
         EffectBudgetPolicy.from_environment(environment)
+
+
+def test_application_scope_cannot_be_evaded_with_another_user(database):
+    document = json.loads(policy().document)
+    document["version"] = 2
+    document["limits"]["application"] = document["limits"]["user"]
+    budget = EffectBudgetPolicy.from_environment({"SKY_EFFECT_BUDGET_JSON": json.dumps(document)})
+    workspace = uuid4().hex
+
+    def request(db, key, user, app):
+        return budget.reserve(
+            db,
+            workspace=workspace,
+            effect_key=key,
+            organization_id="team",
+            user_id=user,
+            application_id=app,
+            kind="github_build",
+            binding={"source": "a" * 64},
+        )
+
+    with database() as db:
+        assert request(db, "first", "alice", "app")
+    with database() as db, pytest.raises(EffectBudgetExceeded):
+        request(db, "second", "bob", "app")
+    with database() as db:
+        assert request(db, "other", "bob", "other-app")
+
+
+def test_usage_settlement_never_refunds_unknown_or_allows_replay(database):
+    budget, workspace = policy(), uuid4().hex
+    actual = {"requests": 1, "build_seconds": 5, "microusd": 3}
+    with database() as db:
+        reserve(db, budget, workspace, "measured")
+        assert budget.record_usage(
+            db, workspace=workspace, effect_key="measured", actual=actual, evidence_digest="a" * 64
+        )
+    with database() as db:
+        assert not budget.record_usage(
+            db, workspace=workspace, effect_key="measured", actual=actual, evidence_digest="a" * 64
+        )
+        assert not reserve(db, budget, workspace, "measured")
+    with database() as db, pytest.raises(EffectBudgetExceeded):
+        reserve(db, budget, workspace, "another")
+    with database() as db, pytest.raises(ValueError, match="rebound"):
+        budget.record_usage(
+            db,
+            workspace=workspace,
+            effect_key="measured",
+            actual={**actual, "microusd": 4},
+            evidence_digest="b" * 64,
+        )
+    with database() as db, pytest.raises(ValueError, match="exceeds"):
+        budget.record_usage(
+            db,
+            workspace=workspace,
+            effect_key="measured",
+            actual={**actual, "microusd": 999},
+            evidence_digest="c" * 64,
+        )
+
+
+@pytest.mark.parametrize("dimension", ["active_resources", "retained_microusd"])
+def test_persistent_resource_commitment_cannot_reset_at_next_hour(database, dimension):
+    document = json.loads(policy().document)
+    for scope in document["limits"]:
+        document["limits"][scope][dimension] = 1
+    document["effects"]["github_build"][dimension] = 1
+    budget = EffectBudgetPolicy.from_environment({"SKY_EFFECT_BUDGET_JSON": json.dumps(document)})
+    workspace = uuid4().hex
+    with database() as db:
+        reserve(db, budget, workspace, "original")
+        db.execute(
+            "UPDATE sky_state.effect_budget_reservations SET window_start=window_start-interval '1 hour' WHERE workspace=%s",
+            (workspace,),
+        )
+    with database() as db, pytest.raises(EffectBudgetExceeded):
+        reserve(db, budget, workspace, "new", user="another-user")

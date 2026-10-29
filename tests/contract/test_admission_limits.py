@@ -100,3 +100,36 @@ def test_active_application_limit_survives_a_new_hour_and_requires_retirement(se
     )
     # The test simulates a trusted retirement receipt; it does not delete AWS resources.
     assert admit(store, key="two", source=artifact(app="second")).job_id != first.job_id
+
+
+def test_global_preview_allowance_is_atomic_across_different_organizations(service, upload):
+    service.previews.admission.limits = AdmissionLimits(global_previews=2)
+    raw = upload()
+
+    def attempt(index):
+        try:
+            service.prepare(principal(org=f"org{index}"), f"app{index}", f"key{index}", raw)
+            return True
+        except AdmissionLimitExceeded:
+            return False
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        assert sum(executor.map(attempt, range(8))) == 2
+
+
+def test_global_active_capacity_survives_hour_and_organization_change(service, database):
+    store = service.previews.admission
+    store.limits = AdmissionLimits(global_active_applications=1)
+    admit(store, key="original", source=artifact(app="first"))
+    with database() as db:
+        db.execute(
+            "UPDATE sky_state.operations SET created_at=clock_timestamp()-interval '2 hours' WHERE workspace=%s",
+            (store.operations.workspace,),
+        )
+    with pytest.raises(AdmissionLimitExceeded, match="Global active"):
+        admit(
+            store,
+            key="other",
+            source=artifact(org="another-team", app="another"),
+            who=principal(org="another-team"),
+        )

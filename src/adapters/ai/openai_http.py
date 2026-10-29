@@ -1,4 +1,5 @@
 """Bounded Responses API transport shared by planning and deployment stages."""
+
 from __future__ import annotations
 
 import json
@@ -23,7 +24,7 @@ class OpenAIHTTPFailure(Exception):
 
 
 def _retry_after_seconds(headers):
-    value = headers.get('Retry-After') if headers else None
+    value = headers.get("Retry-After") if headers else None
     if value is None:
         return None
     try:
@@ -47,46 +48,63 @@ def _temporary_error(status, raw):
     if status not in {429, 503}:
         return False
     try:
-        error = json.loads(raw).get('error', {})
-        code = error.get('code') if isinstance(error, dict) else None
+        error = json.loads(raw).get("error", {})
+        code = error.get("code") if isinstance(error, dict) else None
     except (ValueError, AttributeError, TypeError):
         return False
-    return (status == 429 and code in {'rate_limit_exceeded', 'slow_down'}
-            or status == 503 and code in {'server_is_overloaded', 'slow_down'})
+    return (
+        status == 429
+        and code in {"rate_limit_exceeded", "slow_down"}
+        or status == 503
+        and code in {"server_is_overloaded", "slow_down"}
+    )
 
 
 def read_response(request: urllib.request.Request) -> bytes:
     """Retry only a classified HTTP rejection, before any response is consumed."""
-    if (os.environ.get("SKY_REQUIRE_EFFECT_BUDGETS", "false") != "false"
-            or "SKY_EFFECT_BUDGET_JSON" in os.environ):
-        # The legacy model transport has no trusted operation/lease binding.
-        # Do not bypass a hosted budget or pretend a per-process counter is a
-        # durable tenant budget. Enable only after a dedicated metered executor
-        # is connected; never accept budget/owner claims from model output.
+    from adapters.ai.model_budget import CURRENT_MODEL_BUDGET
+
+    meter = CURRENT_MODEL_BUDGET.get()
+    if (
+        bool(os.environ.get("ECS_CONTAINER_METADATA_URI_V4") or os.environ.get("ECS_CONTAINER_METADATA_URI"))
+        or os.environ.get("SKY_REQUIRE_EFFECT_BUDGETS", "false") != "false"
+        or "SKY_EFFECT_BUDGET_JSON" in os.environ
+    ) and meter is None:
         raise ValueError("AI calls require a durable operation budget binding in budget-enforced mode")
     # A proposal, project URL or redirect must never choose the credential sink.
-    if (not isinstance(request, urllib.request.Request)
-            or request.full_url not in {"https://api.openai.com/v1/responses",
-                                        "https://api.openai.com/v1/responses/compact"}
-            or request.get_method() != "POST"
-            or not isinstance(request.data, bytes)
-            or not 0 < len(request.data) <= 1024 * 1024):
+    if (
+        not isinstance(request, urllib.request.Request)
+        or request.full_url
+        not in {"https://api.openai.com/v1/responses", "https://api.openai.com/v1/responses/compact"}
+        or request.get_method() != "POST"
+        or not isinstance(request.data, bytes)
+        or not 0 < len(request.data) <= 1024 * 1024
+    ):
         raise ValueError("AI transport requires a fixed endpoint and bounded POST body")
+
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
             return None
 
     opener = urllib.request.build_opener(NoRedirect())
     for attempt in range(2):
+        intent = meter.begin(request) if meter is not None else None
         try:
             with opener.open(request, timeout=60) as response:
-                return response.read(MAX_RESPONSE_BYTES + 1)
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+                if meter is not None:
+                    if len(raw) > MAX_RESPONSE_BYTES:
+                        raise ValueError("Oversized model response; usage remains reserved")
+                    meter.complete(intent, raw)
+                return raw
         except urllib.error.HTTPError as exc:
             status, headers = exc.code, exc.headers
             try:
                 error_body = exc.read(4097)
             finally:
                 exc.close()
+            if meter is not None:
+                meter.rejection(intent, status)
             temporary = _temporary_error(status, error_body)
             if attempt == 0 and temporary:
                 minimum = _retry_after_seconds(headers)
@@ -95,4 +113,4 @@ def read_response(request: urllib.request.Request) -> bytes:
                     time.sleep(delay)
                     continue
             raise OpenAIHTTPFailure(status, temporary) from None
-    raise AssertionError('unreachable')
+    raise AssertionError("unreachable")
