@@ -9,6 +9,7 @@ dependencies = ["cryptography>=50,<51", "PyJWT[crypto]>=2.10,<3"]
 aws-native = ["boto3>=1.40,<2"]
 state-postgres = ["psycopg[binary]>=3.2,<4", "boto3>=1.35,<2"]
 dev = ["pytest>=8", "ruff>=0.6"]
+security-audit = ["jsonschema>=4.26,<5"]
 
 [project.scripts]
 sky-platform = "sky_platform:main"

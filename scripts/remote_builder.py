@@ -83,6 +83,9 @@ def prepare(directory):
         settings.region,
     ) or request_key(request) != key:
         raise ValueError("Builder AWS/source scope mismatch")
+    from adapters.aws.build_execution_grant import execution_guard
+
+    execution_guard(request, settings, lambda: None)()
     (directory / "source.zip").write_bytes(S3SourceArtifactStore(settings).get(artifact))
 
 
@@ -215,7 +218,7 @@ def publish(directory, output, *, attestation_output=None):
         os.environ["SKY_ARTIFACTS_BUCKET"], os.environ["AWS_REGION"], os.environ["SKY_AWS_ACCOUNT_ID"]
     )
 
-    def guard():
+    def scope_guard():
         # A workflow-pinned request cannot grant access outside operator settings.
         if (request["bucket"], request["account_id"], request["region"]) != (
             settings.bucket,
@@ -224,6 +227,9 @@ def publish(directory, output, *, attestation_output=None):
         ):
             raise ValueError("Publish AWS scope mismatch")
 
+    from adapters.aws.build_execution_grant import execution_guard
+
+    guard = execution_guard(request, settings, scope_guard)
     required = os.environ.get("SKY_REQUIRE_SIGNED_BUILDS", "false")
     if required not in {"true", "false"}:
         raise ValueError("Explicit build signature requirement required")
@@ -238,7 +244,14 @@ def publish(directory, output, *, attestation_output=None):
             region=settings.region,
         )
         verify_source_input(directory, request)
-    guard()
+    security = None
+    if os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("SKY_REQUIRE_IMAGE_INSPECTION") == "true":
+        from adapters.build.image_security import publication_security
+
+        security = publication_security(output, archive_digest(output / "image.tar"))
+        if identity is None:
+            raise ValueError("Inspected hosted images require signed security receipts")
+    scope_guard()
     published = EcrDataPublisher(
         account_id=settings.account_id,
         region=settings.region,
@@ -285,6 +298,8 @@ def publish(directory, output, *, attestation_output=None):
             )
             prepare(directory, root / "published", root / "prepared")
             statement = document(root / "prepared" / "statement.json")
+            if security is not None:
+                statement["security"] = security
             bundle = AwsKmsBuildSigner(identity).sign(
                 statement,
                 request,

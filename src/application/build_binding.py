@@ -32,9 +32,14 @@ def validate_build_binding(statement, request, *, image_digest, config_digest, r
         "image_safety_verified": False,
         "recovery_authorized": False,
     }
+    extra = {"security"} if isinstance(statement, dict) and "security" in statement else set()
+    if extra:
+        from adapters.build.image_security import validate_security
+
+        validate_security(statement["security"], statement.get("archive_digest"))
     if (
         not isinstance(statement, dict)
-        or set(statement) != set(expected) | {"archive_digest"}
+        or set(statement) != set(expected) | {"archive_digest"} | extra
         or any(type(statement.get(k)) is not type(v) or statement[k] != v for k, v in expected.items())
         or not isinstance(statement.get("archive_digest"), str)
         or not re.fullmatch(r"[a-f0-9]{64}", statement["archive_digest"])

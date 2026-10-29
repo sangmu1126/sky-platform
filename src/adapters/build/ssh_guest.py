@@ -55,7 +55,19 @@ class SealedGuest:
             raise ValueError("Guest lifetime or execution boundary expired")
 
     def upload(self, source, name):
-        if name not in {"base.tar", "context.tar", "build.py", "offline.py", "process.py", "bases.json"}:
+        if name not in {
+            "base.tar",
+            "context.tar",
+            "build.py",
+            "offline.py",
+            "process.py",
+            "bases.json",
+            "trivy",
+            "scanner-db.tar",
+            "scan-image.tar",
+            "scan-settings.json",
+            "scan.py",
+        }:
             raise ValueError("Fixed guest input name required")
         self.guard()
         code, _ = bounded_command(
@@ -74,12 +86,26 @@ class SealedGuest:
         )
         self.guard()
         if code:
-            raise OSError("Isolated build failed; inspect the private bounded build receipt")
+            stages = re.findall(r'"build_failure_stage": "([a-z_]+)"', output)
+            classification = stages[-1] if stages else "guest_import_or_transport"
+            raise OSError("Isolated build failed (" + classification + "); no publication permitted")
         return output
+
+    def scan(self):
+        self.guard()
+        code, output = bounded_command(
+            ["ssh", *self.options, "ec2-user@" + self.host, "sudo python3 /home/ec2-user/scan.py"],
+            timeout=240,
+        )
+        self.guard()
+        if code:
+            stages = re.findall(r'"inspection_failure_stage": "([a-z_]+)"', output)
+            classification = stages[-1] if stages else "guest_import_or_transport"
+            raise OSError("Offline image inspection failed; publication denied (" + classification + ")")
 
     def download(self, name, destination, *, limit):
         if (
-            name not in {"image.tar", "image-id.txt"}
+            name not in {"image.tar", "image-id.txt", "scan.json", "sbom.json", "rehearsal.json"}
             or type(limit) is not int
             or not 1 <= limit <= 4 * 1024**3
         ):

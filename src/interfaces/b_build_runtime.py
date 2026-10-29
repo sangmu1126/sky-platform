@@ -106,8 +106,14 @@ def run_build_consumer(args):
         from adapters.aws.kms_build_key import AwsKmsBuildKeyObserver
 
         verifier = SignedEcrBuildVerifier(
-            settings, objects=objects, identity=identity, key_observer=AwsKmsBuildKeyObserver(identity)
+            settings,
+            objects=objects,
+            identity=identity,
+            key_observer=AwsKmsBuildKeyObserver(identity),
+            require_inspection=hosted,
         )
+    from adapters.aws.build_execution_grant import S3BuildExecutionGrants
+
     consumer = BuildConsumer(
         store,
         SqsOperationQueue(queue_url, region=settings.region, account_id=settings.account_id),
@@ -118,6 +124,9 @@ def run_build_consumer(args):
         protection,
         "build-" + uuid4().hex,
         deployer=deployer,
+        execution_grants=S3BuildExecutionGrants(
+            artifacts, authorization=lambda request, lease: store.build_delegation(lease, request, settings)
+        ),
     )
     stop = threading.Event()
     previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}

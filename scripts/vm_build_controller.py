@@ -54,7 +54,7 @@ def build_in_vm(directory, output, request, artifact, raw_plan, raw_profile):
     def audit(event):
         write_private(audit_directory / (uuid4().hex + ".json"), event)
 
-    def guard():
+    def scope_guard():
         # Fixed trusted GitHub workflow already checked request provenance in
         # remote_builder.inputs. Never derive authority from context or AI output.
         if (request["account_id"], request["region"]) != (profile.account_id, profile.region):
@@ -70,6 +70,23 @@ def build_in_vm(directory, output, request, artifact, raw_plan, raw_profile):
         ca = Path(__file__).resolve().parents[1] / "src/assets/infra/rds-global-bundle.pem"
     elif raw_plan.get("database_profile") is not None:
         raise ValueError("Unsupported isolated build database profile")
+    from adapters.aws.build_execution_grant import execution_guard
+    from adapters.aws.source_artifacts import S3ArtifactSettings
+
+    delegated = execution_guard(
+        request, S3ArtifactSettings(request["bucket"], request["region"], request["account_id"]), scope_guard
+    )
+
+    def guard():
+        proof = delegated()
+        if (
+            proof is not None
+            and proof["budget_caps"].get("build_seconds", 0) < profile.max_lifetime_seconds * 2
+        ):
+            raise ValueError(
+                "Reserved build time does not cover the registered build and scanner VM lifetimes"
+            )
+
     import boto3
 
     with SourceArtifactService(Objects()).restore(principal, artifact) as project:
@@ -82,6 +99,9 @@ def build_in_vm(directory, output, request, artifact, raw_plan, raw_profile):
             extra_ca_bundle=ca,
             build_id=request["build_id"],
         )
+    from scripts.vm_scan_controller import scan_in_vm
+
+    scan_in_vm(profile, boto3.Session(), guard, audit, output)
     with (output / "image.tar").open("rb") as source:
         archive_digest = hashlib.file_digest(source, "sha256").hexdigest()
     write_private(

@@ -42,8 +42,12 @@ class SignedEcrBuildVerifier(EcrBuildVerifier):
     This checks an input binding, never the absence of malicious application code.
     """
 
-    def __init__(self, settings, *, objects, identity, key_observer, client=None, clock=None):
+    def __init__(
+        self, settings, *, objects, identity, key_observer, client=None, clock=None, require_inspection=False
+    ):
         from datetime import UTC, datetime
+
+        self.require_inspection = require_inspection
         from application.kms_build_signature import KmsBuildSigningIdentity
 
         if not isinstance(identity, KmsBuildSigningIdentity) or key_observer is None:
@@ -101,6 +105,8 @@ class SignedEcrBuildVerifier(EcrBuildVerifier):
             run_id=result["run_id"],
             now=self.clock(),
         )
+        if self.require_inspection and "security" not in bundle["payload"]["statement"]:
+            raise ValueError("Hosted image is missing signed security inspection")
         key = self.key_observer.observe(guard=lambda: None)
         if key.get("key_liveness_checked") is not True or key.get("key_arn") != self.identity.key_arn:
             raise ValueError("Build signing key liveness is not verified")

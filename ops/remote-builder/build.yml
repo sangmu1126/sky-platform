@@ -1,4 +1,4 @@
-# Reference for a separate PERSONAL sky-builder repository; not active here.
+# Reference for a separate PERSONAL sky-builder repository; activates only after operator registration.
 # Copy to .github/workflows/build.yml and pin that commit in Sky/infra.
 # Required repository variables: SKY_PLATFORM_CODE_SHA (full commit),
 # SKY_ARTIFACTS_BUCKET, AWS_ACCOUNT_ID, AWS_REGION, AWS_APP_BUILDER_ROLE_ARN.
@@ -8,6 +8,10 @@ run-name: sky-build:${{ inputs.build_id }}
 on:
   workflow_dispatch:
     inputs:
+      verification_only:
+        required: false
+        type: boolean
+        default: false
       build_id:
         required: true
         type: string
@@ -30,9 +34,35 @@ env:
   SKY_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
   AWS_REGION: ${{ vars.AWS_REGION }}
   AWS_EC2_METADATA_DISABLED: "true"
+  SKY_REQUIRE_EXECUTION_GRANTS: "true"
+  SKY_REQUIRE_SIGNED_BUILDS: "true"
+  SKY_REQUIRE_IMAGE_INSPECTION: "true"
+  SKY_BUILD_SIGNING_TRUST_JSON: ${{ vars.SKY_BUILD_SIGNING_TRUST_JSON }}
+  SKY_BUILD_SIGNING_KEY_ARN: ${{ vars.SKY_BUILD_SIGNING_KEY_ARN }}
+  SKY_BUILD_CONTROLLER_ROLE_ARN: ${{ vars.SKY_BUILD_CONTROLLER_ROLE_ARN }}
+  SKY_TRUSTED_BUILD_MATERIALS_PREFIX: ${{ vars.SKY_TRUSTED_BUILD_MATERIALS_PREFIX }}
+  SKY_TRUSTED_BUILD_MATERIALS_JSON: ${{ vars.SKY_TRUSTED_BUILD_MATERIALS_JSON }}
   SKY_BUILD_ATTESTATIONS_ENABLED: ${{ vars.SKY_BUILD_ATTESTATIONS_ENABLED }}
 jobs:
+  verify-identity:
+    if: ${{ inputs.verification_only }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      id-token: write
+    steps:
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ vars.AWS_APP_BUILDER_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-duration-seconds: 900
+          retry-max-attempts: 1
+          inline-session-policy: '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:GetCallerIdentity","Resource":"*"}]}'
+      - name: Confirm exact expected identity without workload or source access
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$SKY_AWS_ACCOUNT_ID"
   prepare:
+    if: ${{ !inputs.verification_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -50,12 +80,16 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade 'pip>=26.2,<27'
-      - run: pip install -e '.[aws-native]'
+      - run: pip install -e '.[aws-native,security-audit]'
+      - id: scope
+        run: python scripts/builder_session_policy.py prepare
       - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: ${{ vars.AWS_APP_BUILDER_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          inline-session-policy: ${{ steps.scope.outputs.policy }}
+          role-duration-seconds: 900
       - run: python scripts/remote_builder.py prepare
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -67,11 +101,14 @@ jobs:
     needs: prepare
     env:
       SKY_REQUIRE_ISOLATED_BUILDS: "true"
+      SKY_BUILD_SANDBOX_PROFILE_JSON: ${{ vars.SKY_BUILD_SANDBOX_PROFILE_JSON }}
       SKY_OFFLINE_BUILD_BASES_JSON: ${{ vars.SKY_OFFLINE_BUILD_BASES_JSON }}
-    runs-on: ubuntu-latest
+    # A trusted controller with registered static SSH egress; never executes app code.
+    runs-on: ${{ fromJSON(vars.SKY_BUILD_CONTROLLER_RUNNER) }}
     timeout-minutes: 20
     permissions:
       contents: read
+      id-token: write
     steps:
       - name: Check immutable platform code pin
         run: '[[ "$SKY_PLATFORM_CODE_SHA" =~ ^[0-9a-f]{40}$ ]]'
@@ -84,12 +121,22 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade 'pip>=26.2,<27'
-      - run: pip install -e '.[aws-native]'
+      - run: pip install -e '.[aws-native,security-audit]'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: sky-build-input
           path: build-input/
-      - name: Build without AWS credentials or OIDC permission
+      - id: scope
+        run: python scripts/builder_session_policy.py controller
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ vars.AWS_APP_BUILDER_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          inline-session-policy: ${{ steps.scope.outputs.policy }}
+          role-duration-seconds: 900
+      - run: python scripts/fetch_build_materials.py
+      - name: Control disposable credential-free build and scanner VMs
         run: python scripts/remote_builder.py build
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -97,6 +144,9 @@ jobs:
           path: |
             build-output/image.tar
             build-output/build.json
+            build-output/materials.json
+            build-output/scan.json
+            build-output/sbom.json
           if-no-files-found: error
           retention-days: 1
   publish:
@@ -118,7 +168,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade 'pip>=26.2,<27'
-      - run: pip install -e '.[aws-native]'
+      - run: pip install -e '.[aws-native,security-audit]'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: sky-build-input
@@ -127,12 +177,16 @@ jobs:
         with:
           name: sky-build-image
           path: build-output/
+      - id: scope
+        run: python scripts/builder_session_policy.py publish
       - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: ${{ vars.AWS_APP_BUILDER_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
-      - name: Publish checked image and optionally export signing inputs
+          inline-session-policy: ${{ steps.scope.outputs.policy }}
+          role-duration-seconds: 900
+      - name: Publish inspected image with mandatory KMS input/security signature
         run: |
           if [ "$SKY_BUILD_ATTESTATIONS_ENABLED" = "true" ]; then
             python scripts/remote_builder.py publish --attestation-output published-proof

@@ -90,7 +90,11 @@ class AwsBuildSandbox:
             TagSpecifications=[
                 {
                     "ResourceType": "key-pair",
-                    "Tags": [{"Key": "app", "Value": "sky"}, {"Key": "sky:JobId", "Value": job_id}],
+                    "Tags": [
+                        {"Key": "app", "Value": "sky"},
+                        {"Key": "sky:JobId", "Value": job_id},
+                        {"Key": "sky:SandboxProfile", "Value": p.name},
+                    ],
                 }
             ],
         )
@@ -138,7 +142,10 @@ class AwsBuildSandbox:
                         },
                     }
                 ],
-                TagSpecifications=[{"ResourceType": kind, "Tags": tags} for kind in ("instance", "volume")],
+                TagSpecifications=[
+                    {"ResourceType": kind, "Tags": tags}
+                    for kind in ("instance", "volume", "network-interface")
+                ],
                 InstanceInitiatedShutdownBehavior="terminate",
                 UserData=BOOTSTRAP,
             )
@@ -173,7 +180,9 @@ class AwsBuildSandbox:
             raise ValueError("Guest immutable owner/job tags differ")
         # EC2 discards VPC/group information after termination. Account, exact
         # instance ID and job tags remain authoritative for cleanup confirmation.
-        if instance.get("State", {}).get("Name") == "terminated":
+        if instance.get("State", {}).get("Name") == "terminated" or (
+            bootstrapping and instance.get("State", {}).get("Name") == "shutting-down"
+        ):
             return
         if (
             instance.get("VpcId") != self.profile.vpc_id

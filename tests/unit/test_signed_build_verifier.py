@@ -54,3 +54,28 @@ def test_valid_image_alone_cannot_admit_untrusted_provenance(context, change):
         key.observe.side_effect = ValueError("Key is disabled")
     with pytest.raises(ValueError):
         verifier.verify(request, result)
+
+
+def test_hosted_verifier_requires_inspection_in_the_signed_statement(context):
+    verifier, result, _objects, _, _ = setup(context)
+    verifier.require_inspection = True
+    with pytest.raises(ValueError, match="missing signed security"):
+        verifier.verify(context.request, result)
+
+
+def test_signed_inspection_cannot_be_detached_from_the_image(context):
+    from uuid import uuid4
+
+    from tests.unit.test_image_security import report
+
+    inspected = report()
+    inspected["archive_sha256"] = context.statement["archive_digest"]
+    materials = dict.fromkeys(("base_archive_sha256", "context_sha256", "profile_sha256"), "a" * 64)
+    materials.update(build_vm_job=str(uuid4()), scanner_vm_job=str(uuid4()))
+    context.statement["security"] = {"report": inspected, "materials": materials}
+    verifier, result, objects, _, _ = setup(context)
+    verifier.require_inspection = True
+    assert verifier.verify(context.request, result)["signature_verified"]
+    objects.read.return_value["payload"]["statement"]["security"]["report"]["secret_count"] = 1
+    with pytest.raises(ValueError):
+        verifier.verify(context.request, result)

@@ -23,6 +23,8 @@ IMAGE_ID = "sha256:" + hashlib.sha256(IMAGE_CONFIG).hexdigest()
 def publisher(monkeypatch, tmp_path):
     from scripts import remote_builder
 
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
     request = {
         "build_id": BUILD_ID,
         "bucket": "sky-artifacts-test",
