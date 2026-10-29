@@ -1,6 +1,6 @@
-"""Trusted sky-builder runner; user code runs in the credential-free build job.
+"""Trusted sky-builder controller; user code runs in a sealed credential-free VM.
 
-Transfer the entire output directory (image.tar AND build.json) to publish.
+Transfer image.tar, build.json, materials.json, scan.json and sbom.json to publish.
 Legacy image-only artifacts fail closed and require a fresh build. The receipt
 checks request/archive/image consistency; it is not a signature and depends on
 the trusted workflow and artifact transport for authenticity.
