@@ -33,6 +33,21 @@ def run_build_consumer(args):
     queue_url = os.environ.get("SKY_JOB_QUEUE_URL", "")
     SqsOperationQueue(queue_url, region=settings.region, account_id=settings.account_id, client=object())
     PostgresBuildExecutionStore(None, workspace=workspace)
+    hosted = bool(
+        os.environ.get("ECS_CONTAINER_METADATA_URI_V4") or os.environ.get("ECS_CONTAINER_METADATA_URI")
+    )
+    require_signatures = os.environ.get("SKY_REQUIRE_SIGNED_BUILDS", "true" if hosted else "false")
+    if require_signatures not in {"true", "false"} or (hosted and require_signatures != "true"):
+        raise ValueError("Hosted build consumers require signed expected input bindings")
+    identity = None
+    if require_signatures == "true":
+        from adapters.aws.build_trust import load_build_trust
+
+        identity = load_build_trust(
+            os.environ.get("SKY_BUILD_SIGNING_TRUST_JSON"),
+            account_id=settings.account_id,
+            region=settings.region,
+        )
     local_operator = getattr(args, "operator_github_session", False)
     if local_operator and (
         os.environ.get("ECS_CONTAINER_METADATA_URI_V4") or os.environ.get("ECS_CONTAINER_METADATA_URI")
@@ -84,12 +99,21 @@ def run_build_consumer(args):
         if getattr(args, "deploy_built_image", False)
         else None
     )
+    objects = S3BuildObjects(artifacts)
+    verifier = EcrBuildVerifier(settings)
+    if identity is not None:
+        from adapters.aws.build_image import SignedEcrBuildVerifier
+        from adapters.aws.kms_build_key import AwsKmsBuildKeyObserver
+
+        verifier = SignedEcrBuildVerifier(
+            settings, objects=objects, identity=identity, key_observer=AwsKmsBuildKeyObserver(identity)
+        )
     consumer = BuildConsumer(
         store,
         SqsOperationQueue(queue_url, region=settings.region, account_id=settings.account_id),
         GitHubRemoteBuild(settings, GitHubApi(token)),
-        S3BuildObjects(artifacts),
-        EcrBuildVerifier(settings),
+        objects,
+        verifier,
         settings,
         protection,
         "build-" + uuid4().hex,

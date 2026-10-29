@@ -37,9 +37,10 @@ def _document(payload):
     return json.loads(payload, object_pairs_hook=unique)
 
 
-def validate_saved_archive(path, image_id, tag, *, platform="linux/amd64"):
+def validate_saved_archive(path, image_id, tag, *, platform="linux/amd64", include_layout=False):
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    files, documents, hashes = set(), {}, {}
+    files, documents, hashes, layout = set(), {}, {}, {}
+    registry_manifest = None
     with os.fdopen(descriptor, "rb") as source:
         info = os.fstat(source.fileno())
         if not stat.S_ISREG(info.st_mode) or not 1024 <= info.st_size <= MAX_ARCHIVE:
@@ -82,6 +83,7 @@ def validate_saved_archive(path, image_id, tag, *, platform="linux/amd64"):
                 if member.size:
                     raise ValueError("Saved image directory has a payload")
                 continue
+            layout[name] = {"offset": source.tell(), "size": member.size}
             if member.size <= MAX_METADATA:
                 metadata_bytes += member.size
                 if metadata_bytes > MAX_TOTAL_METADATA:
@@ -125,10 +127,29 @@ def validate_saved_archive(path, image_id, tag, *, platform="linux/amd64"):
         if "index.json" in documents:
             index = _document(documents["index.json"])
             roots = index["manifests"]
-            if not isinstance(roots, list) or len(roots) != 1:
+            if not isinstance(roots, list) or not 1 <= len(roots) <= 64:
                 raise ValueError()
+            if len(roots) > 1:
+                # docker save --platform may retain attached provenance beside
+                # the one selected platform. It is inert data, never an image
+                # selection or trust assertion. Reject unknown/ambiguous roots.
+                selected = [item for item in roots if isinstance(item, dict)
+                            and item.get("platform", {}) == dict(zip(("os", "architecture"), platform.split("/"), strict=True))]
+                if len(selected) != 1:
+                    raise ValueError()
+                for item in roots:
+                    if item is selected[0]:
+                        continue
+                    name = "blobs/sha256/" + item["digest"].removeprefix("sha256:")
+                    if (item.get("platform") is not None or item.get("mediaType") not in MANIFEST_TYPES
+                            or item.get("annotations", {}).get("io.containerd.manifest.subject") != selected[0]["digest"]
+                            or item["digest"] != "sha256:" + hashes[name]
+                            or item.get("size") != len(documents[name])):
+                        raise ValueError()
+                roots = selected
 
             def linked(descriptor, depth=0):
+                nonlocal registry_manifest
                 if depth > 3 or not isinstance(descriptor, dict):
                     raise ValueError()
                 digest = descriptor["digest"]
@@ -145,6 +166,7 @@ def validate_saved_archive(path, image_id, tag, *, platform="linux/amd64"):
                 ):
                     raise ValueError()
                 if media_type in MANIFEST_TYPES:
+                    registry_manifest = body
                     if body["config"]["digest"] != config_digest:
                         raise ValueError()
                     layers = [
@@ -173,7 +195,7 @@ def validate_saved_archive(path, image_id, tag, *, platform="linux/amd64"):
             linked(roots[0])
     except (KeyError, ValueError, TypeError, AttributeError, RecursionError):
         raise ValueError("Saved image manifest/config differs from the build receipt") from None
-    return {
+    result = {
         "archive_bytes": info.st_size,
         "entries": entries,
         "platform": platform,
@@ -181,3 +203,7 @@ def validate_saved_archive(path, image_id, tag, *, platform="linux/amd64"):
         "image_identities": sorted(identities),
         "code_executed": False,
     }
+    if include_layout:
+        result.update(members={name: {**value, "sha256": hashes[name]} for name, value in layout.items()},
+                      docker_manifest=manifest, registry_manifest=registry_manifest)
+    return result

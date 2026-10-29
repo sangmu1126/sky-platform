@@ -32,6 +32,24 @@ def document(path, limit=65536):
     return value
 
 
+def verify_source_input(directory, request):
+    """Verify source bytes before publication/signing acquires any authority."""
+    artifact, _ = validate_request(request)
+    payload = read(directory / "source.zip", artifact.size)
+
+    class Objects:
+        def get(self, selected):
+            if selected != artifact:
+                raise ValueError("Unexpected signing source")
+            return payload
+
+    principal = Principal(
+        request["created_by"], artifact.organization_id, Role.DEPLOYER, LoginSource.CORPORATE_SSO
+    )
+    with SourceArtifactService(Objects()).restore(principal, artifact):
+        pass
+
+
 def export_published(directory, request, result, manifest, build_receipt):
     """Called only after publish checks; no signing or source execution here."""
     validate_request(request)

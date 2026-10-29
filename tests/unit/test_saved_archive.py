@@ -134,3 +134,54 @@ def test_aggregate_metadata_bound_prevents_many_small_members(tmp_path, monkeypa
     monkeypatch.setattr(validator, "MAX_TOTAL_METADATA", 32)
     with pytest.raises(ValueError, match="aggregate bound"):
         validate_saved_archive(path, identity, "sky-build:test")
+
+
+@pytest.mark.parametrize("change", [None, "foreign-subject", "second-platform", "altered-attachment"])
+def test_only_attached_provenance_beside_one_platform_is_inert_data(tmp_path, change):
+    files = {}
+
+    def blob(body):
+        raw = json.dumps(body).encode()
+        identity = "sha256:" + hashlib.sha256(raw).hexdigest()
+        files["blobs/sha256/" + identity.split(":")[1]] = raw
+        return {"digest": identity, "size": len(raw)}
+
+    config = blob({"os": "linux", "architecture": "amd64"})
+    image = blob({"schemaVersion": 2, "config": config, "layers": []})
+    image.update(
+        mediaType="application/vnd.oci.image.manifest.v1+json",
+        platform={"os": "linux", "architecture": "amd64"},
+    )
+    attached = blob({"schemaVersion": 2, "artifactType": "application/vnd.in-toto+json"})
+    attached.update(
+        mediaType="application/vnd.oci.image.manifest.v1+json",
+        annotations={"io.containerd.manifest.subject": image["digest"]},
+    )
+    if change == "foreign-subject":
+        attached["annotations"]["io.containerd.manifest.subject"] = "sha256:" + "0" * 64
+    elif change == "second-platform":
+        attached["platform"] = {"os": "linux", "architecture": "amd64"}
+    elif change == "altered-attachment":
+        attached["size"] += 1
+    files["index.json"] = json.dumps({"schemaVersion": 2, "manifests": [image, attached]}).encode()
+    files["manifest.json"] = json.dumps(
+        [
+            {
+                "Config": "blobs/sha256/" + config["digest"].split(":")[1],
+                "RepoTags": ["sky-build:test"],
+                "Layers": [],
+            }
+        ]
+    ).encode()
+    path = tmp_path / "image.tar"
+    with tarfile.open(path, "w", format=tarfile.USTAR_FORMAT) as archive:
+        for name, data in files.items():
+            entry = tarfile.TarInfo(name)
+            entry.size = len(data)
+            archive.addfile(entry, io.BytesIO(data))
+    if change is None:
+        result = validate_saved_archive(path, config["digest"], "sky-build:test")
+        assert attached["digest"] not in result["image_identities"]
+    else:
+        with pytest.raises(ValueError):
+            validate_saved_archive(path, config["digest"], "sky-build:test")
