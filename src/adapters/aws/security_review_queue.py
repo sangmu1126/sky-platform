@@ -25,8 +25,9 @@ class SecurityReviewQueue:
             or result.get("automatic_release_permitted") is not False
         ):
             raise ValueError("Confirmed independent audit required before review notification")
-        from adapters.aws.security_audit import audit_bytes
         import hashlib
+
+        from adapters.aws.security_audit import audit_bytes
 
         raw = audit_bytes(event, event.get("organization_id"), event.get("application_id"))
         if result["audit"].get("sha256") != hashlib.sha256(raw).hexdigest():

@@ -146,6 +146,10 @@ def main(argv=None):
                     "GitHub App installation",
                     "AWS artifact scope",
                     "actual ECR publish",
+                    "registered sealed VM profile and trusted controller runner",
+                    "pinned offline base, scanner binary and fresh vulnerability database",
+                    "current signed-build trust and image inspection",
+                    "migrated budget ledger, runtime SQL grants and expiring operator policy",
                 ],
             }
         )
