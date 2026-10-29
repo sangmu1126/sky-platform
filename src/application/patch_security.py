@@ -7,6 +7,19 @@ from pathlib import PurePosixPath
 
 def check_patch_security(path, before, after):
     name = PurePosixPath(path).name
+    if (
+        PurePosixPath(path).suffix in {".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx"}
+        and before != after
+        and re.search(
+            r"\b(?:requireAuth|require_auth)\b|\b(?:jwt\.(?:verify|decode)|passport\.authenticate|requireAuth|require_auth|"
+            r"verifyToken|verify_token|checkPermission|isAuthenticated|authorize)\s*\(|"
+            r"\.(?:status|sendStatus)\s*\(\s*(?:401|403)\s*\)",
+            before,
+        )
+    ):
+        # No JavaScript semantic parser is available in the worker. Preserve the
+        # complete protected file instead of claiming a regex proves auth safety.
+        raise ValueError("Security policy requires manual review of authenticated JavaScript file changes")
     if PurePosixPath(path).suffix == ".py":
         from application.patch_invariants import check_python_patch
 
@@ -16,16 +29,29 @@ def check_patch_security(path, before, after):
         for value in (original, candidate):
             if not isinstance(value, dict) or not isinstance(value.get("scripts", {}), dict):
                 raise ValueError("Package script configuration must be an object")
-        hooks = {"preinstall", "install", "postinstall", "prepare", "prepublish", "prepublishOnly",
-                 "prepack", "postpack", "publish", "postpublish"}
+        hooks = {
+            "preinstall",
+            "install",
+            "postinstall",
+            "prepare",
+            "prepublish",
+            "prepublishOnly",
+            "prepack",
+            "postpack",
+            "publish",
+            "postpublish",
+        }
         for hook in hooks:
             if candidate.get("scripts", {}).get(hook) != original.get("scripts", {}).get(hook):
                 raise ValueError("Security policy rejects automatic install/publish hook changes")
     if name == "Dockerfile":
         users = lambda text: re.findall(r"(?im)^\s*USER\s+([^\s#]+)", text)
         old_users, new_users = users(before), users(after)
-        if (old_users and old_users[-1] not in {"root", "0", "0:0"}
-                and (not new_users or new_users[-1] in {"root", "0", "0:0"})):
+        if (
+            old_users
+            and old_users[-1] not in {"root", "0", "0:0"}
+            and (not new_users or new_users[-1] in {"root", "0", "0:0"})
+        ):
             raise ValueError("Security policy rejects removing the non-root runtime user")
         remote_add = r"(?im)^\s*ADD\s+[^\n]*(?:https?://|git@|git://)"
         if re.search(remote_add, after) and not re.search(remote_add, before):

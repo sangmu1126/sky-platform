@@ -85,3 +85,24 @@ def test_async_database_repair_after_authentication_remains_possible():
 def test_deployment_repair_cannot_introduce_dynamic_execution(expression):
     with pytest.raises(ValueError, match="dynamic execution"):
         check_patch_security("app.py", "result = 1", "result = " + expression)
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "from unsafe import verify_token\n",
+        "from security import verify_token\nverify_token = lambda user: True\n",
+        "from security import verify_token\ndef verify_token(user): return True\n",
+    ],
+)
+def test_auth_helper_import_or_binding_cannot_be_swapped(candidate):
+    source = "from security import verify_token\n" + AUTHENTICATED
+    with pytest.raises(ValueError, match="authentication"):
+        check_patch_security("app.py", source, candidate + AUTHENTICATED)
+
+
+def test_authenticated_javascript_requires_manual_review_instead_of_syntax_only_approval():
+    before = "app.get('/private', requireAuth, async(req,res) => res.json(await db.read()));"
+    after = before.replace("requireAuth, ", "")
+    with pytest.raises(ValueError, match="manual review"):
+        check_patch_security("server.js", before, after)
