@@ -433,3 +433,43 @@ def test_operator_cli_restricts_and_inspects_only_registered_database(
             assert json.loads(capsys.readouterr().out)["database_restriction"]["phase"] == "verified"
     finally:
         connection.close()
+
+
+def test_timeout_override_still_cannot_exceed_role_connections_or_access_neighbor(database, record_property):
+    import json
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    adapter, _admin, application = database
+    busy = PoolAllocationRequest(adapter.pool, "trusted-team", "capacity-probe", 1)
+    neighbor = PoolAllocationRequest(adapter.pool, "neighbor-team", "capacity-neighbor", 2)
+    for request in (busy, neighbor):
+        adapter.allocate(request, credentials(request))
+    samples = []
+    started = threading.Event()
+    with application(busy.database_name, busy.login_role, credentials(busy).password) as occupied:
+        occupied.execute("SET statement_timeout=0")
+
+        def bounded_work():
+            started.set()
+            occupied.execute("SELECT pg_sleep(1), count(*) FROM generate_series(1,50000)")
+
+        with ThreadPoolExecutor(max_workers=1) as threads:
+            future = threads.submit(bounded_work)
+            assert started.wait(5)
+            with pytest.raises(psycopg.OperationalError):
+                application(busy.database_name, busy.login_role, credentials(busy).password)
+            for _ in range(10):
+                begin = time.monotonic()
+                with application(
+                    neighbor.database_name, neighbor.login_role, credentials(neighbor).password
+                ) as db:
+                    assert db.execute("SELECT 1").fetchone() == (1,)
+                samples.append(time.monotonic() - begin)
+            future.result(timeout=5)
+    with pytest.raises(psycopg.OperationalError):
+        application(neighbor.database_name, busy.login_role, credentials(busy).password)
+    record_property("neighbor_elapsed_samples_s", json.dumps(samples))
+    record_property("timeout_default_overridden", True)
+    record_property("physical_resource_isolation_claimed", False)

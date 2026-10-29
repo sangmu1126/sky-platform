@@ -45,20 +45,24 @@ def store(database):
     operations = PostgresOperationStore(database, workspace=uuid4().hex)
     pool = SharedDatabasePool("team", "111111111111", "ap-northeast-2", "sky-team", "sky_pool_team", 30)
     value = PostgresSharedDatabaseReviews(operations, pool, "c" * 64)
+    from tests.security_fixtures import trusted_database_job
+
     operations.records.save_job(
         JOB,
-        {
-            "id": JOB,
-            "application_id": "game",
-            "organization_id": "team-a",
-            "created_by": "creator",
-            "target": "aws-ecs-express",
-            "status": "planned",
-            "source_digest": "a" * 64,
-            "application_ir": {"source_revision": "b" * 64},
-            "infrastructure_profile": {"database_engines": ["postgresql"], "evidence": ["package.json"]},
-            "aws": {"expected_account": "111111111111", "region": "ap-northeast-2"},
-        },
+        trusted_database_job(
+            {
+                "id": JOB,
+                "application_id": "game",
+                "organization_id": "team-a",
+                "created_by": "creator",
+                "target": "aws-ecs-express",
+                "status": "planned",
+                "source_digest": "a" * 64,
+                "application_ir": {"source_revision": "b" * 64},
+                "infrastructure_profile": {"database_engines": ["postgresql"], "evidence": ["package.json"]},
+                "aws": {"expected_account": "111111111111", "region": "ap-northeast-2"},
+            }
+        ),
     )
     return value
 

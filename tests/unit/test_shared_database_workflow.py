@@ -15,9 +15,11 @@ from engine.database_placement import select_shared_database
 from ports.operations import ExecutionLease, Operation
 from ports.state import StoredJob
 
+_REVIEW_NOW = datetime.now(UTC)
+
 
 def source():
-    return {
+    job = {
         "id": "a" * 16,
         "application_id": "game",
         "organization_id": "team-a",
@@ -29,6 +31,22 @@ def source():
         "infrastructure_profile": {"database_engines": ["postgresql"], "evidence": ["package.json"]},
         "aws": {"expected_account": "111111111111", "region": "ap-northeast-2"},
     }
+
+    from application.database_security_review import assessment_digest
+
+    assessment = {"data_sensitivity": "low", "tenant_trust": "trusted", "physical_isolation_required": False}
+    job["database_security_requirements"] = assessment
+    job["database_security_review"] = {
+        "reviewed_by": "fixture-admin",
+        "organization_id": job["organization_id"],
+        "application_id": job["application_id"],
+        "source_digest": job["source_digest"],
+        "assessment_digest": assessment_digest(assessment),
+        "review_ref": "trusted-fixture",
+        "reviewed_at": _REVIEW_NOW.isoformat(),
+        "expires_at": (_REVIEW_NOW + timedelta(hours=1)).isoformat(),
+    }
+    return job
 
 
 def actor(role=Role.DEPLOYER):

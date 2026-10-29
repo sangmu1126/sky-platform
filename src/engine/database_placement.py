@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import asdict
+from datetime import UTC, datetime
 
 from domain.shared_database import PoolAllocationRequest, SharedDatabasePool
 
@@ -15,7 +16,12 @@ def _digest(value):
 def select_shared_database(
     job: dict, pool: SharedDatabasePool, *, config_digest: str, connection_limit=5
 ) -> dict:
+    from domain.database_security import require_current_database_review
+
     security = job.get("database_security_requirements")
+    if security is None:
+        raise ValueError("Unknown database isolation requirements cannot default to shared infrastructure")
+    review = require_current_database_review(job, security, now=datetime.now(UTC).isoformat())
     if security is not None:
         if (
             not isinstance(security, dict)
@@ -79,4 +85,5 @@ def select_shared_database(
     }
     if security is not None:
         result["security_requirements_digest"] = _digest(security)
+        result["security_review_digest"] = _digest(review)
     return {**result, "selection_id": "DBS-" + _digest(result)[:24]}

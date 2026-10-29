@@ -60,6 +60,9 @@ def workflow():
         "infrastructure_profile": {"database_engines": ["postgresql"], "evidence": ["package.json"]},
         "aws": {"expected_account": pool.account_id, "region": pool.region},
     }
+    from tests.security_fixtures import trusted_database_job
+
+    job = trusted_database_job(job)
     records.save_job(job["id"], job)
     admission = SharedDatabaseAdmission(records, operations, pool, "c" * 64)
     operation = admission.admit(actor, job["id"], admission.choose(actor, job["id"]), "choice-1")
