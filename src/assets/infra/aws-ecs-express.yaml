@@ -12,11 +12,14 @@ Resources:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: sky-managed
+      ImageTagMutability: IMMUTABLE
       ImageScanningConfiguration:
         ScanOnPush: true
       Tags:
         - Key: sky-managed
           Value: 'true'
+        - Key: app
+          Value: sky
   ExecutionRole:
     Type: AWS::IAM::Role
     Properties:
