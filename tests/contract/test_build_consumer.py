@@ -449,7 +449,7 @@ def test_existing_app_is_not_recreated_by_initial_deployment_executor(setup):
     assert not consumer.store.get(operation.id).external_pending
 
 
-@pytest.mark.parametrize("change", ["source", "owner", "revoked-approval"])
+@pytest.mark.parametrize("change", ["source", "owner", "approval-plan"])
 def test_remote_delegation_rechecks_consumed_approval_and_projection(setup, change):
     from tests.contract.test_effect_budget import policy
 
@@ -468,9 +468,9 @@ def test_remote_delegation_rechecks_consumed_approval_and_projection(setup, chan
     assert store.begin_external(lease, intent)
     assert store.build_delegation(lease, request, consumer.settings)["budget"]["caps"]["requests"] == 1
     with database() as connection:
-        if change == "revoked-approval":
+        if change == "approval-plan":
             connection.execute(
-                "UPDATE sky_state.deployment_approvals SET revoked_at=clock_timestamp() WHERE workspace=%s AND id=%s",
+                "UPDATE sky_state.deployment_approvals SET plan_digest=repeat('f',64) WHERE workspace=%s AND id=%s",
                 (store.workspace, operation.command["approval_id"]),
             )
         else:
