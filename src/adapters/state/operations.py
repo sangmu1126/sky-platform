@@ -492,6 +492,9 @@ class PostgresOperationStore:
             self._event(connection, lease.operation_id, "external_observed")
             return True
 
+    def _validate_build_delegation(self, connection, operation):
+        """Specialized build stores recheck the consumed approval and job."""
+
     def build_delegation(self, lease, request, settings):
         """Fresh DB-owned facts, only after the exact remote-build reservation."""
         from datetime import datetime, timedelta
@@ -504,6 +507,7 @@ class PostgresOperationStore:
             operation = self._select(connection, lease.operation_id)
             if not operation.external_pending or operation.external_intent.get("kind") != "github_build":
                 return None
+            self._validate_build_delegation(connection, operation)
             if digest(request_for(operation, self.workspace, settings)) != digest(request):
                 raise ValueError("Build delegation request differs from the approved command")
             if self.effect_budget is None:

@@ -1,10 +1,14 @@
 """Lease-fenced build progress and job projection commit in one transaction."""
+
 import json
 
 from adapters.state.operations import PostgresOperationStore
 
 
 class PostgresBuildExecutionStore(PostgresOperationStore):
+    def _validate_build_delegation(self, connection, operation):
+        self._job(connection, operation)
+
     def reconcile_deployment(self, principal, expected, snapshot, result):
         """Atomic publication after trusted read-only runtime revalidation.
 
@@ -23,61 +27,133 @@ class PostgresBuildExecutionStore(PostgresOperationStore):
             if not self._execution_allowed(connection, expected.application_id):
                 raise RecordConflict("Application execution is fenced")
             operation = self._select(connection, expected.id, lock=True)
-            if operation != expected or operation.status != "needs_attention" or not operation.external_pending:
+            if (
+                operation != expected
+                or operation.status != "needs_attention"
+                or not operation.external_pending
+            ):
                 raise RecordConflict("Deployment changed since runtime observation")
             job = self._job(connection, operation)
             authorize_job_snapshot(principal, c_job_id(operation), snapshot)
-            revision = connection.execute("SELECT revision FROM sky_state.metadata_records WHERE workspace=%s AND kind='job' AND record_id=%s",
-                (self.workspace, c_job_id(operation))).fetchone()[0]
-            if (revision != snapshot.revision or job != snapshot.record or job.get("security_hold") is not None
-                    or job.get("security_database_restriction") is not None):
+            revision = connection.execute(
+                "SELECT revision FROM sky_state.metadata_records WHERE workspace=%s AND kind='job' AND record_id=%s",
+                (self.workspace, c_job_id(operation)),
+            ).fetchone()[0]
+            if (
+                revision != snapshot.revision
+                or job != snapshot.record
+                or job.get("security_hold") is not None
+                or job.get("security_database_restriction") is not None
+            ):
                 raise RecordConflict("Job changed since runtime observation")
-            if result.get("verification", {}).get("http") != "verified" or result.get("verification", {}).get("image") != "verified":
+            if (
+                result.get("verification", {}).get("http") != "verified"
+                or result.get("verification", {}).get("image") != "verified"
+            ):
                 raise ValueError("Current runtime HTTP/image verification required")
             database = result.get("database")
             if database is not None:
                 from domain.database import DatabaseBinding
+
                 binding = DatabaseBinding(**database["binding"])
-                if (database.get("protocol") != "shared-postgres-deployment-v1" or database.get("tls_verified") is not True
-                        or database.get("cross_database_access_denied") is not True
-                        or result.get("verification", {}).get("database_authentication") != "verified"
-                        or result.get("image_identity", {}).get("status") != "passed"
-                        or (binding.organization_id, binding.application_id, binding.account_id, binding.region, binding.role)
-                        != (operation.command["organization_id"], operation.application_id,
-                            operation.command["account_id"], operation.command["region"], "shared_workload")):
+                if (
+                    database.get("protocol") != "shared-postgres-deployment-v1"
+                    or database.get("tls_verified") is not True
+                    or database.get("cross_database_access_denied") is not True
+                    or result.get("verification", {}).get("database_authentication") != "verified"
+                    or result.get("image_identity", {}).get("status") != "passed"
+                    or (
+                        binding.organization_id,
+                        binding.application_id,
+                        binding.account_id,
+                        binding.region,
+                        binding.role,
+                    )
+                    != (
+                        operation.command["organization_id"],
+                        operation.application_id,
+                        operation.command["account_id"],
+                        operation.command["region"],
+                        "shared_workload",
+                    )
+                ):
                     raise ValueError("Verified PostgreSQL ownership required")
                 job["workload_database_binding"] = database["binding"]
-            checkpoint = {**operation.checkpoint, "stage": "deployed", "deployment_result": result,
-                          "reconciliation": {"resolved_by": principal.user_id, "original_version": operation.row_version,
-                                             "resubmission": False}}
-            job.update(status="succeeded", deployment_state="deployed", result=result,
-                       build_result=checkpoint["build_result"])
-            connection.execute("UPDATE sky_state.metadata_records SET document=%s,revision=revision+1,modified_at=clock_timestamp() WHERE workspace=%s AND kind='job' AND record_id=%s",
-                (self._json(self._document(job)), self.workspace, c_job_id(operation)))
-            connection.execute("UPDATE sky_state.operations SET checkpoint=%s,status='succeeded',result=%s,external_receipt=%s,external_pending=false,lease_owner=NULL,lease_until=NULL,row_version=row_version+1 WHERE workspace=%s AND id=%s",
-                (self._json(self._document(checkpoint)),self._json(result),self._json(result),self.workspace,operation.id))
-            connection.execute("DELETE FROM sky_state.mutation_scopes WHERE workspace=%s AND operation_id=%s",
-                (self.workspace, operation.id))
+            checkpoint = {
+                **operation.checkpoint,
+                "stage": "deployed",
+                "deployment_result": result,
+                "reconciliation": {
+                    "resolved_by": principal.user_id,
+                    "original_version": operation.row_version,
+                    "resubmission": False,
+                },
+            }
+            job.update(
+                status="succeeded",
+                deployment_state="deployed",
+                result=result,
+                build_result=checkpoint["build_result"],
+            )
+            connection.execute(
+                "UPDATE sky_state.metadata_records SET document=%s,revision=revision+1,modified_at=clock_timestamp() WHERE workspace=%s AND kind='job' AND record_id=%s",
+                (self._json(self._document(job)), self.workspace, c_job_id(operation)),
+            )
+            connection.execute(
+                "UPDATE sky_state.operations SET checkpoint=%s,status='succeeded',result=%s,external_receipt=%s,external_pending=false,lease_owner=NULL,lease_until=NULL,row_version=row_version+1 WHERE workspace=%s AND id=%s",
+                (
+                    self._json(self._document(checkpoint)),
+                    self._json(result),
+                    self._json(result),
+                    self.workspace,
+                    operation.id,
+                ),
+            )
+            connection.execute(
+                "DELETE FROM sky_state.mutation_scopes WHERE workspace=%s AND operation_id=%s",
+                (self.workspace, operation.id),
+            )
             self._event(connection, operation.id, "deployment_reconciled")
 
     def _job(self, connection, operation):
         c = operation.command
-        row = connection.execute("""SELECT j.document FROM sky_state.metadata_records j
+        row = connection.execute(
+            """SELECT j.document FROM sky_state.metadata_records j
             JOIN sky_state.deployment_approvals a ON a.workspace=j.workspace AND a.id=%s
             WHERE j.workspace=%s AND j.kind='job' AND j.record_id=%s
             AND a.operation_id=%s AND a.job_id=j.record_id AND a.revoked_at IS NULL
             AND a.organization_id=%s AND a.approved_by=%s AND a.application_id=%s
             AND a.plan=%s AND a.plan_digest=%s AND a.source_ref=%s
-            FOR UPDATE OF j""", (c["approval_id"], self.workspace, c["job_id"], operation.id,
-                c["organization_id"], c["created_by"], operation.application_id,
-                c["approved_plan_json"], c["plan_digest"], self._json(c["source_ref"]))).fetchone()
+            FOR UPDATE OF j""",
+            (
+                c["approval_id"],
+                self.workspace,
+                c["job_id"],
+                operation.id,
+                c["organization_id"],
+                c["created_by"],
+                operation.application_id,
+                c["approved_plan_json"],
+                c["plan_digest"],
+                self._json(c["source_ref"]),
+            ),
+        ).fetchone()
         if row is None:
             raise ValueError("Build has no matching consumed approval/job")
         job = row[0]
-        expected = {"id": c["job_id"], "operation_id": operation.id, "approval_id": c["approval_id"],
-                    "application_id": operation.application_id, "organization_id": c["organization_id"],
-                    "created_by": c["created_by"], "source_ref": c["source_ref"], "source_digest": c["source_digest"],
-                    "plan_digest": c["plan_digest"], "plan": json.loads(c["approved_plan_json"]), "target": "aws"}
+        expected = {
+            "id": c["job_id"],
+            "operation_id": operation.id,
+            "approval_id": c["approval_id"],
+            "application_id": operation.application_id,
+            "organization_id": c["organization_id"],
+            "created_by": c["created_by"],
+            "source_ref": c["source_ref"],
+            "source_digest": c["source_digest"],
+            "plan_digest": c["plan_digest"],
+            "plan": json.loads(c["approved_plan_json"]),
+            "target": "aws",
+        }
         if any(job.get(k) != v for k, v in expected.items()):
             raise ValueError("Build projection identity changed")
         return job
@@ -96,33 +172,64 @@ class PostgresBuildExecutionStore(PostgresOperationStore):
             database = result.get("database")
             if database is not None:
                 from domain.database import DatabaseBinding
+
                 binding = DatabaseBinding(**database["binding"])
-                if (database.get("protocol") != "shared-postgres-deployment-v1"
-                        or database.get("tls_verified") is not True
-                        or database.get("cross_database_access_denied") is not True
-                        or result.get("verification", {}).get("database_authentication") != "verified"
-                        or result.get("image_identity", {}).get("status") != "passed"
-                        or (binding.organization_id, binding.application_id, binding.account_id, binding.region, binding.role)
-                        != (operation.command["organization_id"], operation.application_id,
-                            operation.command["account_id"], operation.command["region"], "shared_workload")):
+                if (
+                    database.get("protocol") != "shared-postgres-deployment-v1"
+                    or database.get("tls_verified") is not True
+                    or database.get("cross_database_access_denied") is not True
+                    or result.get("verification", {}).get("database_authentication") != "verified"
+                    or result.get("image_identity", {}).get("status") != "passed"
+                    or (
+                        binding.organization_id,
+                        binding.application_id,
+                        binding.account_id,
+                        binding.region,
+                        binding.role,
+                    )
+                    != (
+                        operation.command["organization_id"],
+                        operation.application_id,
+                        operation.command["account_id"],
+                        operation.command["region"],
+                        "shared_workload",
+                    )
+                ):
                     raise ValueError("Verified app-owned PostgreSQL deployment binding required")
                 job["workload_database_binding"] = database["binding"]
-            job.update(status="succeeded", deployment_state="deployed", result=result,
-                       build_result=checkpoint["build_result"])
-            connection.execute("""UPDATE sky_state.metadata_records SET document=%s,
+            job.update(
+                status="succeeded",
+                deployment_state="deployed",
+                result=result,
+                build_result=checkpoint["build_result"],
+            )
+            connection.execute(
+                """UPDATE sky_state.metadata_records SET document=%s,
                 revision=revision+1,modified_at=clock_timestamp()
                 WHERE workspace=%s AND kind='job' AND record_id=%s""",
-                (self._json(self._document(job)), self.workspace, c_job_id(operation)))
-            connection.execute("""UPDATE sky_state.operations SET checkpoint=%s,status='succeeded',result=%s,
+                (self._json(self._document(job)), self.workspace, c_job_id(operation)),
+            )
+            connection.execute(
+                """UPDATE sky_state.operations SET checkpoint=%s,status='succeeded',result=%s,
                 lease_owner=NULL,lease_until=NULL,row_version=row_version+1 WHERE workspace=%s AND id=%s""",
-                (self._json(checkpoint), self._json(result), self.workspace, operation.id))
-            connection.execute("DELETE FROM sky_state.mutation_scopes WHERE workspace=%s AND operation_id=%s",
-                (self.workspace, operation.id))
+                (self._json(checkpoint), self._json(result), self.workspace, operation.id),
+            )
+            connection.execute(
+                "DELETE FROM sky_state.mutation_scopes WHERE workspace=%s AND operation_id=%s",
+                (self.workspace, operation.id),
+            )
             self._event(connection, operation.id, "succeeded")
             return True
 
     def build_progress(self, lease, checkpoint, *, stage):
-        if stage not in {"building", "waiting_build", "build_ready", "deploying", "needs_attention", "failed"}:
+        if stage not in {
+            "building",
+            "waiting_build",
+            "build_ready",
+            "deploying",
+            "needs_attention",
+            "failed",
+        }:
             raise ValueError("Invalid build stage")
         checkpoint = self._document(checkpoint)
         with self.records._connection() as connection:
@@ -131,36 +238,55 @@ class PostgresBuildExecutionStore(PostgresOperationStore):
             operation = self._select(connection, lease.operation_id)
             job = self._job(connection, operation)
             if stage == "deploying":
-                existing = connection.execute("""SELECT EXISTS(SELECT 1 FROM sky_state.metadata_records
+                existing = connection.execute(
+                    """SELECT EXISTS(SELECT 1 FROM sky_state.metadata_records
                     WHERE workspace=%s AND kind='job' AND record_id<>%s
                     AND document->>'application_id'=%s AND document->>'organization_id'=%s
                     AND document->>'status'='succeeded' AND document->'result' IS NOT NULL
                     AND document->'result'<>'null'::jsonb)""",
-                    (self.workspace, c_job_id(operation), operation.application_id,
-                     operation.command["organization_id"])).fetchone()[0]
+                    (
+                        self.workspace,
+                        c_job_id(operation),
+                        operation.application_id,
+                        operation.command["organization_id"],
+                    ),
+                ).fetchone()[0]
                 if existing:
                     raise ValueError("Existing application deployment requires an update executor")
             terminal = stage in {"build_ready", "needs_attention", "failed"}
             if stage in {"build_ready", "failed"} and operation.external_pending:
                 raise ValueError("Verify the external build before settling")
-            job.update(status=stage, deployment_state=("awaiting_deployment" if stage == "build_ready" else stage))
+            job.update(
+                status=stage, deployment_state=("awaiting_deployment" if stage == "build_ready" else stage)
+            )
             if stage == "build_ready":
                 job["build_result"] = checkpoint["build_result"]
             # No deploy URL or deployment success is synthesized from a built image.
             self._document(job)
-            connection.execute("""UPDATE sky_state.metadata_records SET document=%s,
+            connection.execute(
+                """UPDATE sky_state.metadata_records SET document=%s,
                 revision=revision+1,modified_at=clock_timestamp()
-                WHERE workspace=%s AND kind='job' AND record_id=%s""", (self._json(job), self.workspace, c_job_id(operation)))
+                WHERE workspace=%s AND kind='job' AND record_id=%s""",
+                (self._json(job), self.workspace, c_job_id(operation)),
+            )
             if terminal:
                 state = "failed" if stage == "failed" else "needs_attention"
-                connection.execute("""UPDATE sky_state.operations SET checkpoint=%s,status=%s,
+                connection.execute(
+                    """UPDATE sky_state.operations SET checkpoint=%s,status=%s,
                     lease_owner=NULL,lease_until=NULL,row_version=row_version+1 WHERE workspace=%s AND id=%s""",
-                    (self._json(checkpoint), state, self.workspace, operation.id))
+                    (self._json(checkpoint), state, self.workspace, operation.id),
+                )
                 if stage == "failed":
-                    connection.execute("DELETE FROM sky_state.mutation_scopes WHERE workspace=%s AND operation_id=%s", (self.workspace, operation.id))
+                    connection.execute(
+                        "DELETE FROM sky_state.mutation_scopes WHERE workspace=%s AND operation_id=%s",
+                        (self.workspace, operation.id),
+                    )
             else:
-                connection.execute("""UPDATE sky_state.operations SET checkpoint=%s,row_version=row_version+1
-                    WHERE workspace=%s AND id=%s""", (self._json(checkpoint), self.workspace, operation.id))
+                connection.execute(
+                    """UPDATE sky_state.operations SET checkpoint=%s,row_version=row_version+1
+                    WHERE workspace=%s AND id=%s""",
+                    (self._json(checkpoint), self.workspace, operation.id),
+                )
             self._event(connection, operation.id, stage)
             return True
 

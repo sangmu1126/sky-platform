@@ -447,3 +447,38 @@ def test_existing_app_is_not_recreated_by_initial_deployment_executor(setup):
     assert consumer.consume_once() == "needs_attention"
     assert not consumer.deployer.calls
     assert not consumer.store.get(operation.id).external_pending
+
+
+@pytest.mark.parametrize("change", ["source", "owner", "revoked-approval"])
+def test_remote_delegation_rechecks_consumed_approval_and_projection(setup, change):
+    from tests.contract.test_effect_budget import policy
+
+    consumer, operation, database = setup
+    store = consumer.store
+    store.effect_budget = policy()
+    lease = store.claim(operation.id, operation.attempt_id, "scoped-worker")
+    request = request_for(operation, store.workspace, consumer.settings)
+    intent = {
+        "kind": "github_build",
+        "build_id": request["build_id"],
+        "request_digest": digest(request),
+        "repository": consumer.settings.repository,
+        "workflow_sha": consumer.settings.workflow_sha,
+    }
+    assert store.begin_external(lease, intent)
+    assert store.build_delegation(lease, request, consumer.settings)["budget"]["caps"]["requests"] == 1
+    with database() as connection:
+        if change == "revoked-approval":
+            connection.execute(
+                "UPDATE sky_state.deployment_approvals SET revoked_at=clock_timestamp() WHERE workspace=%s AND id=%s",
+                (store.workspace, operation.command["approval_id"]),
+            )
+        else:
+            field = "source_digest" if change == "source" else "created_by"
+            value = "f" * 64 if change == "source" else "another-user"
+            connection.execute(
+                "UPDATE sky_state.metadata_records SET document=jsonb_set(document,ARRAY[%s],to_jsonb(%s::text)),revision=revision+1 WHERE workspace=%s AND kind='job' AND record_id=%s",
+                (field, value, store.workspace, operation.command["job_id"]),
+            )
+    with pytest.raises(ValueError):
+        store.build_delegation(lease, request, consumer.settings)
