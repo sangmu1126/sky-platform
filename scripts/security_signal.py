@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from application.security_signals import RegisteredDetector, SecuritySignalIntake
-from interfaces.security_hold import operator
 
 
 def load_bounded(path, limit):
@@ -43,6 +42,10 @@ def main():
     parser.add_argument("--confirm-hold", action="store_true", required=True)
     args = parser.parse_args()
     try:
+        # Read-only collectors/build controllers reuse load_bounded without DB
+        # drivers or operator credentials. Import mutation adapters only here.
+        from interfaces.security_hold import operator
+
         actor = operator(args)
         config = load_bounded(args.detectors, 16384)
         if (

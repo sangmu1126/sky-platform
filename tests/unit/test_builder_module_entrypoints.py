@@ -13,6 +13,7 @@ def test_workflow_helper_imports_work_in_a_clean_process():
     assert "python scripts/" not in workflow
     modules = sorted(set(re.findall(r"python -m (scripts\.[a-z_]+)", workflow)))
     assert "scripts.fetch_build_materials" in modules
+    modules += ["scripts.vm_build_controller", "scripts.vm_scan_controller"]
     environment = {
         "PATH": os.environ.get("PATH", ""),
         "PYTHONPATH": str(root / "src"),
@@ -22,7 +23,15 @@ def test_workflow_helper_imports_work_in_a_clean_process():
         [
             sys.executable,
             "-c",
-            "import importlib,sys; [importlib.import_module(m) for m in sys.argv[1:]]",
+            (
+                "import importlib,importlib.abc,sys\n"
+                "class NoDatabaseDriver(importlib.abc.MetaPathFinder):\n"
+                " def find_spec(self, fullname, path=None, target=None):\n"
+                "  if fullname.split('.')[0] in {'psycopg', 'psycopg2'}:\n"
+                "   raise AssertionError('Build controller must not import a DB driver')\n"
+                "sys.meta_path.insert(0,NoDatabaseDriver())\n"
+                "[importlib.import_module(m) for m in sys.argv[1:]]"
+            ),
             *modules,
         ],
         cwd=root,
