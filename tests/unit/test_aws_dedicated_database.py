@@ -300,3 +300,36 @@ def test_runtime_clients_cannot_be_implicit_remove_existing_or_duplicate(prepare
             old.settings, session=session, source_client_groups=groups, network_guard=guard
         )
     clients["rds"].create_db_instance.assert_not_called()
+
+
+def test_dedicated_target_can_narrow_clients_without_changing_blue_network(prepared):
+    adapter, _plan, _operation, _clients, _instance, _connection = prepared
+    original = adapter.settings
+    settings = replace(
+        original,
+        source=replace(
+            original.source,
+            allowed_client_groups=(*original.source.allowed_client_groups, "sg-99999999999999999"),
+        ),
+    )
+    dedicated_clients = (settings.source.allowed_client_groups[0],)
+    session = Mock()
+    narrowed = AwsDedicatedDatabasePreparer(
+        settings,
+        session=session,
+        target_client_groups=dedicated_clients,
+        network_guard=Mock(),
+    )
+    assert narrowed.audit.settings.allowed_client_groups == settings.source.allowed_client_groups
+    assert narrowed.network.settings.allowed_client_groups == dedicated_clients
+    assert narrowed.network.settings.database_security_group == settings.database_security_group
+
+
+def test_narrowing_target_still_requires_trusted_network_registration(prepared):
+    adapter, *_ = prepared
+    with pytest.raises(ValueError, match="ownership guard"):
+        AwsDedicatedDatabasePreparer(
+            adapter.settings,
+            session=Mock(),
+            target_client_groups=(adapter.settings.source.allowed_client_groups[0],),
+        )

@@ -78,9 +78,12 @@ class AwsDedicatedDatabasePreparer:
         target_network = replace(settings.source, database_security_group=settings.database_security_group,
             allowed_client_groups=(settings.source.allowed_client_groups
                                    if target_client_groups is None else target_client_groups))
-        for network in (source_network, target_network):
-            if not set(settings.source.allowed_client_groups).issubset(network.allowed_client_groups):
-                raise ValueError("Runtime registration cannot discard existing database clients")
+        # Blue still uses the source: its registered clients must remain reachable.
+        # Green is a new independent instance and may deliberately narrow its
+        # client set to an app-specific group. Requiring the shared pool's groups
+        # here would force unrelated tenants onto the dedicated network boundary.
+        if not set(settings.source.allowed_client_groups).issubset(source_network.allowed_client_groups):
+            raise ValueError("Runtime registration cannot discard existing database clients")
         self.audit = AwsSharedDatabaseAllocator(source_network, session=session, connect=connect)
         self.network = AwsSharedDatabaseAllocator(target_network, session=session, connect=connect)
         # Creation has no client token: don't let SDK retries repeat an uncertain mutation.
