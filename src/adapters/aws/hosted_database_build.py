@@ -60,7 +60,8 @@ class HostedDatabaseBuild:
 
     @staticmethod
     def key(request):
-        return f"builds/{request['build_id']}/database.json"
+        artifact, _ = validate_request(request)
+        return f"database-preparations/{artifact.organization_id}/{artifact.application_id}/{request['build_id']}.json"
 
     def _profile(self, request, binding, role_id):
         return SharedPostgresBuildProfile(
