@@ -26,6 +26,17 @@ _AUTH = {
     "requirepermission",
     "require_permission",
     "jwt",
+    "passport",
+    "authguard",
+    "rolesguard",
+    "useguards",
+    "csrf",
+    "csurf",
+    "session",
+    "expressjwt",
+    "requirelogin",
+    "ensureloggedin",
+    "requireadmin",
 }
 _FUNCTIONS = {
     "arrow_function",
@@ -39,9 +50,9 @@ _DYNAMIC = {"eval", "Function", "exec", "execSync", "spawn", "spawnSync"}
 
 
 def _parse(path, text):
-    from tree_sitter import Language, Parser
     import tree_sitter_javascript as js
     import tree_sitter_typescript as ts
+    from tree_sitter import Language, Parser
 
     raw = text.encode()
     if len(raw) > 1024 * 1024:
@@ -130,6 +141,39 @@ def check_javascript_patch(path, before, after):
             .split(".")[-1]
             in _DYNAMIC
         )
+
+    def dangerous_imports(root):
+        found = Counter()
+        unsafe = {
+            "child_process",
+            "node:child_process",
+            "vm",
+            "node:vm",
+            "worker_threads",
+            "node:worker_threads",
+        }
+        for node in _nodes(root):
+            if node.type == "import_statement":
+                argument = node.child_by_field_name("source")
+            elif node.type == "call_expression" and (
+                node.child_by_field_name("function") is not None
+                and node.child_by_field_name("function").text in {b"require", b"import"}
+            ):
+                args = node.child_by_field_name("arguments")
+                argument = args.named_children[0] if args and len(args.named_children) == 1 else None
+                if argument is None or argument.type != "string":
+                    found[("computed-module", _canonical(node))] += 1
+                    continue
+            else:
+                continue
+            if argument is not None:
+                raw = argument.text.decode()
+                if "\\" in raw or raw[1:-1] in unsafe:
+                    found[("execution-module", raw)] += 1
+        return found
+
+    if dangerous_imports(new) - dangerous_imports(old):
+        raise ValueError("Security policy rejects adding execution modules or computed imports")
 
     if execution(new) - execution(old):
         raise ValueError("Security policy rejects introducing JavaScript dynamic execution")
