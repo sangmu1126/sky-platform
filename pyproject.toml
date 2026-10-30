@@ -3,7 +3,7 @@ name = "sky-platform"
 version = "0.1.0"
 description = "One action, verified deployments across local and cloud targets"
 requires-python = ">=3.12"
-dependencies = ["cryptography>=50,<51", "PyJWT[crypto]>=2.10,<3"]
+dependencies = ["cryptography>=50,<51", "PyJWT[crypto]>=2.10,<3", "tree-sitter>=0.25,<0.27", "tree-sitter-javascript>=0.25,<0.26", "tree-sitter-typescript>=0.23,<0.24"]
 
 [project.optional-dependencies]
 aws-native = ["boto3>=1.40,<2"]

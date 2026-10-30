@@ -7,19 +7,9 @@ from pathlib import PurePosixPath
 
 def check_patch_security(path, before, after):
     name = PurePosixPath(path).name
-    if (
-        PurePosixPath(path).suffix in {".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx"}
-        and before != after
-        and re.search(
-            r"\b(?:requireAuth|require_auth)\b|\b(?:jwt\.(?:verify|decode)|passport\.authenticate|requireAuth|require_auth|"
-            r"verifyToken|verify_token|checkPermission|isAuthenticated|authorize)\s*\(|"
-            r"\.(?:status|sendStatus)\s*\(\s*(?:401|403)\s*\)",
-            before,
-        )
-    ):
-        # No JavaScript semantic parser is available in the worker. Preserve the
-        # complete protected file instead of claiming a regex proves auth safety.
-        raise ValueError("Security policy requires manual review of authenticated JavaScript file changes")
+    if PurePosixPath(path).suffix in {".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx"} and before != after:
+        from application.javascript_patch_invariants import check_javascript_patch
+        check_javascript_patch(path, before, after)
     if PurePosixPath(path).suffix == ".py":
         from application.patch_invariants import check_python_patch
 
