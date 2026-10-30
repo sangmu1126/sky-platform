@@ -1,6 +1,8 @@
 """Persistent, opt-in PostgreSQL creation requests; never retry an uncertain create."""
 from __future__ import annotations
 
+from application.output_security import redact
+
 import json
 import os
 import re
@@ -252,7 +254,7 @@ class PostgresOperations:
         except Exception as exc:
             with self.lock:
                 updated = {**operation, 'status': 'needs_attention',
-                           'message': 'RDS 생성 결과를 확인하지 못했습니다: ' + str(exc)}
+                           'message': 'RDS 생성 결과를 확인하지 못했습니다: ' + redact(str(exc))}
                 try:
                     self._save(updated)
                 except OSError:
@@ -360,7 +362,7 @@ class PostgresOperations:
                 if operation['status'] == 'recovering':
                     raise ValueError('실패 스택 정리가 실행 중입니다.') from None
                 operation['status'] = 'needs_attention'
-                operation['message'] = 'AWS 생성 상태를 확정하지 못했습니다: ' + str(exc)
+                operation['message'] = 'AWS 생성 상태를 확정하지 못했습니다: ' + redact(str(exc))
                 self._save(operation)
         return self.get(application_id)
 
@@ -486,5 +488,5 @@ class PostgresOperations:
         except Exception as exc:
             with self.lock:
                 operation['status'] = 'needs_attention'
-                operation['message'] = '실패 스택 정리 결과를 확정하지 못했습니다: ' + str(exc)
+                operation['message'] = '실패 스택 정리 결과를 확정하지 못했습니다: ' + redact(str(exc))
                 self._save(operation)

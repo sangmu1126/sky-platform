@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from application.analysis import redact
 from application.health import check_deployment
@@ -42,7 +42,7 @@ class MonitoringMixin:
         result = check_deployment(snapshot)
         entry = {
             "healthy": bool(result.get("healthy")),
-            "checked_at": result.get("checked_at") or datetime.now(timezone.utc).isoformat(),
+            "checked_at": result.get("checked_at") or datetime.now(UTC).isoformat(),
             "reason": redact(str(result.get("reason") or ""))[:300],
             "source": source,
             "deployment_binding": deployment_observation_binding(snapshot),
@@ -74,7 +74,7 @@ class MonitoringMixin:
                 self.health_history[job_id] = history
                 self.monitor_errors.pop(job_id, None)
             except OSError as exc:
-                self.monitor_errors[job_id] = "상태 확인 기록 저장 실패: " + str(exc)[:200]
+                self.monitor_errors[job_id] = "상태 확인 기록 저장 실패: " + redact(str(exc))[:200]
         return result
 
     def check_and_record_websocket(self, job_id: str) -> dict:
@@ -101,7 +101,7 @@ class MonitoringMixin:
             outcome = {
                 "status": "failed",
                 "protocol": "sky.probe.v1",
-                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "checked_at": datetime.now(UTC).isoformat(),
                 "reason": "대상 소유권·현재 HTTP 상태를 확인하지 못했습니다.",
             }
         else:
@@ -111,8 +111,8 @@ class MonitoringMixin:
                 outcome = {
                     "status": "failed",
                     "protocol": "sky.probe.v1",
-                    "checked_at": datetime.now(timezone.utc).isoformat(),
-                    "reason": str(exc),
+                    "checked_at": datetime.now(UTC).isoformat(),
+                    "reason": redact(str(exc)),
                 }
         with self.lock:
             current = self.jobs.get(job_id)
@@ -151,7 +151,7 @@ class MonitoringMixin:
             except Exception as exc:
                 # Monitoring is observational; it must not alter deployment history on failure.
                 with self.lock:
-                    self.monitor_errors[job_id] = "자동 상태 확인 실패: " + str(exc)[:200]
+                    self.monitor_errors[job_id] = "자동 상태 확인 실패: " + redact(str(exc))[:200]
                 continue
 
     def monitor_loop(self, stop: threading.Event) -> None:

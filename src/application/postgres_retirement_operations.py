@@ -1,6 +1,8 @@
 """Durable HTTP retirement requests with no automatic replay after interruption."""
 from __future__ import annotations
 
+from application.output_security import redact
+
 import json
 import re
 import secrets
@@ -117,7 +119,7 @@ class PostgresRetirementOperations:
         except Exception as exc:
             with self.lock:
                 state['status'] = 'needs_attention'
-                state['message'] = '폐기 결과를 확인하지 못했습니다: ' + str(exc)
+                state['message'] = '폐기 결과를 확인하지 못했습니다: ' + redact(str(exc))
                 _save(self.root / (application_id + '.json'), state)
 
     def get(self, application_id: str) -> dict:

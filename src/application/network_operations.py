@@ -1,6 +1,8 @@
 """Journal explicit app-network creation without retrying uncertain AWS mutations."""
 from __future__ import annotations
 
+from application.output_security import redact
+
 import json
 import os
 import secrets
@@ -115,7 +117,7 @@ class NetworkOperations:
         except Exception as exc:
             with self.lock:
                 operation['status'] = 'needs_attention'
-                operation['message'] = '네트워크 생성 결과를 확인하지 못했습니다: ' + str(exc)
+                operation['message'] = '네트워크 생성 결과를 확인하지 못했습니다: ' + redact(str(exc))
                 self._save(operation)
             return
         with self.lock:
@@ -153,7 +155,7 @@ class NetworkOperations:
         except (AwsConfigurationError, ValueError, KeyError) as exc:
             with self.lock:
                 operation['status'] = 'needs_attention'
-                operation['message'] = 'AWS 네트워크 상태를 확정하지 못했습니다: ' + str(exc)
+                operation['message'] = 'AWS 네트워크 상태를 확정하지 못했습니다: ' + redact(str(exc))
                 self._save(operation)
         else:
             with self.lock:

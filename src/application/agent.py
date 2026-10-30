@@ -626,7 +626,7 @@ class DeploymentTools:
                 require_health_result(asdict(self.plan), self.result)
             return {"verified": True, **self.result}
         except Exception as exc:
-            self.event("attempt_failed", str(exc))
+            self.event("attempt_failed", self.clean(str(exc)))
             try:
                 adapter.cleanup_failure(attempt_id)
             except Exception:

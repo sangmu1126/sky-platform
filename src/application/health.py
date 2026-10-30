@@ -8,12 +8,13 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from adapters.aws.ecs import AwsExpressAdapter, AwsSettings
 from adapters.aws.static_site import AwsStaticSiteAdapter
 from adapters.gcp.cloud_run import CloudRunAdapter, CloudRunSettings
 from adapters.onprem.vm import VmSettings
+from application.output_security import redact
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -33,7 +34,7 @@ def probe(url: str, token: str | None = None) -> bool:
 
 def check_deployment(job: dict) -> dict:
     """Do not trust a stored success flag or an arbitrary stored URL as proof of health."""
-    checked_at = datetime.now(timezone.utc).isoformat()
+    checked_at = datetime.now(UTC).isoformat()
     if job.get('status') != 'succeeded' or not isinstance(job.get('result'), dict):
         raise ValueError('Only completed deployments can be checked')
     result = job['result']
@@ -117,7 +118,7 @@ def check_deployment(job: dict) -> dict:
                     raise RuntimeError('No identity token available')
             healthy = probe(url + health_path, token)
         elif target in {'aws-lambda', 'aws-ec2'}:
-            from adapters.aws.native import AwsLambdaAdapter, AwsEc2Adapter
+            from adapters.aws.native import AwsEc2Adapter, AwsLambdaAdapter
             receipt = job.get('native_receipt') or {}
             if (receipt.get('application_id') != job.get('application_id')
                     or receipt.get('attempt_id') != job.get('attempt_id')
@@ -182,6 +183,6 @@ def check_deployment(job: dict) -> dict:
         else:
             raise ValueError('Unsupported deployment target')
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired, RuntimeError) as exc:
-        return {'healthy': False, 'checked_at': checked_at, 'reason': str(exc)[:300]}
+        return {'healthy': False, 'checked_at': checked_at, 'reason': redact(str(exc))[:300]}
     return {'healthy': healthy, 'checked_at': checked_at,
             'reason': 'HTTP 200 confirmed' if healthy else 'Service did not return HTTP 200'}

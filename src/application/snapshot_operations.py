@@ -1,6 +1,8 @@
 """Journalled manual RDS snapshot requests with explicit plans and read-only recovery."""
 from __future__ import annotations
 
+from application.output_security import redact
+
 import json
 import os
 import secrets
@@ -115,7 +117,7 @@ class SnapshotOperations:
             with self.lock:
                 operation = self.operations[snapshot_id]
                 operation['status'] = 'needs_attention'
-                operation['message'] = 'AWS 생성 결과를 확정하지 못했습니다: ' + str(exc)
+                operation['message'] = 'AWS 생성 결과를 확정하지 못했습니다: ' + redact(str(exc))
                 self._save(operation)
             return
         with self.lock:
@@ -144,7 +146,7 @@ class SnapshotOperations:
             with self.lock:
                 operation = self.operations[snapshot_id]
                 operation['status'] = 'needs_attention'
-                operation['message'] = 'AWS 스냅샷 상태를 확정하지 못했습니다: ' + str(exc)
+                operation['message'] = 'AWS 스냅샷 상태를 확정하지 못했습니다: ' + redact(str(exc))
                 self._save(operation)
         else:
             with self.lock:

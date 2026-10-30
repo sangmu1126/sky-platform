@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from application.output_security import redact
+
 import re
 import json
 import shutil
@@ -717,7 +719,7 @@ class GitHubDeploymentsMixin:
                 current = self.github_sources.get(source_id)
                 if current:
                     current.update(
-                        last_error=str(exc)[:300], checked_at=datetime.now(timezone.utc).isoformat()
+                        last_error=redact(str(exc))[:300], checked_at=datetime.now(timezone.utc).isoformat()
                     )
                     self.save_github_sources()
             raise
@@ -804,7 +806,7 @@ class GitHubDeploymentsMixin:
         try:
             LocalDockerAdapter(lambda *_: None).retire(snapshot["result"], snapshot["id"])
         except Exception as exc:
-            self.event(job_id, "previous_local_cleanup_failed", str(exc)[:300])
+            self.event(job_id, "previous_local_cleanup_failed", redact(str(exc))[:300])
             return
         with self.lock:
             previous = self.jobs.get(snapshot["id"])

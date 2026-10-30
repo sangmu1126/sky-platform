@@ -90,3 +90,57 @@ def test_real_http_response_does_not_expose_nested_error_canary(monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_provider_failure_is_redacted_before_health_history_persistence(tmp_path, monkeypatch):
+    from unittest.mock import patch
+
+    from interfaces.http.server import App
+
+    canary = "opaque-health-provider-canary-20261030"
+    monkeypatch.setenv("AWS_SESSION_TOKEN", canary)
+    app = App(tmp_path)
+    job = "a" * 16
+    app.jobs[job] = {
+        "id": job,
+        "status": "succeeded",
+        "target": "local-docker",
+        "plan": {"health_path": "/"},
+        "result": {
+            "container": "sky-" + job + "-a1",
+            "image": "sky/test:latest",
+            "url": "http://127.0.0.1:49152",
+        },
+    }
+    with patch(
+        "application.health.subprocess.run", side_effect=OSError("synthetic provider failure " + canary)
+    ):
+        result = app.check_and_record_health(job, "manual")
+    assert result["healthy"] is False and canary not in result["reason"]
+    assert canary not in json.dumps(app.health_history)
+    assert all(canary not in path.read_text() for path in tmp_path.rglob("*.json"))
+
+
+def test_health_storage_failure_does_not_keep_raw_provider_credentials(tmp_path, monkeypatch):
+    from unittest.mock import patch
+
+    from interfaces.http.server import App
+
+    canary = "opaque-health-store-canary-20261030"
+    monkeypatch.setenv("PGPASSWORD", canary)
+    app = App(tmp_path)
+    job = "b" * 16
+    app.jobs[job] = {
+        "id": job,
+        "status": "succeeded",
+        "target": "local-docker",
+        "result": {"url": "http://127.0.0.1:49152"},
+    }
+    with (
+        patch(
+            "application.monitoring.check_deployment", return_value={"healthy": True, "reason": "HTTP 200"}
+        ),
+        patch.object(app.record_store, "save_health", side_effect=OSError(canary)),
+    ):
+        app.check_and_record_health(job, "manual")
+    assert canary not in app.monitor_errors[job] and "[REDACTED]" in app.monitor_errors[job]
