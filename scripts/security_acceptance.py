@@ -14,7 +14,7 @@ CASES = {
     "D01": ["tests/unit/test_build_execution_grants.py", "tests/contract/test_build_delegation.py"],
     "D02": ["tests/unit/test_adversarial_source_boundary.py"],
     "D03": ["tests/unit/test_build_sandbox.py", "tests/unit/test_vm_build_context.py"],
-    "D04": ["tests/unit/test_patch_security.py"],
+    "D04": ["tests/unit/test_patch_security.py", "tests/unit/test_javascript_patch_security.py"],
     "D05": [
         "tests/contract/test_effect_budget.py",
         "tests/contract/test_model_budget.py",
@@ -26,9 +26,14 @@ CASES = {
         "tests/unit/test_signed_build_verifier.py",
         "tests/unit/test_sbom_schema.py",
     ],
-    "D07": ["tests/unit/test_security_observations.py", "tests/unit/test_security_audit.py"],
+    "D07": [
+        "tests/unit/test_security_observations.py",
+        "tests/unit/test_security_audit.py",
+        "tests/unit/test_security_detector_evaluation.py",
+    ],
     "D08": ["tests/unit/test_database_security_review.py", "tests/contract/test_shared_database_pool.py"],
     "D09": ["tests/unit/test_adaptive_security_boundary.py"],
+    "D10": ["tests/unit/test_output_security.py", "tests/unit/test_delegated_session.py"],
 }
 
 
