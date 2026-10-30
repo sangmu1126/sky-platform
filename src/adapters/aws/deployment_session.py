@@ -97,6 +97,12 @@ def deployment_policy(registration, request, *, database_role=None):
         "iam:PassRole",
         "cloudformation:DescribeStacks",
     ]
+    if database_role is not None:
+        resources.append(base + "task/default/*")  # Read-only task inventory; SDK callbacks bind the service.
+        actions.append("ecs:DescribeTasks")
+    metadata_actions = ["ecs:DescribeTaskDefinition", "sts:GetCallerIdentity"]
+    if database_role is not None:
+        metadata_actions.append("ecs:ListTasks")
     policy = {
         "Version": "2012-10-17",
         "Statement": [
@@ -105,16 +111,25 @@ def deployment_policy(registration, request, *, database_role=None):
             {"Effect": "Allow", "Action": ["ecs:DescribeTaskDefinition"], "Resource": "*"},
             {
                 "Effect": "Deny",
-                "NotAction": ["ecs:DescribeTaskDefinition", "sts:GetCallerIdentity"],
+                "NotAction": metadata_actions,
                 "NotResource": resources,
             },
             {
                 "Effect": "Deny",
-                "NotAction": [*actions, "ecs:DescribeTaskDefinition", "sts:GetCallerIdentity"],
+                "NotAction": [*actions, *metadata_actions],
                 "Resource": "*",
             },
         ],
     }
+    if database_role is not None:
+        policy["Statement"].append(
+            {
+                "Effect": "Allow",
+                "Action": ["ecs:ListTasks"],
+                "Resource": "*",
+                "Condition": {"ArnEquals": {"ecs:cluster": base + "cluster/default"}},
+            }
+        )
     # IAM still intersects this session with the broker boundary/role policy.
     text = json.dumps(policy, separators=(",", ":"))
     if len(text) > 2048:
@@ -128,10 +143,20 @@ def deployment_policy(registration, request, *, database_role=None):
 
 class ScopedDeploymentFactory:
     def __init__(
-        self, settings, registration, *, source=None, database_profile=None, clock=lambda: datetime.now(UTC)
+        self,
+        settings,
+        registration,
+        *,
+        source=None,
+        database_profile=None,
+        database_resolver=None,
+        clock=lambda: datetime.now(UTC),
     ):
         if not isinstance(registration, DeploymentRoleRegistration):
             raise TypeError("Trusted deployment registration required")
+        self.database_resolver = database_resolver
+        if database_profile is not None and database_resolver is not None:
+            raise ValueError("Use a fixed database profile or an immutable request resolver")
         self.settings, self.registration, self.database_profile, self.clock = (
             settings,
             registration,
@@ -156,13 +181,16 @@ class ScopedDeploymentFactory:
         expiry = datetime.fromisoformat(r.expires_at)
         if now.tzinfo is None or not now < expiry <= now + timedelta(days=1):
             raise PermissionError("Deployment registration expired or outside approved interval")
-        policy, artifact = deployment_policy(
-            r, request, database_role=getattr(self.database_profile, "role", None)
+        profile = (
+            self.database_resolver.for_request(request, guard)
+            if self.database_resolver is not None
+            else self.database_profile
         )
-        if self.database_profile is not None and (
-            self.database_profile.job != request["job_id"]
-            or self.database_profile.binding.organization_id != artifact.organization_id
-            or self.database_profile.binding.application_id != artifact.application_id
+        policy, artifact = deployment_policy(r, request, database_role=getattr(profile, "role", None))
+        if profile is not None and (
+            profile.job != request["job_id"]
+            or profile.binding.organization_id != artifact.organization_id
+            or profile.binding.application_id != artifact.application_id
         ):
             raise PermissionError("Database role registration belongs to another application")
         guard()
@@ -237,10 +265,54 @@ class ScopedDeploymentFactory:
                 raise PermissionError("Task metadata belongs to another deployment")
 
         ecs.meta.events.register("before-parameter-build.ecs.DescribeTaskDefinition", metadata_scope)
+        if profile is not None:
+            expected_service = "sky-b-" + request["build_id"].replace("-", "")
+            tasks = set()
+
+            def list_scope(params, **_):
+                guard()
+                if (
+                    params.get("cluster") != "default"
+                    or params.get("serviceName") != expected_service
+                    or params.get("desiredStatus") != "RUNNING"
+                    or params.get("nextToken")
+                ):
+                    raise PermissionError("Task inventory differs from this deployment")
+
+            def listed(parsed, **_):
+                guard()
+                arns = parsed.get("taskArns", [])
+                prefix = f"arn:aws:ecs:{r.region}:{r.account_id}:task/default/"
+                if (
+                    parsed.get("nextToken")
+                    or not isinstance(arns, list)
+                    or len(arns) > 1
+                    or any(
+                        not isinstance(a, str) or not re.fullmatch(re.escape(prefix) + r"[0-9a-f]{32}", a)
+                        for a in arns
+                    )
+                ):
+                    raise PermissionError("Unambiguous registered service task inventory required")
+                tasks.clear()
+                tasks.update(arns)
+
+            def describe_scope(params, **_):
+                guard()
+                if (
+                    params.get("cluster") != "default"
+                    or not tasks
+                    or set(params.get("tasks", [])) != tasks
+                    or len(params["tasks"]) != len(tasks)
+                ):
+                    raise PermissionError("Task metadata differs from the exact service inventory")
+
+            ecs.meta.events.register("before-parameter-build.ecs.ListTasks", list_scope)
+            ecs.meta.events.register("after-call.ecs.ListTasks", listed)
+            ecs.meta.events.register("before-parameter-build.ecs.DescribeTasks", describe_scope)
         return BuiltImageDeployment(
             self.settings,
             ecs=ecs,
             stacks=scoped.client("cloudformation", config=config),
             identity=scoped.client("sts", config=config),
-            database_profile=self.database_profile,
+            database_profile=profile,
         )

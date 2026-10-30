@@ -99,6 +99,13 @@ def run_build_consumer(args):
         if getattr(args, "deploy_built_image", False)
         else None
     )
+    database_preparer = None
+    if os.environ.get("SKY_DATABASE_BUILD_POLICY_JSON") is not None:
+        if not hosted or database_profile is not None or deployer is None:
+            raise ValueError("Automatic database preparation requires one hosted scoped deployment consumer")
+        from interfaces.hosted_database_build import load_hosted_database_build
+
+        database_preparer = load_hosted_database_build(settings)
     if deployer is not None and hosted:
         from adapters.aws.deployment_session import DeploymentRoleRegistration, ScopedDeploymentFactory
 
@@ -106,6 +113,7 @@ def run_build_consumer(args):
             settings,
             DeploymentRoleRegistration.load(os.environ.get("SKY_DEPLOYMENT_ROLE_JSON")),
             database_profile=database_profile,
+            database_resolver=database_preparer,
         )
     objects = S3BuildObjects(artifacts)
     verifier = EcrBuildVerifier(settings)
@@ -132,6 +140,7 @@ def run_build_consumer(args):
         protection,
         "build-" + uuid4().hex,
         deployer=deployer,
+        database_preparer=database_preparer,
         execution_grants=S3BuildExecutionGrants(
             artifacts, authorization=lambda request, lease: store.build_delegation(lease, request, settings)
         ),

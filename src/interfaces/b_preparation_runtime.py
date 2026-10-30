@@ -93,7 +93,14 @@ def run_preparation_api(args):
     previews = PostgresDeploymentPreviews(approvals)
     previews.check_ready()
     sources = SourceArtifactService(S3SourceArtifactStore(artifacts))
-    preparation = DeploymentPreparationService(sources, previews)
+    database_policy = None
+    if os.environ.get("SKY_DATABASE_BUILD_POLICY_JSON"):
+        from application.database_build_policy import DatabaseBuildPolicy
+
+        database_policy = DatabaseBuildPolicy.load(os.environ["SKY_DATABASE_BUILD_POLICY_JSON"])
+        if (database_policy.account_id, database_policy.region) != (artifacts.account_id, artifacts.region):
+            raise ValueError("Database build policy differs from the hosted destination")
+    preparation = DeploymentPreparationService(sources, previews, database_policy=database_policy)
     reads = DeploymentReadService(PostgresDeploymentReads(connection, workspace=workspace))
     sqlite_jobs = None
     if sqlite_workspace is not None:

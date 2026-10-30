@@ -30,8 +30,10 @@ class BuildConsumer:
         deployer=None,
         deployment_timeout_seconds=1800,
         execution_grants=None,
+        database_preparer=None,
     ):
         self.execution_grants = execution_grants
+        self.database_preparer = database_preparer
         self.store, self.queue, self.builder, self.objects = store, queue, builder, objects
         self.deployer, self.deployment_timeout_seconds = deployer, deployment_timeout_seconds
         self.verifier, self.settings, self.protection, self.owner = verifier, settings, protection, owner
@@ -162,6 +164,8 @@ class BuildConsumer:
                         saved.get("stage") != "building" or saved.get("request_digest") != digest(request)
                     ):
                         raise ValueError("Build checkpoint requires explicit reconciliation")
+                    if saved.get("database_preparation"):
+                        raise ValueError("Database preparation interruption requires explicit reconciliation")
                     intent = {
                         "kind": "github_build",
                         "build_id": request["build_id"],
@@ -171,6 +175,15 @@ class BuildConsumer:
                     }
                     if not self.store.begin_external(lease, intent):
                         raise OwnershipLost()
+                    if self.database_preparer is not None:
+
+                        def persist_database(value):
+                            guard()
+                            if not self.store.build_progress(lease, value, stage="building"):
+                                raise OwnershipLost()
+                            checkpoint.update(value)
+
+                        self.database_preparer.prepare(request, checkpoint, guard, persist_database)
                     self.objects.put_request(request)
                     guard()
                     if self.execution_grants is not None:

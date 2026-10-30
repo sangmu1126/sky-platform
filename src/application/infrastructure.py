@@ -143,7 +143,7 @@ def inspect_infrastructure(project: Path) -> InfrastructureProfile:
         if path.name in MANIFESTS - {'package.json'}:
             if re.search(r'(?im)^\s*(?:["\']?)(?:sqlite3|better-sqlite3|aiosqlite|pysqlite3|sqlite-utils)(?:["\']?)(?:\s|[=<>~;,{]|$)', content):
                 found.add('sqlite')
-            if re.search(r'(?im)^\s*["\']?(?:psycopg2?(?:-binary)?|asyncpg|pymysql|mysqlclient|pymongo|motor|sqlalchemy)(?:\[[^\]]+\])?["\']?(?:\s|[=<>~;,{]|$)', content):
+            if re.search(r'(?im)^\s*["\']?(?:psycopg2?(?:-binary)?|asyncpg|pg8000|pymysql|mysqlclient|pymongo|motor|sqlalchemy)(?:\[[^\]]+\])?["\']?(?:\s|[=<>~;,{]|$)', content):
                 found.add('database')
             for engine, names in DATABASE_ENGINE_DEPENDENCIES.items():
                 if any(re.search(r'(?im)^\s*["\']?' + re.escape(name)

@@ -89,9 +89,10 @@ def _plan(project, options):
 
 
 class DeploymentPreparationService:
-    def __init__(self, sources, previews):
+    def __init__(self, sources, previews, *, database_policy=None):
         self.sources = sources
         self.previews = previews
+        self.database_policy = database_policy
 
     def prepare(self, principal, application_id, request_key, upload, *, port=3000, health_path="/"):
         if not isinstance(principal, Principal) or not permitted(
@@ -155,6 +156,8 @@ class DeploymentPreparationService:
                             "message": "필수 환경변수의 안전한 실행 설정 연결이 필요합니다.",
                         }
                     )
+                if self.database_policy is not None:
+                    blockers = self.database_policy.apply(principal, plan, inspection, blockers)
                 # Snapshot remains unchanged at this stage. Never pretend SQL compilation rewrites application code.
                 prepared = self.sources.capture_prepared(
                     principal, original, project, expected_digest=source_digest(project)

@@ -482,3 +482,48 @@ def test_remote_delegation_rechecks_consumed_approval_and_projection(setup, chan
             )
     with pytest.raises(ValueError):
         store.build_delegation(lease, request, consumer.settings)
+
+
+def test_database_preparation_failure_never_dispatches_or_retries(setup):
+    consumer, operation, _ = setup
+
+    class Preparation:
+        def prepare(self, request, checkpoint, guard, persist):
+            guard()
+            persist(
+                {**checkpoint, "database_preparation": {"stage": "schema", "request_digest": digest(request)}}
+            )
+            raise OSError("uncertain SQL result")
+
+    consumer.database_preparer = Preparation()
+    assert consumer.consume_once() == "needs_attention"
+    current = consumer.store.get(operation.id)
+    assert current.external_pending and current.checkpoint["database_preparation"]["stage"] == "schema"
+    assert not consumer.builder.requests and not consumer.objects.requests
+    assert consumer.consume_once() == "duplicate"
+
+
+def test_database_preparation_security_hold_before_dispatch(setup):
+    consumer, operation, database = setup
+
+    class Preparation:
+        def prepare(self, request, checkpoint, guard, persist):
+            persist({**checkpoint, "database_preparation": {"stage": "allocating"}})
+            with database() as db:
+                db.execute(
+                    "INSERT INTO sky_state.incident_execution_fences(workspace,application_id,organization_id,job_id,incident_id,boundary_id,recorded_by) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        consumer.store.workspace,
+                        operation.application_id,
+                        "team",
+                        operation.command["job_id"],
+                        "synthetic-incident",
+                        "synthetic-boundary",
+                        "operator",
+                    ),
+                )
+            guard()
+
+    consumer.database_preparer = Preparation()
+    assert consumer.consume_once() == "ownership_lost"
+    assert not consumer.builder.requests and not consumer.objects.requests

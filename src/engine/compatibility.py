@@ -67,6 +67,7 @@ DATABASE_DEPENDENCIES = {
     "psycopg2",
     "psycopg2-binary",
     "asyncpg",
+    "pg8000",
     "pymysql",
     "mysqlclient",
     "pymongo",
@@ -74,14 +75,14 @@ DATABASE_DEPENDENCIES = {
     "sqlalchemy",
 }
 DATABASE_ENGINE_DEPENDENCIES = {
-    "postgresql": {"pg", "postgres", "psycopg", "psycopg2", "psycopg2-binary", "asyncpg"},
+    "postgresql": {"pg", "postgres", "psycopg", "psycopg2", "psycopg2-binary", "asyncpg", "pg8000"},
     "mysql": {"mysql", "mysql2", "mariadb", "pymysql", "mysqlclient"},
     "mongodb": {"mongodb", "mongoose", "pymongo", "motor"},
 }
 DATABASE_ENGINE_SOURCE = {
     "postgresql": re.compile(
         r"\b(?:require\s*\(?\s*|from\s+)['\"](?:pg|postgres)['\"]|"
-        r"\b(?:import|from)\s+(?:psycopg2?|asyncpg)(?:\b|\.)|"
+        r"\b(?:import|from)\s+(?:psycopg2?|asyncpg|pg8000)(?:\b|\.)|"
         r"\bprovider\s*=\s*['\"]postgresql['\"]|\bpostgres(?:ql)?(?:\+\w+)?://",
         re.IGNORECASE,
     ),
@@ -100,7 +101,7 @@ DATABASE_ENGINE_SOURCE = {
 }
 DATABASE_SOURCE = re.compile(
     r"\b(?:require\s*\(?\s*|from\s+)['\"](?:pg|postgres|mysql2?|mariadb|mongodb|mongoose)['\"]|"
-    r"\b(?:import|from)\s+(?:psycopg2?|asyncpg|pymysql|MySQLdb|pymongo|motor|sqlalchemy)(?:\b|\.)|"
+    r"\b(?:import|from)\s+(?:psycopg2?|asyncpg|pg8000|pymysql|MySQLdb|pymongo|motor|sqlalchemy)(?:\b|\.)|"
     r"\bprovider\s*=\s*['\"](?:postgresql|mysql|mongodb|sqlserver|cockroachdb)['\"]|"
     r"\b(?:postgres(?:ql)?|mysql|mongodb)(?:\+\w+)?://",
     re.IGNORECASE,

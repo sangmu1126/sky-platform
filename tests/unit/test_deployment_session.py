@@ -162,3 +162,21 @@ def test_factory_adapter_cannot_retire_foreign_owner(prepared):
     with pytest.raises(PermissionError):
         adapter.retire(intent)
     adapter.ecs.delete_express_gateway_service.assert_not_called()
+
+
+def test_database_task_inventory_permission_is_read_only_and_cluster_bounded(prepared):
+    adapter, request, _ = prepared
+    r = registration(adapter.settings)
+    text, _ = deployment_policy(
+        r, request, database_role=f"arn:aws:iam::{r.account_id}:role/sky-workload-{request['job_id']}"
+    )
+    assert len(text) <= 2048
+    policy = json.loads(text)
+    inventory = next(s for s in policy["Statement"] if s.get("Action") == ["ecs:ListTasks"])
+    assert inventory["Condition"] == {
+        "ArnEquals": {"ecs:cluster": f"arn:aws:ecs:{r.region}:{r.account_id}:cluster/default"}
+    }
+    with pytest.raises(PermissionError):
+        deployment_policy(
+            r, request, database_role=f"arn:aws:iam::{r.account_id}:role/sky-workload-ffffffffffffffff"
+        )
