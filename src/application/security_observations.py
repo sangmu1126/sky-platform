@@ -17,6 +17,7 @@ RULES = {
     "unapproved_iam_change": ("critical", "suspected_compromise"),
     "artifact_identity_mismatch": ("critical", "untrusted_artifact"),
     "forbidden_network_egress": ("high", "suspected_compromise"),
+    "blocked_network_egress": ("warning", None),
     "repeated_auth_denials": ("warning", None),
     "resource_budget_exhausted": ("warning", None),
     "database_capacity_exhausted": ("warning", None),
@@ -117,6 +118,45 @@ class SecurityObservationRouter:
                     evidence_digest=hashlib.sha256(canonical_signal(observation)).hexdigest(),
                 )
             )
+        denied = observation.get("matching_denied_events", [])
+        if len(denied) >= 3:
+            results.append(
+                self.route(
+                    "repeated_auth_denials",
+                    event_id=denied[-1]["event_id"],
+                    observed_at=denied[-1]["occurred_at"],
+                    now=now,
+                    evidence_digest=hashlib.sha256(canonical_signal(observation)).hexdigest(),
+                )
+            )
+        return {
+            "observations": results,
+            "collection_complete": observation["collection_complete"],
+            "absence_of_compromise_proven": False,
+            "automatic_release_permitted": False,
+        }
+
+    def collect_inventory(self, monitor, kind, registration, *, now):
+        from adapters.aws.security_inventory import NativeSecurityInventory
+
+        if not isinstance(monitor, NativeSecurityInventory) or kind not in {
+            "iam",
+            "image",
+            "capacity",
+            "flow",
+        }:
+            raise ValueError("Registered native security inventory required")
+        observation = getattr(monitor, "observe_" + kind)(registration, now=now)
+        results = [
+            self.route(
+                item["kind"],
+                event_id=item["event_id"],
+                observed_at=item["observed_at"],
+                now=now,
+                evidence_digest=item["evidence_digest"],
+            )
+            for item in observation["events"]
+        ]
         return {
             "observations": results,
             "collection_complete": observation["collection_complete"],

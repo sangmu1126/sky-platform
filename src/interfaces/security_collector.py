@@ -71,7 +71,7 @@ def private_file(path, limit):
 def collect_cycle(configuration, key, output, *, session, now, persist=write_private):
     if (
         not isinstance(configuration, dict)
-        or set(configuration)
+        or (set(configuration) - {"native"})
         not in (
             {"version", "expires_at", "aws", "detector", "scope", "audit"},
             {"version", "expires_at", "aws", "detector", "scope", "audit", "review_queue_url"},
@@ -121,6 +121,19 @@ def collect_cycle(configuration, key, output, *, session, now, persist=write_pri
     )
     router = SecurityObservationRouter(detector, key, audit.append, scope=configuration["scope"])
     result = router.collect_secrets(CloudTrailSecretAccessMonitor(registration, session=session), now=now)
+    native = configuration.get("native", [])
+    if not isinstance(native, list) or len(native) > 8:
+        raise ValueError("Bounded registered native inventory required")
+    if native:
+        from adapters.aws.security_inventory import NativeSecurityInventory
+
+        monitor = NativeSecurityInventory(registration.account_id, registration.region, session=session)
+        for item in native:
+            if not isinstance(item, dict) or set(item) != {"kind", "registration"}:
+                raise ValueError("Exact typed native source registration required")
+            additional = router.collect_inventory(monitor, item["kind"], item["registration"], now=now)
+            result["observations"].extend(additional["observations"])
+            result["collection_complete"] &= additional["collection_complete"]
     destination = output / ("cycle-" + uuid4().hex + ".json")
     persist(destination, {"version": 1, "collected_at": now, **result})
     notifications = 0

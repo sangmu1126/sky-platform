@@ -97,3 +97,20 @@ def test_cross_app_stale_or_altered_signals_have_zero_state_effect(change):
     with pytest.raises(ValueError):
         intake.apply(actor, envelope, now=current)
     assert records.save_calls == 0
+
+
+def test_native_collection_cannot_accept_an_uploaded_report():
+    router, records, *_ = setup_router()
+    with pytest.raises(ValueError):
+        router.collect_inventory(Mock(), "iam", {"events": []}, now=NOW)
+    assert records.save_calls == 0
+
+
+def test_blocked_network_is_warning_without_hold_authority():
+    router, records, _, _, audit = setup_router()
+    value = router.route(
+        "blocked_network_egress", event_id=str(uuid4()), observed_at=NOW, now=NOW, evidence_digest="f" * 64
+    )
+    assert value["signed_hold_proposal"] is None
+    assert value["event"]["severity"] == "warning" and records.save_calls == 0
+    audit.assert_called_once()

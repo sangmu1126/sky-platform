@@ -71,6 +71,7 @@ class CloudTrailSecretAccessMonitor:
             raise ValueError("Security monitor account mismatch")
         start = stamp - timedelta(minutes=15)
         matches, matching_events, seen, denied, count = [], [], set(), 0, 0
+        denied_events = []
         token = None
         for _ in range(3):
             args = {
@@ -128,6 +129,7 @@ class CloudTrailSecretAccessMonitor:
                 seen.add(event_id)
                 if document.get("errorCode"):
                     denied += 1
+                    denied_events.append({"event_id": event_id, "occurred_at": observed.isoformat()})
                 else:
                     matches.append(event_id)
                     matching_events.append({"event_id": event_id, "occurred_at": observed.isoformat()})
@@ -144,6 +146,7 @@ class CloudTrailSecretAccessMonitor:
             "matching_successful_forbidden_reads": sorted(matches),
             "matching_successful_events": sorted(matching_events, key=lambda e: e["event_id"]),
             "matching_denied_reads": denied,
+            "matching_denied_events": sorted(denied_events, key=lambda e: (e["occurred_at"], e["event_id"])),
             "collection_complete": not bool(token),
             "requires_operator_review": bool(matches),
             "automatic_hold_executed": False,
