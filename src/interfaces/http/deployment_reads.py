@@ -71,7 +71,8 @@ class DatabaseReadApp:
 def handler_for_reads(app: DatabaseReadApp):
     class Handler(BaseHTTPRequestHandler):
         def json_response(self, status, data):
-            payload = json.dumps(data, ensure_ascii=False).encode()
+            from application.output_security import public_value
+            payload = json.dumps(public_value(data), ensure_ascii=False).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))

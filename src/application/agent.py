@@ -359,10 +359,8 @@ class DeploymentTools:
                 'next': 'Reconfigure before deploying'}
 
     def clean(self, text):
-        for value in sorted(set(self.environment.values()), key=len, reverse=True):
-            if value:
-                text = text.replace(value, "[REDACTED]")
-        return redact(text)
+        from application.output_security import redact
+        return redact(text, values=self.environment.values())
 
     def check_cancelled(self):
         if self.cancel_check():

@@ -615,7 +615,7 @@ class App(GitHubDeploymentsMixin, StateRecoveryMixin, MonitoringMixin, StaticDep
         with self.lock:
             job = self.jobs[job_id]
             job["events"].append({"time": datetime.now(timezone.utc).isoformat(),
-                                  "stage": stage, "message": message})
+                                  "stage": stage, "message": redact(message)})
             self.save(job_id)
 
     def start_job_worker(self, job_id, worker, environment=None):
@@ -1604,7 +1604,8 @@ def handler_for(app: App):
 
     class Handler(BaseHTTPRequestHandler):
         def json_response(self, status, data):
-            payload = json.dumps(data, ensure_ascii=False).encode()
+            from application.output_security import public_value
+            payload = json.dumps(public_value(data), ensure_ascii=False).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))

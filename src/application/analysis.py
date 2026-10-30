@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from application.deployment_core import ANALYSIS_SUFFIXES, SOURCE_FILENAMES, DeploymentPlan, analyze, make_plan, read_package
+from application.output_security import redact
 from adapters.ai.openai_http import MAX_RESPONSE_BYTES, OpenAIHTTPFailure, read_response
 
 
@@ -67,24 +68,6 @@ class AISettings:
     @property
     def available(self):
         return bool(self.api_key.strip() and self.model.strip())
-
-
-def redact(text: str) -> str:
-    # Defense in depth only: redaction cannot prove that arbitrary source has no secrets.
-    # Redact an unterminated key too; bounded reads may end before its END marker.
-    text = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?(?:-----END [^-]*PRIVATE KEY-----|\Z)",
-                  "[REDACTED_PRIVATE_KEY]", text, flags=re.S)
-    text = re.sub(r"\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,}|(?:AKIA|ASIA)[A-Z0-9]{16})\b",
-                  "[REDACTED_TOKEN]", text)
-    text = re.sub(r"(?i)((?:https?|postgres(?:ql)?|rediss?|mongodb(?:\+srv)?|mysql)://)[^\s/@]+@",
-                  r"\1[REDACTED]@", text)
-    text = re.sub(
-        r'''(?i)(["']?[\w-]*(?:secret|password|api[_-]?key|token)[\w-]*["']?\s*[:=]\s*)(["'])([^\n]*?)\2''',
-        lambda m: m[1] + m[2] + "[REDACTED]" + m[2], text)
-    text = re.sub(
-        r"(?im)^(\s*(?:export\s+)?[A-Z_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|ACCESS_KEY)[A-Z_]*\s*=\s*)([^\s\"'\r\n#]+)",
-        lambda m: m[1] + "[REDACTED]", text)
-    return text
 
 
 def source_context(project: Path) -> dict[str, str]:
