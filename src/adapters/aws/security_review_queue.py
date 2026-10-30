@@ -32,6 +32,65 @@ class SecurityReviewQueue:
         raw = audit_bytes(event, event.get("organization_id"), event.get("application_id"))
         if result["audit"].get("sha256") != hashlib.sha256(raw).hexdigest():
             raise ValueError("Notification differs from the independently stored audit fact")
+        proposal = result.get("signed_hold_proposal")
+        if proposal is not None:
+            import base64
+            from datetime import datetime, timedelta
+            from application.security_observations import RULES
+
+            payload = proposal.get("payload") if isinstance(proposal, dict) else None
+            fields = {
+                "version",
+                "detector_id",
+                "event_id",
+                "organization_id",
+                "application_id",
+                "job_id",
+                "source_digest",
+                "record_revision",
+                "reason",
+                "observed_at",
+                "expires_at",
+            }
+            if (
+                not isinstance(proposal, dict)
+                or set(proposal) != {"payload", "signature"}
+                or not isinstance(payload, dict)
+                or set(payload) != fields
+                or type(payload.get("version")) is not int
+                or payload["version"] != 1
+                or any(
+                    payload.get(name) != event[name]
+                    for name in (
+                        "detector_id",
+                        "organization_id",
+                        "application_id",
+                        "job_id",
+                        "source_digest",
+                        "record_revision",
+                    )
+                )
+                or payload["event_id"] != hashlib.sha256(event["event_id"].encode()).hexdigest()[:32]
+                or payload["reason"] != RULES[event["kind"]][1]
+                or payload["observed_at"] != event["detected_at"]
+            ):
+                raise ValueError("Review proposal differs from the audited application scope")
+            try:
+                signature = base64.b64decode(proposal["signature"], validate=True)
+                observed, expires = (
+                    datetime.fromisoformat(payload[k]) for k in ("observed_at", "expires_at")
+                )
+                if (
+                    len(signature) != 64
+                    or observed.tzinfo is None
+                    or expires.tzinfo is None
+                    or not observed < expires <= observed + timedelta(minutes=5)
+                ):
+                    raise ValueError()
+            except (ValueError, TypeError):
+                raise ValueError("Bounded signed review envelope required") from None
+        # This transport checks audit binding. Intake independently authenticates
+        # the registered detector key and current source revision before a hold.
         expected = "arn:aws:sqs:" + self.region + ":" + self.account + ":" + self.url.rsplit("/", 1)[-1]
         attrs = self.client.get_queue_attributes(
             QueueUrl=self.url, AttributeNames=["QueueArn", "SqsManagedSseEnabled"]
@@ -47,8 +106,9 @@ class SecurityReviewQueue:
             QueueUrl=self.url,
             MessageBody=json.dumps(
                 {
-                    "version": 1,
+                    "version": 2,
                     "type": "security_review",
+                    "signed_hold_proposal": result.get("signed_hold_proposal"),
                     "event": event,
                     "audit_sha256": result["audit"]["sha256"],
                     "automatic_release_permitted": False,

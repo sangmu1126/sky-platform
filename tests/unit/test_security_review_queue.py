@@ -49,7 +49,7 @@ def test_registered_machine_queue_receives_only_signed_app_scope():
                 audit_bytes(fact, fact["organization_id"], fact["application_id"])
             ).hexdigest(),
         },
-        "signed_hold_proposal": {},
+        "signed_hold_proposal": None,
         "automatic_release_permitted": False,
     }
     assert queue.notify(value)["review_queued"]
@@ -58,3 +58,34 @@ def test_registered_machine_queue_receives_only_signed_app_scope():
     with pytest.raises(ValueError):
         queue.notify(value)
     assert queue.client.send_message.call_count == 1
+
+
+def test_signed_proposal_survives_queue_and_registered_intake():
+    import hashlib
+    import json
+    from uuid import uuid4
+
+    from adapters.aws.security_audit import audit_bytes
+    from tests.unit.test_security_observations import NOW, setup_router
+
+    router, records, actor, intake, _ = setup_router()
+    result = router.route(
+        "forbidden_secret_read", event_id=str(uuid4()), observed_at=NOW, now=NOW, evidence_digest="b" * 64
+    )
+    fact = result["event"]
+    result["audit"]["sha256"] = hashlib.sha256(
+        audit_bytes(fact, fact["organization_id"], fact["application_id"])
+    ).hexdigest()
+    queue = notifier()
+    queue.notify(result)
+    message = json.loads(queue.client.send_message.call_args.kwargs["MessageBody"])
+    assert message["version"] == 2 and message["signed_hold_proposal"] == result["signed_hold_proposal"]
+    hold = intake.apply(actor, message["signed_hold_proposal"], now=NOW)
+    assert hold["reason"] == "credential_exposure"
+    assert records.job["security_hold"] == hold
+    result["signed_hold_proposal"]["payload"]["application_id"] = "foreign-app"
+    queue.client.reset_mock()
+    with pytest.raises(ValueError, match="audited application scope"):
+        queue.notify(result)
+    queue.client.get_queue_attributes.assert_not_called()
+    queue.client.send_message.assert_not_called()
