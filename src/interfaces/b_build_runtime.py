@@ -99,6 +99,14 @@ def run_build_consumer(args):
         if getattr(args, "deploy_built_image", False)
         else None
     )
+    if deployer is not None and hosted:
+        from adapters.aws.deployment_session import DeploymentRoleRegistration, ScopedDeploymentFactory
+
+        deployer = ScopedDeploymentFactory(
+            settings,
+            DeploymentRoleRegistration.load(os.environ.get("SKY_DEPLOYMENT_ROLE_JSON")),
+            database_profile=database_profile,
+        )
     objects = S3BuildObjects(artifacts)
     verifier = EcrBuildVerifier(settings)
     if identity is not None:

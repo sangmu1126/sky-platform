@@ -134,7 +134,11 @@ class BuildConsumer:
                             self.verifier.verify(request, result)
                             if self.deployer is not None:
                                 if saved["stage"] == "deployed":
-                                    current = self.deployer.observe(saved["deployment_intent"])
+                                    from application.built_deployment import bound_deployer
+
+                                    current = bound_deployer(self.deployer, request, guard).observe(
+                                        saved["deployment_intent"]
+                                    )
                                     if current != saved["deployment_result"]:
                                         raise ValueError("Recovered deployment observation changed")
                                     if not self.store.deployment_complete(lease, saved, current):

@@ -1,9 +1,17 @@
 """One fenced AWS submission; readiness and the job projection must both commit."""
 
 
+def bound_deployer(deployer, request, guard):
+    """Explicit adapter factories only; test doubles/legacy local adapters remain concrete."""
+    factory = getattr(type(deployer), "for_request", None)
+    return factory(deployer, request, guard) if callable(factory) else deployer
+
+
 def deploy_built_image(consumer, lease, request, checkpoint, guard, stop, delivery):
     from application.build_consumer import OwnershipLost
-    intent = consumer.deployer.prepare(request, checkpoint["build_result"])
+
+    deployer = bound_deployer(consumer.deployer, request, guard)
+    intent = deployer.prepare(request, checkpoint["build_result"])
     guard()
     checkpoint.update(stage="deploying", deployment_intent=intent)
     if not consumer.store.build_progress(lease, checkpoint, stage="deploying"):
@@ -11,12 +19,12 @@ def deploy_built_image(consumer, lease, request, checkpoint, guard, stop, delive
     if not consumer.store.begin_external(lease, intent):
         raise OwnershipLost()
     guard()
-    consumer.deployer.create(intent)
+    deployer.create(intent)
     until = consumer.clock() + consumer.deployment_timeout_seconds
     while not stop.is_set() and consumer.clock() < until:
         guard()
         try:
-            result = consumer.deployer.observe(intent)
+            result = deployer.observe(intent)
         except OSError:
             result = None
         if result is not None:
@@ -30,6 +38,8 @@ def deploy_built_image(consumer, lease, request, checkpoint, guard, stop, delive
             return "succeeded"
         stop.wait(consumer.poll_seconds)
     # Preserve the AWS intent and application lock even on SIGTERM or a timeout.
-    if consumer.store.build_progress(lease, {**checkpoint, "reason": "deployment_observation_incomplete"}, stage="needs_attention"):
+    if consumer.store.build_progress(
+        lease, {**checkpoint, "reason": "deployment_observation_incomplete"}, stage="needs_attention"
+    ):
         consumer.queue.delete(delivery)
     return "needs_attention"

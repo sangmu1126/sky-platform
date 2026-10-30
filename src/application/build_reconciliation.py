@@ -43,7 +43,17 @@ class BuildDeploymentReconciliation:
             raise ValueError("Original successful workflow observation changed")
         built = validate_result(checkpoint["build_result"], request, run["run_id"])
         self.verifier.verify(request, built)
-        result = self.deployer.observe(checkpoint["deployment_intent"])
+        from application.built_deployment import bound_deployer
+
+        def guard():
+            if (
+                self.revalidate() != principal
+                or self.store.get(operation_id) != operation
+                or self.store.records.load_job(request["job_id"]) != snapshot
+            ):
+                raise PermissionError("Reconciliation authority or application changed")
+
+        result = bound_deployer(self.deployer, request, guard).observe(checkpoint["deployment_intent"])
         if result is None:
             return {"status": "pending", "state_changed": False, "resubmission": False}
         if self.revalidate() != principal:

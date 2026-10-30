@@ -215,3 +215,19 @@ class BuiltImageDeployment:
             return result
         except (BotoCoreError, ClientError):
             raise OSError("Deployment observation unavailable") from None
+
+    def retire(self, intent):
+        """Delete only the exact recorded service after fresh ownership checks."""
+        service = self.ecs.describe_express_gateway_service(
+            serviceArn=intent["service_arn"], include=["TAGS"]
+        )["service"]
+        expected = {t["key"]: t["value"] for t in intent["payload"]["tags"]}
+        actual = {t["key"]: t["value"] for t in service.get("tags", [])}
+        if service.get("serviceArn") != intent["service_arn"] or any(
+            actual.get(k) != v for k, v in expected.items()
+        ):
+            raise PermissionError("Cannot retire an unowned deployment")
+        response = self.ecs.delete_express_gateway_service(serviceArn=intent["service_arn"])
+        if response.get("service", {}).get("serviceArn") != intent["service_arn"]:
+            raise ValueError("Retirement outcome requires reconciliation")
+        return {"service_arn": intent["service_arn"], "deletion_requested": True, "deletion_complete": False}
