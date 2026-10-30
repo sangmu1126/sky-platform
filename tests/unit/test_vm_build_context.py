@@ -74,3 +74,33 @@ def test_hosted_api_or_worker_cannot_bypass_vm_via_legacy_image_builder(monkeypa
     with pytest.raises(ValueError, match="sealed disposable VM"):
         ImageBuilder(command, Mock()).build(tmp_path, Mock(), "forbidden-direct-build")
     command.assert_not_called()
+
+
+def test_vm_receipt_is_accepted_by_strict_publisher_and_cannot_replace_evidence(tmp_path):
+    from scripts.remote_builder import verified_build
+    from scripts.vm_build_controller import write_build_receipt
+
+    request = {"build_id": "00000000-0000-4000-8000-000000000001"}
+    image_id = "sha256:" + "a" * 64
+    (tmp_path / "image.tar").write_bytes(b"synthetic transport bytes; never executed")
+    write_build_receipt(tmp_path, request, image_id)
+    assert verified_build(request, tmp_path) == image_id
+    original = (tmp_path / "build.json").read_bytes()
+    with pytest.raises(FileExistsError):
+        write_build_receipt(tmp_path, request, image_id)
+    assert (tmp_path / "build.json").read_bytes() == original
+    (tmp_path / "image.tar").write_bytes(b"changed artifact")
+    with pytest.raises(ValueError, match="identity mismatch"):
+        verified_build(request, tmp_path)
+
+
+def test_vm_receipt_cannot_follow_evidence_symlink(tmp_path):
+    from scripts.vm_build_controller import write_build_receipt
+
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"original")
+    (tmp_path / "image.tar").write_bytes(b"synthetic archive")
+    (tmp_path / "build.json").symlink_to(outside)
+    with pytest.raises(FileExistsError):
+        write_build_receipt(tmp_path, {}, "sha256:" + "a" * 64)
+    assert outside.read_bytes() == b"original"

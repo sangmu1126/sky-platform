@@ -12,8 +12,27 @@ from adapters.build.vm_builder import IsolatedVmBuilder
 from application.deployment_core import DeploymentPlan
 from application.source_artifacts import SourceArtifactService
 from domain.access import LoginSource, Principal, Role
-from ports.remote_builds import digest
+from ports.remote_builds import canonical, digest
 from scripts.observe_security import write_private
+
+
+def write_build_receipt(output, request, image_id):
+    """Match the publisher's canonical transport contract without replacing evidence."""
+    with (output / "image.tar").open("rb") as source:
+        archive_digest = hashlib.file_digest(source, "sha256").hexdigest()
+    payload = canonical(
+        {
+            "version": 1,
+            "request_digest": digest(request),
+            "image_id": image_id,
+            "archive_digest": archive_digest,
+        }
+    )
+    descriptor = os.open(output / "build.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def build_in_vm(directory, output, request, artifact, raw_plan, raw_profile):
@@ -102,14 +121,4 @@ def build_in_vm(directory, output, request, artifact, raw_plan, raw_profile):
     from scripts.vm_scan_controller import scan_in_vm
 
     scan_in_vm(profile, boto3.Session(), guard, audit, output)
-    with (output / "image.tar").open("rb") as source:
-        archive_digest = hashlib.file_digest(source, "sha256").hexdigest()
-    write_private(
-        output / "build.json",
-        {
-            "version": 1,
-            "request_digest": digest(request),
-            "image_id": result["image_id"],
-            "archive_digest": archive_digest,
-        },
-    )
+    write_build_receipt(output, request, result["image_id"])
