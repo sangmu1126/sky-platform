@@ -318,6 +318,22 @@ def test_runtime_workspace_detects_transport_mode_change_during_read(tmp_path):
         _runtime_workspace(materials["router_transport"])
 
 
+def test_runtime_ca_materialization_rejects_replaced_workspace_path(tmp_path):
+    workspace = tmp_path / "runtime"
+    workspace.mkdir(mode=0o700)
+    descriptor = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
+    moved = tmp_path / "moved"
+    workspace.rename(moved)
+    workspace.mkdir(mode=0o700)
+    try:
+        with pytest.raises(ValueError, match="runtime material workspace"):
+            _materialize_ca(workspace, descriptor, "source-ca.pem", b"registered-ca")
+    finally:
+        os.close(descriptor)
+    assert not (workspace / "source-ca.pem").exists()
+    assert not (moved / "source-ca.pem").exists()
+
+
 def test_composer_binds_entrypoint_factory_to_its_separate_short_lived_token(tmp_path):
     execution, registration, composer, materials = fixture(tmp_path)
 

@@ -80,6 +80,33 @@ def _pinned_ca(path, expected, label):
     return content
 
 
+def _private_workspace_path(directory, descriptor):
+    try:
+        opened = os.fstat(descriptor)
+        current = os.stat(directory, follow_symlinks=False)
+    except OSError:
+        raise ValueError("Private runtime material workspace required") from None
+    opened_identity = (
+        opened.st_dev,
+        opened.st_ino,
+        opened.st_mode,
+        opened.st_uid,
+    )
+    current_identity = (
+        current.st_dev,
+        current.st_ino,
+        current.st_mode,
+        current.st_uid,
+    )
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or opened.st_uid != os.getuid()
+        or stat.S_IMODE(opened.st_mode) != 0o700
+        or opened_identity != current_identity
+    ):
+        raise ValueError("Private runtime material workspace required")
+
+
 def _runtime_workspace(material):
     paths = (material.private_key, material.known_hosts)
     directory = paths[0].parent
@@ -90,13 +117,7 @@ def _runtime_workspace(material):
         os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
     )
     try:
-        info = os.fstat(descriptor)
-        if (
-            not stat.S_ISDIR(info.st_mode)
-            or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) != 0o700
-        ):
-            raise ValueError("Private runtime material workspace required")
+        _private_workspace_path(directory, descriptor)
         for path, expected in zip(
             paths,
             (material.private_key_sha256, material.known_hosts_sha256),
@@ -141,6 +162,7 @@ def _runtime_workspace(material):
                     raise ValueError("Private runtime transport material changed")
             finally:
                 os.close(source)
+        _private_workspace_path(directory, descriptor)
         return directory, descriptor
     except BaseException:
         os.close(descriptor)
@@ -150,13 +172,7 @@ def _runtime_workspace(material):
 def _materialize_ca(directory, directory_descriptor, name, content):
     if not re.fullmatch(r"[a-z-]{1,32}\.pem", name):
         raise ValueError("Canonical runtime CA filename required")
-    workspace = os.fstat(directory_descriptor)
-    if (
-        not stat.S_ISDIR(workspace.st_mode)
-        or workspace.st_uid != os.getuid()
-        or stat.S_IMODE(workspace.st_mode) != 0o700
-    ):
-        raise ValueError("Private runtime material workspace required")
+    _private_workspace_path(directory, directory_descriptor)
     path = directory / name
     descriptor = os.open(
         name,
@@ -436,6 +452,7 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
                     ),
                 ),
             )
+            _private_workspace_path(workspace, workspace_descriptor)
             os.fsync(workspace_descriptor)
         finally:
             os.close(workspace_descriptor)
