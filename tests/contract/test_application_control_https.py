@@ -39,7 +39,13 @@ def https_app(tmp_path):
         .not_valid_before(now - timedelta(minutes=1))
         .not_valid_after(now + timedelta(hours=1))
         .add_extension(
-            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False
+            x509.SubjectAlternativeName(
+                [
+                    x509.DNSName("control.fixture.test"),
+                    x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+                ]
+            ),
+            critical=False,
         )
         .sign(key, hashes.SHA256())
     )
@@ -132,9 +138,10 @@ def test_pinned_private_transport_preserves_tls_identity_and_never_redirects(htt
 
     _, plan, gate, traffic, calls, url, trust = https_app
     controller = traffic()
-    endpoint = url + ("/redirect" if failure == "redirect" else "/control")
+    endpoint = "https://control.fixture.test:" + url.rsplit(":", 1)[1]
+    endpoint += "/redirect" if failure == "redirect" else "/control"
     if failure == "wrong_identity":
-        endpoint = endpoint.replace("127.0.0.1", "wrong.control.internal")
+        endpoint = endpoint.replace("control.fixture.test", "wrong.control.internal")
     context = ssl.create_default_context() if failure == "untrusted_ca" else trust
     controller.transport = PinnedHTTPSControlTransport(
         endpoint, controller._token, address="127.0.0.1", ssl_context=context, guard=lambda: None

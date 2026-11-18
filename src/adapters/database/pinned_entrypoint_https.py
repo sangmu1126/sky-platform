@@ -12,9 +12,9 @@ import ssl
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from adapters.runtime.environment_secrets import ControlRuntimeSecretMaterial
+from adapters.runtime.pinned_https import pinned_https_endpoint
 from adapters.runtime.private_network import pinned_private_address
 from domain.database_transfer import RegisteredDatabaseTransfer
 
@@ -82,24 +82,12 @@ class RegisteredHttpsEnvironmentEntrypointProbe:
     def __post_init__(self):
         if not isinstance(self.transfer, RegisteredDatabaseTransfer):
             raise TypeError("Registered environment transfer required")
-        url = urlsplit(self.endpoint)
         try:
             pinned_private_address(self.address)
+            pinned_https_endpoint(self.endpoint)
         except ValueError:
             raise ValueError("Pinned private HTTPS entrypoint required") from None
-        if (
-            url.scheme != "https"
-            or not url.hostname
-            or not url.path
-            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", url.hostname)
-            or not re.fullmatch(r"/[A-Za-z0-9._~/%-]{0,1023}", url.path)
-            or url.username
-            or url.password
-            or url.query
-            or url.fragment
-            or type(self.response_timeout) is not int
-            or not 1 <= self.response_timeout <= 30
-        ):
+        if type(self.response_timeout) is not int or not 1 <= self.response_timeout <= 30:
             raise ValueError("Pinned private HTTPS entrypoint required")
         _ca_bundle(self.ca_path, self.ca_sha256)
         value = {
@@ -141,15 +129,15 @@ class _BoundHttpsEnvironmentEntrypointProbe:
 
     def __call__(self):
         r = self.registration
-        url = urlsplit(r.endpoint)
+        url, port = pinned_https_endpoint(r.endpoint)
         connection = http.client.HTTPSConnection(
             url.hostname,
-            url.port or 443,
+            port,
             timeout=r.response_timeout,
         )
         try:
             self.guard()
-            raw = socket.create_connection((r.address, url.port or 443), timeout=r.response_timeout)
+            raw = socket.create_connection((r.address, port), timeout=r.response_timeout)
             try:
                 connection.sock = self.context.wrap_socket(raw, server_hostname=url.hostname)
                 connection.sock.settimeout(r.response_timeout)

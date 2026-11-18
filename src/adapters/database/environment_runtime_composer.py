@@ -16,7 +16,6 @@ import stat
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from adapters.aws.registered_rds_inventory import RegisteredRdsInventory, RegisteredRdsInventoryVerifier
 from adapters.database.environment_control import EnvironmentApplicationControl
@@ -40,6 +39,7 @@ from adapters.runtime.environment_secrets import (
     DatabaseRuntimeSecretMaterial,
     RouterTransportSecretMaterial,
 )
+from adapters.runtime.pinned_https import pinned_https_endpoint
 from adapters.runtime.private_network import pinned_private_address
 from application.environment_admission import RegisteredEnvironmentExecution
 from application.environment_cutover import EnvironmentDatabaseCutover
@@ -67,8 +67,9 @@ def _private_address(value):
 
 
 def _control_endpoint(value):
-    url = urlsplit(value)
-    if url.scheme != "https" or not url.hostname or url.username or url.password or url.query or url.fragment:
+    try:
+        pinned_https_endpoint(value)
+    except ValueError:
         raise ValueError("Pinned HTTPS control endpoint required")
 
 

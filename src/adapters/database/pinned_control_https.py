@@ -7,11 +7,10 @@ The TLS identity remains the registered DNS name even when a task IP is used.
 
 import http.client
 import json
-import re
 import socket
 import ssl
-from urllib.parse import urlsplit
 
+from adapters.runtime.pinned_https import pinned_https_endpoint
 from adapters.runtime.private_network import pinned_private_address
 
 
@@ -30,25 +29,15 @@ def _constant(_value):
 
 class PinnedHTTPSControlTransport:
     def __init__(self, endpoint, token, *, address, ssl_context, guard, response_timeout=30):
-        url = urlsplit(endpoint)
         try:
             ip = pinned_private_address(address)
-            port = url.port or 443
+            url, port = pinned_https_endpoint(endpoint)
         except ValueError:
             raise ValueError(
                 "Registered private address, TLS identity and control credential required"
             ) from None
         if (
-            url.scheme != "https"
-            or not url.hostname
-            or not url.path
-            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", url.hostname)
-            or not re.fullmatch(r"/[A-Za-z0-9._~/%-]{0,1023}", url.path)
-            or url.username
-            or url.password
-            or url.query
-            or url.fragment
-            or not isinstance(token, str)
+            not isinstance(token, str)
             or not 1 <= len(token.encode()) <= 4096
             or "\r" in token
             or "\n" in token
