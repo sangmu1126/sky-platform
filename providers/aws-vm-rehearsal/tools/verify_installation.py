@@ -367,6 +367,15 @@ def _inspect(python, site, workspace, manifest, *, cwd):
                     "print(json.dumps({'count':len(c),"
                     "'secrets':len(c[0].effect.runtime.registration.secrets),"
                     "'resource':c[0].resource_verifier_ref,'effect':c[0].effect_ref,"
+                    "'runtime_pin':c[0].effect.runtime_ref,"
+                    "'runtime_impl':c[0].effect.runtime.reference,"
+                    "'resolver_pin':c[0].effect.runtime.registration.secret_resolver_ref,"
+                    "'resolver_impl':c[0].effect.runtime.resolver.reference,"
+                    "'composer_pin':c[0].effect.runtime.registration.composition_ref,"
+                    "'composer_impl':c[0].effect.runtime.composer.reference,"
+                    "'execution':c[0].execution.revision,"
+                    "'runtime_execution':c[0].effect.runtime.execution.revision,"
+                    "'composer_execution':c[0].effect.runtime.composer.execution.revision,"
                     "'artifact':attest_environment_execution_provider(e).artifact_sha256,"
                     "'bytecode':sys.dont_write_bytecode},sort_keys=True))"
                 ),
@@ -442,6 +451,18 @@ def verify(base_wheel, provider_wheel, *, python=sys.executable):
         or composition.get("secrets") != 6
         or composition.get("resource") != manifest["registrations"][0]["resource_verifier_ref"]
         or composition.get("effect") != manifest["registrations"][0]["effect_ref"]
+        or composition.get("runtime_pin") != composition.get("runtime_impl")
+        or composition.get("resolver_pin") != composition.get("resolver_impl")
+        or composition.get("composer_pin") != composition.get("composer_impl")
+        or composition.get("execution") != manifest["registrations"][0]["execution_revision"]
+        or len(
+            {
+                composition.get("execution"),
+                composition.get("runtime_execution"),
+                composition.get("composer_execution"),
+            }
+        )
+        != 1
         or composition.get("bytecode") is not True
         or check_config != _CHECK_CONFIG_OUTPUT
     ):
@@ -455,6 +476,7 @@ def verify(base_wheel, provider_wheel, *, python=sys.executable):
         "provider_artifact_sha256": artifact["provider_artifact_sha256"],
         "registrations": composition["count"],
         "runtime_secret_purposes": composition["secrets"],
+        "runtime_chain_pins_match": True,
         "provider_code_imported_only_after_manifest": True,
         "worker_check_config_without_external_calls": True,
     }

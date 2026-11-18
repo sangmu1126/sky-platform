@@ -35,7 +35,9 @@ files to `0400` and directories to `0500`, disables ordinary Python socket
 network access, renders the secret-free worker manifest, runs `--check-config`,
 and composes only the descriptor-approved registration. Preserve the reported
 base wheel, provider wheel, and provider artifact SHA-256 values as one reviewed
-deployment set.
+deployment set. The result also reports `runtime_chain_pins_match=true` only
+when the resolver, composer, runtime, effect, and execution revision form one
+internally consistent chain.
 
 Install reviewed provider wheels with `python -m pip install --no-compile`.
 Sky rejects provider bytecode caches and disables bytecode writes before
