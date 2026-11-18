@@ -507,22 +507,41 @@ class _BoundAwsVmEnvironmentRuntimeEvidence:
             if len(containers) != 1 or not isinstance(containers[0], dict):
                 raise ValueError("Exact VM application inspection required")
             (container,) = containers
-            labels = container.get("Config", {}).get("Labels", {})
-            mounts = container.get("Mounts", [])
-            networks = container.get("NetworkSettings", {}).get("Networks", {})
+            state = container.get("State")
+            host_config = container.get("HostConfig")
+            config = container.get("Config")
+            network_settings = container.get("NetworkSettings")
+            mounts = container.get("Mounts")
+            if (
+                not all(isinstance(value, dict) for value in (state, host_config, config, network_settings))
+                or not isinstance(mounts, list)
+                or len(mounts) != 1
+                or not isinstance(mounts[0], dict)
+                or not isinstance(config.get("Labels"), dict)
+                or any(
+                    not isinstance(key, str)
+                    or not isinstance(value, str)
+                    or not 1 <= len(key.encode()) <= 256
+                    or len(value.encode()) > 4096
+                    for key, value in config["Labels"].items()
+                )
+                or not isinstance(network_settings.get("Networks"), dict)
+            ):
+                raise ValueError("Canonical VM application inspection required")
+            labels = config["Labels"]
+            networks = network_settings["Networks"]
             if (
                 daemon != r.daemon_id
                 or container.get("Id") != r.container_id
                 or container.get("Image") != r.image_id
-                or container.get("State", {}).get("Running") is not True
-                or container.get("HostConfig", {}).get("ReadonlyRootfs") is not True
-                or container.get("HostConfig", {}).get("Privileged") is not False
-                or container.get("HostConfig", {}).get("NetworkMode") != r.network_name
+                or state.get("Running") is not True
+                or host_config.get("ReadonlyRootfs") is not True
+                or host_config.get("Privileged") is not False
+                or host_config.get("NetworkMode") != r.network_name
                 or set(networks) != {r.network_name}
-                or container.get("Config", {}).get("User") != r.user
-                or _docker_environment(container.get("Config", {}).get("Env", [])) != r.environment_sha256
+                or config.get("User") != r.user
+                or _docker_environment(config.get("Env")) != r.environment_sha256
                 or any(labels.get(key) != value for key, value in r.required_labels)
-                or len(mounts) != 1
                 or mounts[0].get("Type") != "volume"
                 or mounts[0].get("Name") != r.config_volume
                 or mounts[0].get("Destination") != r.config_destination

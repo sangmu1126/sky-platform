@@ -336,6 +336,23 @@ def test_duplicate_vm_runtime_metadata_is_sanitized(tmp_path):
         factory.bind(ssh)(factory.transfer.document()["target"])
 
 
+@pytest.mark.parametrize("field", ["State", "HostConfig", "Config", "Mounts", "NetworkSettings"])
+def test_malformed_vm_runtime_evidence_is_sanitized(tmp_path, field):
+    factory, ssh, _task, _interface, _definition, container = fixture(tmp_path)
+    container[field] = [] if field != "Mounts" else [{}]
+    with (
+        patch(
+            "adapters.runtime.environment_application_evidence.bounded_command",
+            side_effect=[
+                (0, json.dumps(factory.target.daemon_id)),
+                (0, json.dumps([container])),
+            ],
+        ),
+        pytest.raises(RuntimeError, match="Registered target application runtime unavailable"),
+    ):
+        factory.bind(ssh)(factory.transfer.document()["target"])
+
+
 def test_runtime_factory_reference_changes_with_any_registered_identity():
     plan, source, target = registrations()
     clients = {
