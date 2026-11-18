@@ -39,6 +39,13 @@ deployment set. The result also reports `runtime_chain_pins_match=true` only
 when the resolver, composer, runtime, effect, and execution revision form one
 internally consistent chain.
 
+Before pip runs, both wheels must be bounded canonical ZIP archives whose exact
+file sets, SHA-256 digests, and sizes match one `RECORD`. The verifier rejects
+unrecorded files, non-regular entries, Python startup hooks such as `.pth` or
+`sitecustomize`, and paths that collide after Unicode normalization and
+case-folding. A reviewed hash therefore cannot hide an earlier-than-manifest
+startup path or an install-time overwrite on a different filesystem.
+
 Install reviewed provider wheels with `python -m pip install --no-compile`.
 Sky rejects provider bytecode caches and disables bytecode writes before
 loading provider code so artifact pins stay independent of the installation
