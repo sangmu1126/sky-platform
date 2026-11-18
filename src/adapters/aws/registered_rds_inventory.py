@@ -55,6 +55,7 @@ class RegisteredRdsInventory:
             not isinstance(self.placement, DatabasePlacement)
             or self.placement.location.provider != "aws"
             or self.placement.role == "sky_state"
+            or not re.fullmatch(r"[a-z]{2}(?:-[a-z]+)+-\d+", self.placement.location.location)
             or not re.fullmatch(r"db-[A-Za-z0-9]{1,64}", self.resource_id)
             or not re.fullmatch(r"vpc-[a-f0-9]{8,17}", self.vpc_id)
         ):
@@ -87,9 +88,11 @@ class RegisteredRdsInventoryVerifier:
             region = placement.location.location
             if self.sts.get_caller_identity()["Account"] != account or self.rds.meta.region_name != region:
                 raise ValueError("AWS caller or region changed")
-            (value,) = self.rds.describe_db_instances(DBInstanceIdentifier=placement.instance_id)[
-                "DBInstances"
-            ]
+            response = self.rds.describe_db_instances(DBInstanceIdentifier=placement.instance_id)
+            instances = response.get("DBInstances") if isinstance(response, dict) else None
+            if not isinstance(instances, list) or len(instances) != 1 or not isinstance(instances[0], dict):
+                raise ValueError("Canonical RDS instance response required")
+            value = instances[0]
             arn = f"arn:aws:rds:{region}:{account}:db:{placement.instance_id}"
             raw_tags = value.get("TagList")
             if (
@@ -100,6 +103,8 @@ class RegisteredRdsInventoryVerifier:
                     or set(item) != {"Key", "Value"}
                     or not isinstance(item["Key"], str)
                     or not isinstance(item["Value"], str)
+                    or not 1 <= len(item["Key"]) <= 128
+                    or len(item["Value"]) > 256
                     for item in raw_tags
                 )
             ):
@@ -107,6 +112,26 @@ class RegisteredRdsInventoryVerifier:
             tags = {item["Key"]: item["Value"] for item in raw_tags}
             if len(tags) != len(raw_tags):
                 raise ValueError("Canonical RDS ownership tags required")
+            engine_version = value.get("EngineVersion")
+            subnet = value.get("DBSubnetGroup")
+            endpoint = value.get("Endpoint")
+            groups = value.get("VpcSecurityGroups")
+            if (
+                not isinstance(engine_version, str)
+                or not re.fullmatch(r"\d+(?:[.]\d+){1,3}", engine_version)
+                or not isinstance(subnet, dict)
+                or not isinstance(endpoint, dict)
+                or not isinstance(groups, list)
+                or len(groups) != len(r.security_groups)
+                or any(
+                    not isinstance(group, dict)
+                    or set(group) != {"VpcSecurityGroupId", "Status"}
+                    or not isinstance(group["VpcSecurityGroupId"], str)
+                    or group["Status"] != "active"
+                    for group in groups
+                )
+            ):
+                raise ValueError("Canonical RDS network response required")
             if (
                 value.get("DBInstanceArn") != arn
                 or value.get("DbiResourceId") != r.resource_id
@@ -117,13 +142,10 @@ class RegisteredRdsInventoryVerifier:
                 or value.get("Engine") != "postgres"
                 or value.get("PubliclyAccessible") is not False
                 or value.get("StorageEncrypted") is not True
-                or value.get("DBSubnetGroup", {}).get("VpcId") != r.vpc_id
-                or int(value.get("EngineVersion", "0").split(".")[0]) != placement.postgres_major
-                or (value.get("Endpoint", {}).get("Address"), value.get("Endpoint", {}).get("Port"))
-                != (r.hostname, r.port)
-                or sorted(v["VpcSecurityGroupId"] for v in value.get("VpcSecurityGroups", []))
-                != sorted(r.security_groups)
-                or any(v.get("Status") != "active" for v in value.get("VpcSecurityGroups", []))
+                or subnet.get("VpcId") != r.vpc_id
+                or int(engine_version.split(".")[0]) != placement.postgres_major
+                or (endpoint.get("Address"), endpoint.get("Port")) != (r.hostname, r.port)
+                or tuple(sorted(group["VpcSecurityGroupId"] for group in groups)) != r.security_groups
                 or any(tags.get(k) != v for k, v in r.required_tags)
             ):
                 raise ValueError("Registered private RDS resource changed")

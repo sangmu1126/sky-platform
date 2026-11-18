@@ -75,9 +75,19 @@ def test_automated_backup_is_resource_ownership_evidence_not_a_sql_readiness_cla
         {"StorageEncrypted": False},
         {"DBInstanceStatus": "modifying"},
         {"EngineVersion": "16.8"},
+        {"EngineVersion": "17.invalid"},
         {"DBSubnetGroup": {"VpcId": "vpc-87654321"}},
         {"Endpoint": {"Address": "other.rds.test", "Port": 5432}},
         {"VpcSecurityGroups": []},
+        {
+            "VpcSecurityGroups": [
+                {
+                    "VpcSecurityGroupId": "sg-12345678",
+                    "Status": "active",
+                    "unexpected": True,
+                }
+            ]
+        },
         {"TagList": []},
         {
             "TagList": [
@@ -111,6 +121,22 @@ def test_rds_registration_requires_canonical_tags_and_security_groups():
         )
     with pytest.raises(ValueError, match="Canonical RDS security groups"):
         replace(verifier.registration, security_groups=("sg-23456789", "sg-12345678"))
+    with pytest.raises(ValueError, match="Exact existing workload RDS registration"):
+        replace(
+            verifier.registration,
+            placement=replace(
+                verifier.registration.placement,
+                location=replace(verifier.registration.placement.location, location="private_region"),
+            ),
+        )
+
+
+@pytest.mark.parametrize("response", [{}, {"DBInstances": []}, {"DBInstances": [{}, {}]}])
+def test_rds_verifier_requires_one_canonical_instance_response(response):
+    verifier, _ = rds_verifier()
+    verifier.rds.describe_db_instances.return_value = response
+    with pytest.raises(DatabaseInventoryUnavailable):
+        verifier.verify(verifier.registration.placement)
 
 
 @pytest.mark.parametrize("client", ["sts", "rds"])
