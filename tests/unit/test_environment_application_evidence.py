@@ -420,3 +420,17 @@ def test_runtime_factory_rejects_custom_aws_evidence_endpoints(changed):
     clients[changed].meta.endpoint_url = "https://localhost.invalid"
     with pytest.raises(ValueError, match="Regional AWS application evidence authority"):
         RegisteredAwsVmEnvironmentRuntimeEvidence(plan, source, target, **clients)
+
+
+@pytest.mark.parametrize("changed", ["sts", "ecs", "ec2"])
+def test_bound_source_rechecks_aws_evidence_authority_before_api_calls(tmp_path, changed):
+    factory, ssh, _task, _interface, _definition, _container = fixture(tmp_path)
+    getattr(factory, changed).meta.endpoint_url = "https://localhost.invalid"
+    verifier = factory.bind(ssh)
+
+    with pytest.raises(RuntimeError, match="Registered source application runtime unavailable"):
+        verifier(factory.transfer.document()["source"])
+    factory.sts.get_caller_identity.assert_not_called()
+    factory.ecs.describe_tasks.assert_not_called()
+    factory.ecs.describe_task_definition.assert_not_called()
+    factory.ec2.describe_network_interfaces.assert_not_called()

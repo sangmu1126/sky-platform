@@ -349,6 +349,9 @@ class _BoundAwsVmEnvironmentRuntimeEvidence:
         r = self.registration
         source = r.source
         try:
+            region = source.placement.location.location
+            for client, service in ((r.sts, "sts"), (r.ecs, "ecs"), (r.ec2, "ec2")):
+                _regional_aws_client(client, service, region)
             identity = r.sts.get_caller_identity()
             if (
                 not isinstance(identity, dict)
