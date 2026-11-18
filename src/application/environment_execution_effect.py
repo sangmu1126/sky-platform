@@ -27,6 +27,14 @@ class RegisteredEnvironmentResourceCheck:
             raise ValueError("Digest-bound environment resource check required")
         if not callable(self.collect):
             raise TypeError("Environment resource collector required")
+        owner = getattr(self.collect, "__self__", None)
+        collector_reference = (
+            getattr(owner, "reference", None)
+            if owner is not None
+            else getattr(self.collect, "reference", None)
+        )
+        if collector_reference != self.reference:
+            raise ValueError("Environment resource collector differs from check reference")
 
 
 class RegisteredEnvironmentTransferResources:

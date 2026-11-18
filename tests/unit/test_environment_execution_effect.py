@@ -15,14 +15,16 @@ from tests.unit.test_environment_admission import registered
 
 def resource_check(index, *, evidence=None):
     reference = "ERC-" + format(index, "064x")
+    collect = Mock(
+        return_value={
+            "check_ref": reference,
+            "evidence_ref": evidence or "EVIDENCE-" + format(index, "064x"),
+        },
+        reference=reference,
+    )
     return RegisteredEnvironmentResourceCheck(
         reference,
-        Mock(
-            return_value={
-                "check_ref": reference,
-                "evidence_ref": evidence or "EVIDENCE-" + format(index, "064x"),
-            }
-        ),
+        collect,
     )
 
 
@@ -68,6 +70,9 @@ def test_resource_check_drift_duplicate_evidence_or_changed_execution_is_rejecte
     object.__setattr__(other.job, "id", "other-registration")
     with pytest.raises(ValueError, match="Exact guarded"):
         verifier.verify(other, guard=Mock())
+
+    with pytest.raises(ValueError, match="collector differs"):
+        RegisteredEnvironmentResourceCheck(first.reference, Mock(reference="ERC-" + "f" * 64))
 
 
 def effect_fixture():
