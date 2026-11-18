@@ -139,6 +139,10 @@ def test_transport_requires_private_pinned_host_key_and_rejects_mutations(tmp_pa
         assert "IdentityAgent=none" in arguments and "PreferredAuthentications=publickey" in arguments
         assert "PasswordAuthentication=no" in arguments and "KbdInteractiveAuthentication=no" in arguments
         assert "ProxyCommand=none" in arguments and "ControlMaster=no" in arguments
+        assert "ProxyJump=none" in arguments and "CanonicalizeHostname=no" in arguments
+        assert "Hostname=127.0.0.1" in arguments and "RequestTTY=no" in arguments
+        assert "ConnectionAttempts=1" in arguments and "NumberOfPasswordPrompts=0" in arguments
+        assert arguments[arguments.index("-F") + 2] == "-T"
         assert "ControlPath=none" in arguments and "UpdateHostKeys=no" in arguments
         assert "HostKeyAlgorithms=ssh-ed25519" in arguments
         assert arguments[0] == "/usr/bin/ssh"
