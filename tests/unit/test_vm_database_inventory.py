@@ -108,6 +108,15 @@ def test_foreign_placement_does_not_trigger_remote_commands(registered):
     verifier.command.assert_not_called()
 
 
+def test_duplicate_remote_metadata_fields_cannot_prove_inventory(registered):
+    verifier, _, _ = registered
+    verifier.command = Mock(
+        side_effect=[json.dumps(verifier.registration.daemon_id), '{"id":"one","id":"two"}']
+    )
+    with pytest.raises(DatabaseInventoryUnavailable):
+        verifier.verify(verifier.registration.placement)
+
+
 def test_transport_requires_private_pinned_host_key_and_rejects_mutations(tmp_path):
     key, hosts = tmp_path / "key", tmp_path / "known_hosts"
     key.write_text("unit-test-placeholder")

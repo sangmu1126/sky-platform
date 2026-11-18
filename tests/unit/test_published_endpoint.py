@@ -106,6 +106,17 @@ def test_ambiguous_extra_service_or_membership_revocation_prevents_result():
         PinnedPublishedEndpointResolver(registration, command).resolve(guard=revoked)
 
 
+def test_duplicate_remote_port_fields_are_rejected():
+    registration, _metadata, _command, _ = case()
+    command = lambda arguments: (
+        json.dumps(registration.daemon_id)
+        if arguments[0] == "info"
+        else '{"id":"' + registration.container_id + '","ports":{},"ports":{}}'
+    )
+    with pytest.raises(ValueError, match="Duplicate"):
+        PinnedPublishedEndpointResolver(registration, command).resolve(guard=lambda: None)
+
+
 def test_game_control_and_play_ports_must_both_be_registered_and_loopback():
     from dataclasses import replace
 

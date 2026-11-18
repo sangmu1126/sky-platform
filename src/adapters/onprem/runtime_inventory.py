@@ -9,6 +9,7 @@ import stat
 from pathlib import Path
 
 from adapters.build.process import bounded_command
+from adapters.runtime.strict_json import strict_external_json
 from adapters.runtime.workload_inventory import RegisteredLinuxRuntimeInventory
 from ports.workload_inventory import WorkloadInventoryUnavailable
 
@@ -155,7 +156,11 @@ class PinnedVmRuntimeObservationTransport:
             self.guard()
             if code or not self._unchanged():
                 raise OSError("Pinned runtime helper unavailable")
-            observation = json.loads(output)
+            observation = strict_external_json(
+                output,
+                maximum=512 * 1024,
+                expected_type=dict,
+            )
             if observation.get("runtime_registration_id") != registration_id:
                 raise ValueError("Remote helper returned another registration")
             return observation

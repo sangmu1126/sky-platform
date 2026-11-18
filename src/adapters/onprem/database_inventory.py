@@ -18,6 +18,7 @@ from pathlib import Path
 from adapters.build.process import bounded_command
 from adapters.runtime.environment_secrets import pinned_private_file
 from adapters.runtime.private_network import pinned_private_address
+from adapters.runtime.strict_json import strict_external_json
 from domain.database_inventory import DatabaseInventoryUnavailable, DatabaseResourceEvidence
 from domain.database_migration import DatabasePlacement, _reference
 
@@ -210,9 +211,21 @@ class VmDatabaseInventoryVerifier:
         if placement != r.placement:
             raise ValueError("VM inventory differs from registration")
         try:
-            daemon = json.loads(self.command(["info", "--format", "{{json .ID}}"]))
-            container = json.loads(self.command(["inspect", "--format", _CONTAINER, r.container_id]))
-            volume = json.loads(self.command(["volume", "inspect", "--format", _VOLUME, r.volume_name]))
+            daemon = strict_external_json(
+                self.command(["info", "--format", "{{json .ID}}"]),
+                maximum=65536,
+                expected_type=str,
+            )
+            container = strict_external_json(
+                self.command(["inspect", "--format", _CONTAINER, r.container_id]),
+                maximum=65536,
+                expected_type=dict,
+            )
+            volume = strict_external_json(
+                self.command(["volume", "inspect", "--format", _VOLUME, r.volume_name]),
+                maximum=65536,
+                expected_type=dict,
+            )
             labels = {
                 "sky-managed": "true",
                 "sky-organization-id": placement.organization_id,

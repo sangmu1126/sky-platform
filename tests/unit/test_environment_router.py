@@ -139,6 +139,18 @@ def test_runtime_verification_is_required_in_addition_to_router_config():
         router.current()
 
 
+def test_duplicate_nested_router_metadata_is_rejected():
+    router, _, _ = fixture()
+    router.command = Mock(
+        side_effect=[
+            json.dumps(router.registration.daemon_id),
+            '[{"Config":{"Labels":{},"Labels":{}}}]',
+        ]
+    )
+    with pytest.raises(ValueError, match="Duplicate"):
+        router.current()
+
+
 @pytest.mark.parametrize(
     "address", ["127.0.0.1; command", "host\nreturn 200;", "$(id)", "0.0.0.0", "224.0.0.1"]
 )

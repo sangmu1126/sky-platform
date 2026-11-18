@@ -265,6 +265,21 @@ def test_pinned_vm_application_command_rejects_arbitrary_docker_access(tmp_path)
     assert run.call_count == 1
 
 
+def test_duplicate_vm_runtime_metadata_is_sanitized(tmp_path):
+    factory, ssh, _task, _interface, _definition, _container = fixture(tmp_path)
+    with (
+        patch(
+            "adapters.runtime.environment_application_evidence.bounded_command",
+            side_effect=[
+                (0, json.dumps(factory.target.daemon_id)),
+                (0, '[{"Config":{"User":"1000:1000","User":"0:0"}}]'),
+            ],
+        ),
+        pytest.raises(RuntimeError, match="Registered target application runtime unavailable"),
+    ):
+        factory.bind(ssh)(factory.transfer.document()["target"])
+
+
 def test_runtime_factory_reference_changes_with_any_registered_identity():
     plan, source, target = registrations()
     clients = {

@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 
 from adapters.build.process import bounded_command
 from adapters.onprem.database_inventory import PinnedVmInventoryCommand
+from adapters.runtime.strict_json import strict_external_json
 from domain.database_migration import DatabasePlacement
 from domain.database_transfer import RegisteredDatabaseTransfer
 from domain.environment_transition import _ref
@@ -399,8 +400,19 @@ class _BoundAwsVmEnvironmentRuntimeEvidence:
     def _target(self):
         r = self.registration.target
         try:
-            daemon = json.loads(self.vm_command(["info", "--format", "{{json .ID}}"]))
-            (container,) = json.loads(self.vm_command(["inspect", r.container_id]))
+            daemon = strict_external_json(
+                self.vm_command(["info", "--format", "{{json .ID}}"]),
+                maximum=128 * 1024,
+                expected_type=str,
+            )
+            containers = strict_external_json(
+                self.vm_command(["inspect", r.container_id]),
+                maximum=128 * 1024,
+                expected_type=list,
+            )
+            if len(containers) != 1 or not isinstance(containers[0], dict):
+                raise ValueError("Exact VM application inspection required")
+            (container,) = containers
             labels = container.get("Config", {}).get("Labels", {})
             mounts = container.get("Mounts", [])
             networks = container.get("NetworkSettings", {}).get("Networks", {})

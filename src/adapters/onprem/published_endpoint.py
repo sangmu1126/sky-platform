@@ -5,12 +5,12 @@ match first. SQL/HTTP TLS, logical ownership and runtime policy remain separate
 caller checks. No free SSH/Docker command or externally provided endpoint exists.
 """
 
-import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from adapters.onprem.database_inventory import _CONTAINER
+from adapters.runtime.strict_json import strict_external_json
 from domain.environment_transition import _ref, _time
 
 
@@ -73,9 +73,17 @@ class PinnedPublishedEndpointResolver:
     def resolve(self, *, guard):
         guard()
         r = self.registration
-        daemon = json.loads(self.command(["info", "--format", "{{json .ID}}"]))
+        daemon = strict_external_json(
+            self.command(["info", "--format", "{{json .ID}}"]),
+            maximum=65536,
+            expected_type=str,
+        )
         guard()
-        container = json.loads(self.command(["inspect", "--format", _CONTAINER, r.container_id]))
+        container = strict_external_json(
+            self.command(["inspect", "--format", _CONTAINER, r.container_id]),
+            maximum=65536,
+            expected_type=dict,
+        )
         if not isinstance(container, dict) or daemon != r.daemon_id:
             raise ValueError("Registered Docker authority changed")
         labels = container.get("labels")

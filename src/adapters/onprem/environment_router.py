@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass
 
 from adapters.build.process import bounded_command
 from adapters.onprem.database_inventory import PinnedVmInventoryCommand
+from adapters.runtime.strict_json import strict_external_json
 from domain.database_transfer import RegisteredDatabaseTransfer
 
 PATH = "/etc/nginx/sky/active.conf"
@@ -174,9 +175,19 @@ class EnvironmentNginxRouter:
     def _audit(self):
         self.guard()
         r = self.registration
-        if json.loads(self.command(["info", "--format", "{{json .ID}}"])) != r.daemon_id:
+        daemon = strict_external_json(
+            self.command(["info", "--format", "{{json .ID}}"]),
+            maximum=65536,
+            expected_type=str,
+        )
+        if daemon != r.daemon_id:
             raise ValueError("Router Docker daemon changed")
-        (container,) = json.loads(self.command(["inspect", r.container_id]))
+        containers = strict_external_json(
+            self.command(["inspect", r.container_id]), maximum=65536, expected_type=list
+        )
+        if len(containers) != 1 or not isinstance(containers[0], dict):
+            raise ValueError("Exact router inspection required")
+        (container,) = containers
         labels = container.get("Config", {}).get("Labels", {})
         required = {
             "sky-managed": "true",

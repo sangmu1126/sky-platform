@@ -151,6 +151,26 @@ def test_changed_ssh_identity_and_remote_diagnostics_are_sanitized(tmp_path):
     command.assert_not_called()
 
 
+def test_duplicate_remote_observation_fields_are_sanitized(tmp_path):
+    reader, _source, _proc, _observation, _published, key, hosts = remote_case(tmp_path)
+    transport = PinnedVmRuntimeObservationTransport(
+        host="vm.example",
+        user="sky_inventory",
+        port=22,
+        private_key=key,
+        known_hosts=hosts,
+        guard=lambda: None,
+    )
+    with (
+        patch(
+            "adapters.onprem.runtime_inventory.bounded_command",
+            return_value=(0, '{"runtime_registration_id":"one","runtime_registration_id":"two"}'),
+        ),
+        pytest.raises(WorkloadInventoryUnavailable, match="Pinned VM runtime observation unavailable"),
+    ):
+        transport.observe(reader.registration)
+
+
 def test_root_registry_helper_reads_only_exact_immutable_registration(tmp_path):
     reader, _source, proc, _observation, _published, _key, _hosts = remote_case(tmp_path)
     registry = tmp_path / "registry"
