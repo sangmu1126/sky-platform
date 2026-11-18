@@ -1,5 +1,6 @@
 """Operator manifest for server-installed reviewed environment compositions."""
 
+import base64
 import csv
 import hashlib
 import io
@@ -253,9 +254,18 @@ def _provider_file(path, *, maximum):
             digest.update(chunk)
             content.extend(chunk)
         after = os.fstat(descriptor)
-        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_uid,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
             after.st_dev,
             after.st_ino,
+            after.st_mode,
+            after.st_uid,
             after.st_size,
             after.st_mtime_ns,
         ) or size != before.st_size:
@@ -341,11 +351,12 @@ def _provider_record(content, paths, record_path):
         values[name] = (digest, size)
     if set(values) != paths or record_path not in values:
         raise ValueError("Provider RECORD differs from installed distribution")
-    return [
+    canonical = [
         {"path": name, "digest": values[name][0], "size": values[name][1]}
         for name in sorted(values)
         if not _installer_metadata(PurePosixPath(name))
     ]
+    return canonical, values
 
 
 def _reject_provider_bytecode(root, module, paths):
@@ -413,7 +424,7 @@ def attest_environment_execution_provider(entry_point):
     record_content, _record_digest = _provider_file(
         _provider_path(root, record_paths[0], distribution), maximum=1024 * 1024
     )
-    canonical_record = _provider_record(record_content, paths, record_path)
+    canonical_record, declared_files = _provider_record(record_content, paths, record_path)
     module = entry_point.value.split(":", 1)[0]
     _reject_provider_bytecode(root, module, tuple(relatives))
     for relative in relatives:
@@ -423,9 +434,15 @@ def attest_environment_execution_provider(entry_point):
         total += size
         if total > 16 * 1024 * 1024:
             raise ValueError("Provider distribution exceeds bound")
-        if relative.as_posix() == record_path or _installer_metadata(relative):
+        name = relative.as_posix()
+        if name != record_path:
+            declared_digest, declared_size = declared_files[name]
+            actual_digest = "sha256=" + base64.urlsafe_b64encode(bytes.fromhex(digest)).rstrip(b"=").decode()
+            if declared_digest != actual_digest or declared_size != str(size):
+                raise ValueError("Provider RECORD digest or size differs from installed file")
+        if name == record_path or _installer_metadata(relative):
             continue
-        records.append({"path": relative.as_posix(), "size": size, "sha256": digest})
+        records.append({"path": name, "size": size, "sha256": digest})
     module_path = module.replace(".", "/")
     if not ({module_path + ".py", module_path + "/__init__.py"} & paths):
         raise ValueError("Entry point module is absent from provider distribution")

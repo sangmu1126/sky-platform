@@ -407,7 +407,7 @@ def test_provider_artifact_is_verified_before_and_after_import(tmp_path):
         manifest_file(tmp_path, selected, entry_point), workspace="test"
     )
     entry_point.module_path.write_text("changed before import\n")
-    with pytest.raises(ValueError, match="differs from operator pin"):
+    with pytest.raises(ValueError, match="RECORD digest|differs from operator pin"):
         compose_environment_executions(manifest, entry_points=[entry_point])
     assert entry_point.loads == 0
 
@@ -419,7 +419,7 @@ def test_provider_artifact_is_verified_before_and_after_import(tmp_path):
 
     after.provider.side_effect = change_after_import
     manifest = load_environment_execution_manifest(manifest_file(tmp_path, selected, after), workspace="test")
-    with pytest.raises(ValueError, match="differs from operator pin"):
+    with pytest.raises(ValueError, match="RECORD digest|differs from operator pin"):
         compose_environment_executions(manifest, entry_points=[after])
 
 
@@ -431,6 +431,22 @@ def test_provider_artifact_rejects_writable_or_unbounded_package(tmp_path):
     entry_point.module_path.chmod(0o644)
     entry_point.dist.files = (*entry_point.dist.files, PurePosixPath("../outside.py"))
     with pytest.raises(ValueError, match="Canonical provider distribution path"):
+        attest_environment_execution_provider(entry_point)
+
+
+@pytest.mark.parametrize("field", ["digest", "size"])
+def test_provider_artifact_requires_record_to_match_installed_files(tmp_path, field):
+    entry_point = EntryPoint(Mock(), tmp_path / "provider")
+    record = entry_point.dist.root / "sky_environment_provider-1.2.3.dist-info/RECORD"
+    rows = list(csv.reader(io.StringIO(record.read_text())))
+    if field == "digest":
+        rows[0][1] = "sha256=" + "A" * 43
+    else:
+        rows[0][2] = str(int(rows[0][2]) + 1)
+    output = io.StringIO(newline="")
+    csv.writer(output, lineterminator="\n").writerows(rows)
+    record.write_text(output.getvalue())
+    with pytest.raises(ValueError, match="RECORD digest or size"):
         attest_environment_execution_provider(entry_point)
 
 
