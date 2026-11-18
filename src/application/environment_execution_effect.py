@@ -74,20 +74,27 @@ class RegisteredEnvironmentTransferResources:
         ):
             raise ValueError("Canonical environment resource checks required")
         self.execution, self.checks = execution, checks
-        self.reference = _digest(
-            "EVR-",
-            {
-                "schema_version": 1,
-                "profile": "registered_environment_transfer_resources_v1",
-                "execution_revision": execution.revision,
-                "checks": [value.reference for value in checks],
-            },
-        )
+        self.reference = self._reference()
+
+    def _reference(self):
+        try:
+            return _digest(
+                "EVR-",
+                {
+                    "schema_version": 1,
+                    "profile": "registered_environment_transfer_resources_v1",
+                    "execution_revision": self.execution.revision,
+                    "checks": [value.reference for value in self.checks],
+                },
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     def verify(self, execution, *, guard):
         if (
             execution != self.execution
             or not callable(guard)
+            or self.reference != self._reference()
             or any(
                 not callable(check.collect) or _collector_reference(check.collect) != check.reference
                 for check in self.checks
@@ -182,20 +189,27 @@ class RegisteredEnvironmentTransferEffect:
         ):
             raise ValueError("Environment transfer runtime differs from registered reference")
         self.execution, self.runtime_ref, self.runtime = execution, runtime_ref, runtime
-        self.reference = _digest(
-            "EEF-",
-            {
-                "schema_version": 1,
-                "profile": "registered_environment_transfer_effect_v1",
-                "execution_revision": execution.revision,
-                "transfer": execution.job.transfer.document(),
-                "runtime_ref": runtime_ref,
-            },
-        )
+        self.reference = self._reference()
+
+    def _reference(self):
+        try:
+            return _digest(
+                "EEF-",
+                {
+                    "schema_version": 1,
+                    "profile": "registered_environment_transfer_effect_v1",
+                    "execution_revision": self.execution.revision,
+                    "transfer": self.execution.job.transfer.document(),
+                    "runtime_ref": self.runtime_ref,
+                },
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     def __call__(self, execution, *, guard, journal):
         if (
             execution != self.execution
+            or self.reference != self._reference()
             or getattr(self.runtime, "reference", None) != self.runtime_ref
             or getattr(self.runtime, "execution", None) != execution
             or not callable(guard)

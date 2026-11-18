@@ -93,6 +93,22 @@ def test_resource_check_rechecks_collector_pin_before_guard_or_collection():
     check.collect.assert_not_called()
 
 
+def test_resource_aggregate_rechecks_its_digest_before_guard_or_collection():
+    execution = registered()
+    original = resource_check(1)
+    replacement = resource_check(2)
+    verifier = RegisteredEnvironmentTransferResources(execution, (original,))
+    verifier.checks = (replacement,)
+    guard = Mock()
+
+    with pytest.raises(ValueError, match="Exact guarded"):
+        verifier.verify(execution, guard=guard)
+
+    guard.assert_not_called()
+    original.collect.assert_not_called()
+    replacement.collect.assert_not_called()
+
+
 def effect_fixture():
     execution = registered()
     transfer = execution.job.transfer
@@ -270,5 +286,19 @@ def test_effect_rechecks_runtime_pin_before_execution():
 
     with pytest.raises(ValueError, match="Exact guarded"):
         effect(execution, guard=Mock(), journal=Mock())
+    transport.verify_registration.assert_not_called()
+    flow.promote.assert_not_called()
+
+
+def test_effect_rechecks_its_digest_before_replaced_runtime_execution():
+    execution, effect, transport, flow, _result = effect_fixture()
+    replacement = Mock(reference="ETR-" + "d" * 64, execution=execution)
+    effect.runtime_ref = replacement.reference
+    effect.runtime = replacement
+
+    with pytest.raises(ValueError, match="Exact guarded"):
+        effect(execution, guard=Mock(), journal=Mock())
+
+    replacement.assert_not_called()
     transport.verify_registration.assert_not_called()
     flow.promote.assert_not_called()
