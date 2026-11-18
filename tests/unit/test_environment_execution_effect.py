@@ -100,6 +100,7 @@ def effect_fixture():
         yield transport, flow
 
     runtime.reference = "ETR-" + "c" * 64
+    runtime.execution = execution
     return (
         execution,
         RegisteredEnvironmentTransferEffect(execution, "ETR-" + "c" * 64, runtime),
@@ -139,17 +140,27 @@ def test_effect_never_accepts_changed_runtime_or_ambiguous_receipt(failure):
 
 def test_effect_reference_changes_with_runtime_or_execution_revision():
     execution, effect, *_ = effect_fixture()
-    implementation = Mock(reference="ETR-" + "d" * 64)
+    implementation = Mock(reference="ETR-" + "d" * 64, execution=execution)
     other_runtime = RegisteredEnvironmentTransferEffect(execution, implementation.reference, implementation)
     assert other_runtime.reference != effect.reference
     changed = registered()
     object.__setattr__(changed.job, "input_sha256", "f" * 64)
-    changed_effect = RegisteredEnvironmentTransferEffect(changed, effect.runtime_ref, effect.runtime)
+    changed_runtime = Mock(reference=effect.runtime_ref, execution=changed)
+    changed_effect = RegisteredEnvironmentTransferEffect(changed, effect.runtime_ref, changed_runtime)
     assert changed_effect.reference != effect.reference
 
 
 def test_effect_rejects_runtime_implementation_with_different_reference():
     execution, effect, *_ = effect_fixture()
     effect.runtime.reference = "ETR-" + "f" * 64
+    with pytest.raises(ValueError, match="differs from registered reference"):
+        RegisteredEnvironmentTransferEffect(execution, effect.runtime_ref, effect.runtime)
+
+
+def test_effect_rejects_runtime_bound_to_different_execution():
+    execution, effect, *_ = effect_fixture()
+    other = registered()
+    object.__setattr__(other.job, "id", "other-registration")
+    effect.runtime.execution = other
     with pytest.raises(ValueError, match="differs from registered reference"):
         RegisteredEnvironmentTransferEffect(execution, effect.runtime_ref, effect.runtime)

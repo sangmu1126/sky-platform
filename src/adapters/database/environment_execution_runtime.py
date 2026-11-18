@@ -97,6 +97,8 @@ class RegisteredEnvironmentTransferRuntime:
         if (
             getattr(resolver, "reference", None) != registration.secret_resolver_ref
             or getattr(composer, "reference", None) != registration.composition_ref
+            or getattr(resolver, "execution_revision", None) != execution.revision
+            or getattr(composer, "execution", None) != execution
         ):
             raise ValueError("Runtime resolver or composer differs from registration")
         self.execution, self.registration = execution, registration

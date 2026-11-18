@@ -43,8 +43,9 @@ def registration(execution):
 
 
 class Resolver:
-    def __init__(self, values=None, *, fail_close=False):
+    def __init__(self, values=None, *, fail_close=False, execution_revision=None):
         self.reference = "ESR-" + "a" * 64
+        self.execution_revision = execution_revision or registered().revision
         self.values = values or {purpose: "material-" + purpose for purpose in PURPOSES}
         self.events = []
         self.fail_close = fail_close
@@ -103,6 +104,7 @@ def composer_fixture(tmp_path, execution):
         return transport, flow
 
     compose.reference = "RTC-" + "b" * 64
+    compose.execution = execution
     return compose
 
 
@@ -167,7 +169,11 @@ def test_resolution_or_composition_drift_is_sanitized_and_open_secrets_close(tmp
         execution,
         registration(execution),
         resolver,
-        Mock(return_value=(Mock(), Mock()), reference="RTC-" + "b" * 64),
+        Mock(
+            return_value=(Mock(), Mock()),
+            reference="RTC-" + "b" * 64,
+            execution=execution,
+        ),
     )
     with (
         pytest.raises(OSError, match="runtime unavailable"),
@@ -243,13 +249,22 @@ def test_runtime_registration_rejects_ambiguous_or_changed_authority(tmp_path, c
         RegisteredEnvironmentTransferRuntime(execution, value, resolver, runtime.composer)
 
 
-@pytest.mark.parametrize("implementation", ["resolver", "composer"])
+@pytest.mark.parametrize(
+    "implementation",
+    ["resolver", "composer", "resolver-execution", "composer-execution"],
+)
 def test_runtime_implementations_must_match_registered_references(tmp_path, implementation):
     execution, resolver, runtime = runtime_fixture(tmp_path)
     if implementation == "resolver":
         resolver.reference = "ESR-" + "f" * 64
-    else:
+    elif implementation == "composer":
         runtime.composer.reference = "RTC-" + "f" * 64
+    elif implementation == "resolver-execution":
+        resolver.execution_revision = "f" * 64
+    else:
+        other = registered()
+        object.__setattr__(other.job, "id", "other-registration")
+        runtime.composer.execution = other
     with pytest.raises(ValueError, match="differs from registration"):
         RegisteredEnvironmentTransferRuntime(
             execution,
