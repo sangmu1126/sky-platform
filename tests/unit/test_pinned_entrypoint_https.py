@@ -155,3 +155,34 @@ def test_probe_rejects_writable_ca_bundle(tmp_path):
     Path(registration.ca_path).chmod(0o666)
     with pytest.raises(ValueError, match="CA bundle"):
         replace(registration)
+
+
+@pytest.mark.parametrize("change", ["ca", "context", "registration"])
+def test_bound_probe_rechecks_authority_before_network_access(tmp_path, change):
+    registration, context, _raw, _wrapped, _response, connection = fixture(tmp_path)
+    with patch(
+        "adapters.database.pinned_entrypoint_https.ssl.create_default_context",
+        return_value=context,
+    ):
+        probe = registration.bind(ControlRuntimeSecretMaterial("private-token"), guard=Mock())
+    if change == "ca":
+        Path(registration.ca_path).write_text("changed")
+    elif change == "context":
+        context.check_hostname = False
+    else:
+        object.__setattr__(registration, "endpoint", "https://other.rehearsal.test:8443/api/scoreboard")
+
+    with (
+        patch(
+            "adapters.database.pinned_entrypoint_https.socket.create_connection",
+            side_effect=AssertionError("network called"),
+        ) as create,
+        patch(
+            "adapters.database.pinned_entrypoint_https.http.client.HTTPSConnection",
+            return_value=connection,
+        ) as connect,
+        pytest.raises(RuntimeError, match="entrypoint evidence unavailable"),
+    ):
+        probe()
+    create.assert_not_called()
+    connect.assert_not_called()

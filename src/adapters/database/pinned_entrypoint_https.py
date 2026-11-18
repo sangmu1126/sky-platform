@@ -8,7 +8,7 @@ import json
 import re
 import socket
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from adapters.runtime.environment_secrets import ControlRuntimeSecretMaterial
 from adapters.runtime.pinned_ca import pinned_ca_bundle
@@ -96,13 +96,23 @@ class _BoundHttpsEnvironmentEntrypointProbe:
 
     def __call__(self):
         r = self.registration
-        url, port = pinned_https_endpoint(r.endpoint)
-        connection = http.client.HTTPSConnection(
-            url.hostname,
-            port,
-            timeout=r.response_timeout,
-        )
+        connection = None
         try:
+            current = replace(r)
+            if (
+                current.reference != self.reference
+                or getattr(self.context, "verify_mode", None) != ssl.CERT_REQUIRED
+                or not getattr(self.context, "check_hostname", False)
+                or not callable(self.guard)
+            ):
+                raise ValueError("Current pinned entrypoint authority required")
+            pinned_private_address(r.address)
+            url, port = pinned_https_endpoint(r.endpoint)
+            connection = http.client.HTTPSConnection(
+                url.hostname,
+                port,
+                timeout=r.response_timeout,
+            )
             self.guard()
             raw = socket.create_connection((r.address, port), timeout=r.response_timeout)
             try:
@@ -138,4 +148,5 @@ class _BoundHttpsEnvironmentEntrypointProbe:
         except Exception:  # noqa: BLE001 -- credential, network, and response details stay private
             raise RuntimeError("Registered HTTPS entrypoint evidence unavailable") from None
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
