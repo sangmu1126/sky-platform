@@ -22,6 +22,18 @@ _SUBPROCESS_TIMEOUT = 60
 _CHECK_CONFIG_OUTPUT = (
     "Reviewed environment worker configuration valid; provider code, AWS and DB were not called"
 )
+_NETWORK_GUARD = """
+import socket as _sky_socket
+class _SkyNoNetworkSocket(_sky_socket.socket):
+    def _deny(self, *args, **kwargs):
+        raise RuntimeError("Network disabled during provider verification")
+    connect = connect_ex = sendto = sendmsg = bind = listen = _deny
+_sky_socket.socket = _SkyNoNetworkSocket
+def _sky_no_network(*args, **kwargs):
+    raise RuntimeError("Network disabled during provider verification")
+_sky_socket.create_connection = _sky_no_network
+_sky_socket.getaddrinfo = _sky_no_network
+"""
 
 
 def _unique_object(pairs):
@@ -94,7 +106,7 @@ def _python(value):
 
 
 def _isolated_python(python, site, script):
-    bootstrap = f"import sys;sys.path.insert(0,{str(site)!r});"
+    bootstrap = f"import sys\nsys.path.insert(0,{str(site)!r})\n{_NETWORK_GUARD}\n"
     return [python, "-I", "-c", bootstrap + script]
 
 

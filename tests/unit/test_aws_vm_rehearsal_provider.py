@@ -10,6 +10,7 @@ import json
 import os
 import ssl
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -343,6 +344,20 @@ def test_provider_installation_verifier_rejects_ambiguous_json(value):
     module = verifier_module("rehearsal_verify_installation_json")
     with pytest.raises((TypeError, ValueError)):
         module._strict_json(value, maximum=1024)
+
+
+def test_provider_installation_verifier_disables_network_in_inspection_subprocess(tmp_path):
+    module = verifier_module("rehearsal_verify_installation_network")
+    with pytest.raises(subprocess.CalledProcessError):
+        module._run(
+            module._isolated_python(
+                sys.executable,
+                tmp_path,
+                "import socket;socket.create_connection(('127.0.0.1',1))",
+            ),
+            env=module._environment(),
+            cwd=tmp_path,
+        )
 
 
 def test_provider_build_uses_offline_isolated_pip_and_minimal_environment(tmp_path, monkeypatch):
