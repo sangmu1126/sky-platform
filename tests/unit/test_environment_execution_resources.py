@@ -72,6 +72,18 @@ def test_database_check_rejects_changed_or_noncurrent_ownership(tmp_path, change
     assert endpoint.inventory.sslrootcert not in check.reference
 
 
+def test_database_check_rechecks_endpoint_digest_before_guard_or_verifier(tmp_path):
+    execution, endpoint, verifier, check = database_check(tmp_path)
+    check.endpoint = replace(endpoint, connect_port=35432, connect_hostaddr="127.0.0.1")
+    guard = Mock()
+
+    with pytest.raises(ValueError, match="Exact guarded"):
+        check.collect(execution, guard=guard)
+
+    guard.assert_not_called()
+    verifier.verify.assert_not_called()
+
+
 def route_check():
     execution = registered()
     router, state, _container = router_fixture()
@@ -106,6 +118,18 @@ def test_route_check_rejects_target_route_or_factory_drift():
     router.guard = lambda: None
     with pytest.raises(ValueError, match="Guard-bound"):
         check.collect(execution, guard=Mock())
+
+
+def test_route_check_rechecks_registration_digest_before_guard_or_factory():
+    execution, router, _state, check = route_check()
+    check.registration = replace(check.registration, target_address="172.16.0.11")
+    guard = Mock()
+
+    with pytest.raises(ValueError, match="Exact guarded"):
+        check.collect(execution, guard=guard)
+
+    guard.assert_not_called()
+    router.verify_runtime.assert_not_called()
 
 
 def test_canonical_bundle_feeds_fixed_evr_aggregator(tmp_path):
@@ -192,3 +216,17 @@ def test_runtime_resource_check_cannot_record_or_cross_external_effect_intent(tm
     execution, _runtime, check = runtime_check(tmp_path, mutation=True)
     with pytest.raises(RuntimeError, match="cannot record"):
         check.collect(execution, guard=Mock())
+
+
+def test_runtime_check_rechecks_erc_and_runtime_pins_before_guard_or_secret_access(tmp_path):
+    execution, runtime, check = runtime_check(tmp_path)
+    changed = "ETR-" + "f" * 64
+    check.runtime_ref = changed
+    runtime.reference = changed
+    guard = Mock()
+
+    with pytest.raises(ValueError, match="Exact guarded"):
+        check.collect(execution, guard=guard)
+
+    guard.assert_not_called()
+    assert runtime.resolver.events == []

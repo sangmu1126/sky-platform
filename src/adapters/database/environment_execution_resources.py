@@ -48,26 +48,32 @@ class RegisteredDatabaseExecutionResourceCheck:
         if not callable(getattr(verifier, "verify", None)) or not callable(clock):
             raise TypeError("Read-only database verifier and clock required")
         side = _endpoint_name(execution, endpoint)
-        inventory = endpoint.inventory
         self.execution, self.endpoint, self.verifier = execution, endpoint, verifier
         self.clock, self.side = clock, side
-        self.reference = _reference(
-            "registered_database_execution_resource_v1",
-            {
-                "execution_revision": execution.revision,
-                "endpoint": side,
-                "placement": asdict(inventory.resource),
-                "hostname": inventory.hostname,
-                "port": inventory.port,
-                "login_role": inventory.login_role,
-                "ca_sha256": inventory.ca_sha256,
-                "connect_port": endpoint.connect_port,
-                "connect_hostaddr": endpoint.connect_hostaddr,
-            },
-        )
+        self.reference = self._current_reference()
+
+    def _current_reference(self):
+        try:
+            inventory = self.endpoint.inventory
+            return _reference(
+                "registered_database_execution_resource_v1",
+                {
+                    "execution_revision": self.execution.revision,
+                    "endpoint": _endpoint_name(self.execution, self.endpoint),
+                    "placement": asdict(inventory.resource),
+                    "hostname": inventory.hostname,
+                    "port": inventory.port,
+                    "login_role": inventory.login_role,
+                    "ca_sha256": inventory.ca_sha256,
+                    "connect_port": self.endpoint.connect_port,
+                    "connect_hostaddr": self.endpoint.connect_hostaddr,
+                },
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     def collect(self, execution, *, guard):
-        if execution != self.execution or not callable(guard):
+        if execution != self.execution or not callable(guard) or self.reference != self._current_reference():
             raise ValueError("Exact guarded database resource execution required")
         inventory = self.endpoint.inventory
         guard()
@@ -104,17 +110,23 @@ class RegisteredRouteExecutionResourceCheck:
             raise TypeError("Guard-bound environment router factory required")
         self.execution, self.registration = execution, registration
         self.router_factory = router_factory
-        self.reference = _reference(
-            "registered_route_execution_resource_v1",
-            {
-                "execution_revision": execution.revision,
-                "router": asdict(registration),
-                "required_binding": asdict(execution.job.transfer.source),
-            },
-        )
+        self.reference = self._current_reference()
+
+    def _current_reference(self):
+        try:
+            return _reference(
+                "registered_route_execution_resource_v1",
+                {
+                    "execution_revision": self.execution.revision,
+                    "router": asdict(self.registration),
+                    "required_binding": asdict(self.execution.job.transfer.source),
+                },
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     def collect(self, execution, *, guard):
-        if execution != self.execution or not callable(guard):
+        if execution != self.execution or not callable(guard) or self.reference != self._current_reference():
             raise ValueError("Exact guarded route resource execution required")
         guard()
         router = self.router_factory(execution, guard=guard)
@@ -161,23 +173,36 @@ class RegisteredRuntimeExecutionResourceCheck:
         ):
             raise ValueError("Exact registered environment runtime required")
         self.execution, self.runtime_ref, self.runtime = execution, runtime_ref, runtime
-        self.reference = _reference(
-            "registered_runtime_execution_resource_v1",
-            {
-                "execution_revision": execution.revision,
-                "runtime_ref": runtime_ref,
-                "required_binding": asdict(execution.job.transfer.source),
-                "checks": [
-                    "database_registration",
-                    "source_runtime",
-                    "target_runtime",
-                    "source_route",
-                ],
-            },
-        )
+        self.reference = self._current_reference()
+
+    def _current_reference(self):
+        try:
+            return _reference(
+                "registered_runtime_execution_resource_v1",
+                {
+                    "execution_revision": self.execution.revision,
+                    "runtime_ref": self.runtime_ref,
+                    "required_binding": asdict(self.execution.job.transfer.source),
+                    "checks": [
+                        "database_registration",
+                        "source_runtime",
+                        "target_runtime",
+                        "source_route",
+                    ],
+                },
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     def collect(self, execution, *, guard):
-        if execution != self.execution or not callable(guard):
+        if (
+            execution != self.execution
+            or not callable(guard)
+            or self.reference != self._current_reference()
+            or not isinstance(self.runtime, RegisteredEnvironmentTransferRuntime)
+            or self.runtime.reference != self.runtime_ref
+            or self.runtime.execution != execution
+        ):
             raise ValueError("Exact guarded runtime resource execution required")
 
         def no_effect_journal(_value):
