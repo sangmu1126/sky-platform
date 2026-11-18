@@ -25,8 +25,15 @@ def wheel_archive(name, *, unrecorded=None, recorded_extra=None, symlink=False):
         prefix + "/METADATA": ("Name: " + name + "\nVersion: 0.1.0\n").encode(),
         prefix + "/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
     }
-    if recorded_extra is not None:
-        values[recorded_extra] = b"target"
+    extras = (
+        ()
+        if recorded_extra is None
+        else (recorded_extra,)
+        if isinstance(recorded_extra, str)
+        else recorded_extra
+    )
+    for extra in extras:
+        values[extra] = b"target"
     record = prefix + "/RECORD"
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\n")
@@ -293,6 +300,13 @@ def test_verifier_rejects_noncanonical_or_nonregular_wheel_entries(verifier, con
 )
 def test_verifier_rejects_recorded_python_startup_hooks(verifier, path):
     content = wheel_archive("sky_platform", recorded_extra=path)
+
+    with pytest.raises(ValueError, match="canonical"):
+        verifier._verify_wheel_archive(content)
+
+
+def test_verifier_rejects_portable_wheel_path_collisions(verifier):
+    content = wheel_archive("sky_platform", recorded_extra=("Collision.py", "collision.py"))
 
     with pytest.raises(ValueError, match="canonical"):
         verifier._verify_wheel_archive(content)

@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path, PurePosixPath
 from zipfile import BadZipFile, ZipFile
 
@@ -205,10 +206,12 @@ def _verify_wheel_archive(data):
         with ZipFile(io.BytesIO(data)) as archive:
             infos = archive.infolist()
             names = [_wheel_path(value.filename) for value in infos]
+            portable_names = [unicodedata.normalize("NFC", name).casefold() for name in names]
             records = [name for name in names if name.endswith(".dist-info/RECORD")]
             if (
                 not 1 <= len(infos) <= _MAX_WHEEL_ENTRIES
                 or len(names) != len(set(names))
+                or len(portable_names) != len(set(portable_names))
                 or len(records) != 1
                 or any(_wheel_startup_hook(name) for name in names)
                 or any(
