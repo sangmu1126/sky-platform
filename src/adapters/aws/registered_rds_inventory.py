@@ -26,16 +26,37 @@ class RegisteredRdsInventory:
 
     def __post_init__(self):
         if (
+            not isinstance(self.security_groups, tuple)
+            or not self.security_groups
+            or tuple(sorted(self.security_groups)) != self.security_groups
+            or len(set(self.security_groups)) != len(self.security_groups)
+            or any(not re.fullmatch(r"sg-[a-f0-9]{8,17}", value) for value in self.security_groups)
+        ):
+            raise ValueError("Canonical RDS security groups required")
+        if (
+            not isinstance(self.required_tags, tuple)
+            or not self.required_tags
+            or any(
+                not isinstance(value, tuple)
+                or len(value) != 2
+                or not all(isinstance(item, str) for item in value)
+                or not value[0]
+                or not value[1]
+                or len(value[0]) > 128
+                or len(value[1]) > 256
+                for value in self.required_tags
+            )
+            or tuple(sorted(self.required_tags)) != self.required_tags
+            or len(dict(self.required_tags)) != len(self.required_tags)
+            or dict(self.required_tags).get("sky-managed") != "true"
+        ):
+            raise ValueError("Canonical owned RDS tags required")
+        if (
             not isinstance(self.placement, DatabasePlacement)
             or self.placement.location.provider != "aws"
             or self.placement.role == "sky_state"
             or not re.fullmatch(r"db-[A-Za-z0-9]{1,64}", self.resource_id)
             or not re.fullmatch(r"vpc-[a-f0-9]{8,17}", self.vpc_id)
-            or not self.security_groups
-            or len(set(self.security_groups)) != len(self.security_groups)
-            or any(not re.fullmatch(r"sg-[a-f0-9]{8,17}", v) for v in self.security_groups)
-            or dict(self.required_tags).get("sky-managed") != "true"
-            or len(dict(self.required_tags)) != len(self.required_tags)
         ):
             raise ValueError("Exact existing workload RDS registration required")
         DatabaseResourceEvidence(self.placement, "registration", datetime.now(UTC), self.hostname, self.port)
@@ -70,7 +91,22 @@ class RegisteredRdsInventoryVerifier:
                 "DBInstances"
             ]
             arn = f"arn:aws:rds:{region}:{account}:db:{placement.instance_id}"
-            tags = {v["Key"]: v["Value"] for v in value.get("TagList", [])}
+            raw_tags = value.get("TagList")
+            if (
+                not isinstance(raw_tags, list)
+                or not 1 <= len(raw_tags) <= 50
+                or any(
+                    not isinstance(item, dict)
+                    or set(item) != {"Key", "Value"}
+                    or not isinstance(item["Key"], str)
+                    or not isinstance(item["Value"], str)
+                    for item in raw_tags
+                )
+            ):
+                raise ValueError("Canonical RDS ownership tags required")
+            tags = {item["Key"]: item["Value"] for item in raw_tags}
+            if len(tags) != len(raw_tags):
+                raise ValueError("Canonical RDS ownership tags required")
             if (
                 value.get("DBInstanceArn") != arn
                 or value.get("DbiResourceId") != r.resource_id

@@ -79,6 +79,13 @@ def test_automated_backup_is_resource_ownership_evidence_not_a_sql_readiness_cla
         {"Endpoint": {"Address": "other.rds.test", "Port": 5432}},
         {"VpcSecurityGroups": []},
         {"TagList": []},
+        {
+            "TagList": [
+                {"Key": "sky-managed", "Value": "false"},
+                {"Key": "sky-managed", "Value": "true"},
+                {"Key": "sky-pool-id", "Value": "personal"},
+            ]
+        },
     ],
 )
 def test_instance_security_or_identity_drift_stops_ownership_collection(change):
@@ -93,6 +100,17 @@ def test_foreign_account_region_and_placement_never_become_evidence():
     with pytest.raises(ValueError):
         verifier.verify(replace(verifier.registration.placement, application_id="other"))
     verifier.rds.describe_db_instances.assert_not_called()
+
+
+def test_rds_registration_requires_canonical_tags_and_security_groups():
+    verifier, _ = rds_verifier()
+    with pytest.raises(ValueError, match="Canonical owned RDS tags"):
+        replace(
+            verifier.registration,
+            required_tags=tuple(reversed(verifier.registration.required_tags)),
+        )
+    with pytest.raises(ValueError, match="Canonical RDS security groups"):
+        replace(verifier.registration, security_groups=("sg-23456789", "sg-12345678"))
 
 
 @pytest.mark.parametrize("client", ["sts", "rds"])
