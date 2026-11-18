@@ -144,6 +144,32 @@ jobs:
           }
           assert required <= files, sorted(required - files)
           PY
+      - name: Build secret-free AWS VM rehearsal provider
+        run: |
+          python providers/aws-vm-rehearsal/tools/build_wheel.py --output-dir /tmp/sky-environment-provider-wheels
+          python - <<'PY'
+          import csv
+          import io
+          import json
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheels = list(Path('/tmp/sky-environment-provider-wheels').glob('*.whl'))
+          assert len(wheels) == 1, wheels
+          with ZipFile(wheels[0]) as wheel:
+              names = wheel.namelist()
+              descriptors = [
+                  name for name in names
+                  if name.endswith('.dist-info/sky-environment-executions-v1.json')
+              ]
+              records = [name for name in names if name.endswith('.dist-info/RECORD')]
+              assert len(descriptors) == len(records) == 1
+              descriptor = json.loads(wheel.read(descriptors[0]))
+              record = list(csv.reader(io.StringIO(wheel.read(records[0]).decode())))
+          assert descriptor['provider'] == 'sky-aws-vm-rehearsal'
+          assert descriptor['registrations'][0]['registration_id'] == 'aws-vm-rehearsal'
+          assert any(row[0] == descriptors[0] and row[1].startswith('sha256=') for row in record)
+          PY
       - run: sky-platform --help
       - run: sky-environment-provider-inspect --help
       - run: sky-environment-manifest --help
