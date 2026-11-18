@@ -13,6 +13,7 @@ import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 import pytest
@@ -219,6 +220,45 @@ def test_wheel_finalizer_sets_exact_mode_under_restrictive_umask(tmp_path):
     finally:
         os.umask(previous)
     assert stat.S_IMODE(destination.stat().st_mode) == 0o400
+
+
+def test_wheel_finalizer_rejects_symlink_or_writable_source(tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        "rehearsal_build_wheel_source", PROJECT / "tools" / "build_wheel.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = tmp_path / "source.whl"
+    with ZipFile(source, "w") as wheel:
+        wheel.writestr("provider/module.py", b"provider")
+    link = tmp_path / "linked.whl"
+    link.symlink_to(source)
+    with pytest.raises(ValueError, match="source wheel"):
+        module.finalize(link, tmp_path / "linked-final.whl", b"{}\n")
+    source.chmod(0o666)
+    with pytest.raises(ValueError, match="source wheel"):
+        module.finalize(source, tmp_path / "writable-final.whl", b"{}\n")
+
+
+def test_provider_build_input_reader_detects_metadata_change(tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        "rehearsal_build_wheel_stable", PROJECT / "tools" / "build_wheel.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = tmp_path / "descriptor.json"
+    source.write_text("{}\n")
+    original = module.os.read
+
+    def change_mode(descriptor, size):
+        source.chmod(0o600)
+        return original(descriptor, size)
+
+    with (
+        patch.object(module.os, "read", side_effect=change_mode),
+        pytest.raises(ValueError, match="changed while reading"),
+    ):
+        module._stable_file_bytes(source, maximum=1024, label="provider descriptor")
 
 
 @pytest.mark.parametrize(

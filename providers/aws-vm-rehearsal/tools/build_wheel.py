@@ -25,6 +25,48 @@ _MAX_WHEEL_BYTES = 64 * 1024 * 1024
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
 
 
+def _stable_file_bytes(path, *, maximum, label):
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        raise ValueError(f"Immutable bounded {label} required") from None
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.getuid()
+            or before.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            or not 1 <= before.st_size <= maximum
+        ):
+            raise ValueError(f"Immutable bounded {label} required")
+        content = bytearray()
+        while len(content) <= maximum:
+            chunk = os.read(descriptor, min(1024 * 1024, maximum + 1 - len(content)))
+            if not chunk:
+                break
+            content.extend(chunk)
+        after = os.fstat(descriptor)
+        if len(content) != before.st_size or (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_uid,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_uid,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise ValueError(f"{label.capitalize()} changed while reading")
+        return bytes(content)
+    finally:
+        os.close(descriptor)
+
+
 def _unique_object(pairs):
     value = {}
     for key, item in pairs:
@@ -85,7 +127,7 @@ def _expected_descriptor(project):
 
 def _descriptor_bytes(project):
     path = project / "descriptor" / DESCRIPTOR
-    raw = path.read_bytes()
+    raw = _stable_file_bytes(path, maximum=_MAX_DESCRIPTOR_BYTES, label="provider descriptor")
     value = _strict_json(raw)
     if value != _expected_descriptor(project):
         raise ValueError("Provider descriptor differs from composed public pins")
@@ -207,7 +249,12 @@ def _write_final_wheel(destination, values):
 
 
 def finalize(source, destination, descriptor):
-    with ZipFile(source) as wheel:
+    source_bytes = _stable_file_bytes(
+        source,
+        maximum=_MAX_WHEEL_BYTES,
+        label="provider source wheel",
+    )
+    with ZipFile(io.BytesIO(source_bytes)) as wheel:
         infos = wheel.infolist()
         names = [value.filename for value in infos]
         records = [value for value in names if value.endswith(".dist-info/RECORD")]
