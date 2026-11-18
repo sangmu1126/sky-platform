@@ -128,3 +128,36 @@ def test_control_transport_rejects_unpinned_or_ambiguous_registration(change):
         values["response_timeout"] = 0
     with pytest.raises(ValueError, match="Registered private address"):
         PinnedHTTPSControlTransport(**values)
+
+
+@pytest.mark.parametrize("change", ["address", "endpoint", "token", "context", "guard", "timeout"])
+def test_control_transport_rechecks_authority_before_network_access(change):
+    transport, context, _raw, _wrapped, _response, connection, guard = fixture()
+    if change == "address":
+        transport.address = "8.8.8.8"
+    elif change == "endpoint":
+        transport.url = transport.url._replace(path="/other")
+    elif change == "token":
+        transport._token = "bad\nheader"
+    elif change == "context":
+        context.check_hostname = False
+    elif change == "guard":
+        transport.guard = None
+    else:
+        transport.response_timeout = 0
+
+    with (
+        patch(
+            "adapters.database.pinned_control_https.socket.create_connection",
+            side_effect=AssertionError("network called"),
+        ) as create,
+        patch(
+            "adapters.database.pinned_control_https.http.client.HTTPSConnection",
+            return_value=connection,
+        ) as connect,
+        pytest.raises(RuntimeError, match="requires reconciliation"),
+    ):
+        transport({"schema_version": 1, "action": "quiesce"})
+    create.assert_not_called()
+    connect.assert_not_called()
+    guard.assert_not_called()

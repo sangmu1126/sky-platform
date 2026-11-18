@@ -5,6 +5,7 @@ pinning does not replace certificate/hostname verification or execution leases.
 The TLS identity remains the registered DNS name even when a task IP is used.
 """
 
+import hashlib
 import http.client
 import json
 import socket
@@ -52,11 +53,57 @@ class PinnedHTTPSControlTransport:
         self.port = port
         self.context, self.guard = ssl_context, guard
         self.response_timeout = response_timeout
+        self._context, self._guard = ssl_context, guard
+        self._authority = (
+            self.url.geturl(),
+            self.address,
+            self.port,
+            self.response_timeout,
+            hashlib.sha256(token.encode()).digest(),
+        )
+
+    def _authority_is_current(self):
+        try:
+            address = pinned_private_address(self.address)
+            url, port = pinned_https_endpoint(self.url.geturl())
+            return (
+                str(address) == self.address
+                and url == self.url
+                and port == self.port
+                and (
+                    self.url.geturl(),
+                    self.address,
+                    self.port,
+                    self.response_timeout,
+                    hashlib.sha256(self._token.encode()).digest(),
+                )
+                == self._authority
+                and isinstance(self._token, str)
+                and 1 <= len(self._token.encode()) <= 4096
+                and "\r" not in self._token
+                and "\n" not in self._token
+                and getattr(self.context, "verify_mode", None) == ssl.CERT_REQUIRED
+                and getattr(self.context, "check_hostname", False) is True
+                and self.context is self._context
+                and callable(self.guard)
+                and self.guard is self._guard
+                and type(self.response_timeout) is int
+                and 1 <= self.response_timeout <= 60
+            )
+        except (AttributeError, TypeError, ValueError):
+            return False
 
     def __call__(self, command):
-        self.guard()
-        connection = http.client.HTTPSConnection(self.url.hostname, self.port, timeout=self.response_timeout)
+        connection = None
         try:
+            if not self._authority_is_current():
+                raise ValueError("Current private control authority required")
+            self.guard()
+            connection = http.client.HTTPSConnection(
+                self.url.hostname,
+                self.port,
+                timeout=self.response_timeout,
+            )
             raw = socket.create_connection((self.address, self.port), timeout=self.response_timeout)
             try:
                 connection.sock = self.context.wrap_socket(raw, server_hostname=self.url.hostname)
@@ -91,4 +138,5 @@ class PinnedHTTPSControlTransport:
         except Exception:  # noqa: BLE001 -- never expose tokens or replay a control mutation
             raise RuntimeError("Private HTTPS control outcome requires reconciliation") from None
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
