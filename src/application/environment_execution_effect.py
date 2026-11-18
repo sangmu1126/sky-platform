@@ -101,6 +101,8 @@ class RegisteredEnvironmentTransferEffect:
             raise ValueError("Digest-bound environment transfer runtime required")
         if not callable(runtime):
             raise TypeError("Registered environment transfer runtime required")
+        if getattr(runtime, "reference", None) != runtime_ref:
+            raise ValueError("Environment transfer runtime differs from registered reference")
         self.execution, self.runtime_ref, self.runtime = execution, runtime_ref, runtime
         self.reference = _digest(
             "EEF-",
