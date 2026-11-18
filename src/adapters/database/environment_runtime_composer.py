@@ -247,9 +247,9 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
             getattr(rds, "describe_db_instances", None)
         ):
             raise TypeError("Read-only AWS database clients required")
-        if not callable(runtime_verifier) or getattr(runtime_verifier, "reference", None) != (
-            registration.runtime_verifier_ref
-        ):
+        if (
+            not callable(runtime_verifier) and not callable(getattr(runtime_verifier, "bind", None))
+        ) or getattr(runtime_verifier, "reference", None) != registration.runtime_verifier_ref:
             raise ValueError("Attested runtime verifier required")
         if not callable(entrypoint_probe) or getattr(entrypoint_probe, "reference", None) != (
             registration.entrypoint_probe_ref
@@ -316,6 +316,14 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
             private_key=router_material.private_key,
             known_hosts=router_material.known_hosts,
         )
+        runtime_verifier = self.runtime_verifier
+        if callable(getattr(runtime_verifier, "bind", None)):
+            runtime_verifier = runtime_verifier.bind(ssh)
+            if (
+                not callable(runtime_verifier)
+                or getattr(runtime_verifier, "reference", None) != r.runtime_verifier_ref
+            ):
+                raise ValueError("Bound runtime verifier differs from registration")
         source_connect = self._connect(r.source_endpoint, source_secret)
         target_connect = self._connect(r.target_endpoint, target_secret)
         source_provider = RegisteredRdsInventoryVerifier(
@@ -360,7 +368,7 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
 
         def verify_runtime(binding):
             guard()
-            result = self.runtime_verifier(binding)
+            result = runtime_verifier(binding)
             guard()
             return result is True
 

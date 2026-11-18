@@ -119,6 +119,7 @@ jobs:
               'adapters/runtime/provider_identity.py',
               'adapters/runtime/https_provider_identity.py',
               'adapters/runtime/environment_secrets.py',
+              'adapters/runtime/environment_application_evidence.py',
               'adapters/onprem/runtime_inventory.py',
               'adapters/onprem/runtime_inventory_install.py',
               'adapters/aws/provider_identity.py',

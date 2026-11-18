@@ -221,6 +221,47 @@ def test_database_connectors_use_registered_tls_names_tunnels_and_resolved_roles
     assert target["password"] == "target-private-password"
 
 
+def test_composer_binds_runtime_evidence_factory_to_short_lived_router_transport(tmp_path):
+    execution, registration, composer, materials = fixture(tmp_path)
+
+    class Bound:
+        reference = registration.runtime_verifier_ref
+
+        def __call__(self, _binding):
+            return True
+
+    class Factory:
+        reference = registration.runtime_verifier_ref
+
+        def __init__(self):
+            self.ssh = None
+
+        def bind(self, ssh):
+            self.ssh = ssh
+            return Bound()
+
+    factory = Factory()
+    composer = RegisteredAwsVmEnvironmentRuntimeComposer(
+        execution,
+        registration,
+        sts=composer.sts,
+        rds=composer.rds,
+        runtime_verifier=factory,
+        entrypoint_probe=composer.entrypoint_probe,
+        clock=composer.clock,
+    )
+    with patch(
+        "adapters.database.environment_runtime_composer.ssl.create_default_context",
+        return_value=tls_context(),
+    ):
+        _transport, flow = composer(execution, materials, guard=Mock(), journal=Mock())
+    assert factory.ssh is not None
+    assert factory.ssh.arguments[factory.ssh.arguments.index("-i") + 1] == str(
+        materials["router_transport"].private_key
+    )
+    assert flow.traffic.router.verify_runtime(flow.traffic.router.bindings[0]) is True
+
+
 @pytest.mark.parametrize("change", ["execution", "resource", "adapter", "secret-role", "ca"])
 def test_changed_registration_adapter_secret_or_ca_fails_closed(tmp_path, change):
     execution, registration, composer, materials = fixture(tmp_path)
