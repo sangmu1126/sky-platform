@@ -270,6 +270,40 @@ def test_runtime_identity_drift_is_sanitized(tmp_path, side, change):
             verifier(binding)
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        "identity-shape",
+        "task-shape",
+        "duplicate-details",
+        "network-shape",
+        "duplicate-groups",
+        "duplicate-secrets",
+    ],
+)
+def test_malformed_aws_runtime_evidence_is_sanitized(tmp_path, change):
+    factory, ssh, task, interface, definition, _container = fixture(tmp_path)
+    if change == "identity-shape":
+        factory.sts.get_caller_identity.return_value = [ACCOUNT]
+    elif change == "task-shape":
+        factory.ecs.describe_tasks.return_value = {"tasks": [task], "failures": {}}
+    elif change == "duplicate-details":
+        task["attachments"][0]["details"].append(
+            {"name": "networkInterfaceId", "value": factory.source.network_interface_id}
+        )
+    elif change == "network-shape":
+        factory.ec2.describe_network_interfaces.return_value = {"NetworkInterfaces": [interface, interface]}
+    elif change == "duplicate-groups":
+        interface["Groups"] = [interface["Groups"][0], interface["Groups"][0]]
+    else:
+        definition["containerDefinitions"][0]["secrets"].append(
+            dict(definition["containerDefinitions"][0]["secrets"][0])
+        )
+    verifier = factory.bind(ssh)
+    with pytest.raises(RuntimeError, match="Registered source application runtime unavailable"):
+        verifier(factory.transfer.document()["source"])
+
+
 def test_pinned_vm_application_command_rejects_arbitrary_docker_access(tmp_path):
     factory, ssh, _task, _interface, _definition, _container = fixture(tmp_path)
     command = PinnedVmApplicationCommand(ssh, factory.target)

@@ -82,6 +82,27 @@ def _aws_environment(values):
     return _pairs_sha256(pairs)
 
 
+def _aws_named_values(values, name_field, value_field, label, *, maximum):
+    if (
+        not isinstance(values, list)
+        or len(values) > maximum
+        or any(
+            not isinstance(value, dict)
+            or set(value) != {name_field, value_field}
+            or not isinstance(value[name_field], str)
+            or not isinstance(value[value_field], str)
+            or not 1 <= len(value[name_field].encode()) <= 256
+            or len(value[value_field].encode()) > 2048
+            for value in values
+        )
+    ):
+        raise ValueError(f"Canonical AWS {label} required")
+    pairs = tuple((value[name_field], value[value_field]) for value in values)
+    if len(dict(pairs)) != len(pairs):
+        raise ValueError(f"Distinct AWS {label} names required")
+    return pairs
+
+
 def _docker_environment(values):
     if (
         not isinstance(values, list)
@@ -328,26 +349,53 @@ class _BoundAwsVmEnvironmentRuntimeEvidence:
         r = self.registration
         source = r.source
         try:
-            if r.sts.get_caller_identity().get("Account") != source.placement.location.authority_ref:
+            identity = r.sts.get_caller_identity()
+            if (
+                not isinstance(identity, dict)
+                or identity.get("Account") != source.placement.location.authority_ref
+            ):
                 raise ValueError("AWS account changed")
             response = r.ecs.describe_tasks(
                 cluster=source.cluster_arn,
                 tasks=[source.task_arn],
                 include=["TAGS"],
             )
-            tasks = response.get("tasks", [])
-            failures = response.get("failures", [])
-            if len(tasks) != 1 or failures:
+            if not isinstance(response, dict):
+                raise TypeError("ECS task response required")
+            tasks = response.get("tasks")
+            failures = response.get("failures")
+            if (
+                not isinstance(tasks, list)
+                or len(tasks) != 1
+                or not isinstance(tasks[0], dict)
+                or not isinstance(failures, list)
+                or failures
+            ):
                 raise ValueError("Registered ECS task unavailable")
             task = tasks[0]
-            containers = task.get("containers", [])
-            raw_tags = task.get("tags", [])
-            tags = {value["key"]: value["value"] for value in raw_tags}
-            attachments = task.get("attachments", [])
-            if len(raw_tags) != len(tags) or len(attachments) != 1:
+            containers = task.get("containers")
+            tag_pairs = _aws_named_values(task.get("tags"), "key", "value", "task tags", maximum=50)
+            tags = dict(tag_pairs)
+            attachments = task.get("attachments")
+            if (
+                not isinstance(containers, list)
+                or len(containers) != 1
+                or not isinstance(containers[0], dict)
+                or not isinstance(attachments, list)
+                or len(attachments) != 1
+                or not isinstance(attachments[0], dict)
+            ):
                 raise ValueError("Canonical ECS task evidence required")
             attachment = attachments[0]
-            details = {value["name"]: value["value"] for value in attachment.get("details", [])}
+            details = dict(
+                _aws_named_values(
+                    attachment.get("details"),
+                    "name",
+                    "value",
+                    "attachment details",
+                    maximum=64,
+                )
+            )
             if (
                 task.get("taskArn") != source.task_arn
                 or task.get("clusterArn") != source.cluster_arn
@@ -357,7 +405,6 @@ class _BoundAwsVmEnvironmentRuntimeEvidence:
                 or task.get("launchType") != "FARGATE"
                 or task.get("platformVersion") != source.platform_version
                 or task.get("enableExecuteCommand", False) is not False
-                or len(containers) != 1
                 or containers[0].get("name") != source.container_name
                 or containers[0].get("imageDigest") != source.image_digest
                 or attachment.get("id") != source.network_attachment_id
@@ -368,34 +415,67 @@ class _BoundAwsVmEnvironmentRuntimeEvidence:
                 or any(tags.get(key) != value for key, value in source.required_tags)
             ):
                 raise ValueError("Registered ECS task identity changed")
-            (interface,) = r.ec2.describe_network_interfaces(
+            network_response = r.ec2.describe_network_interfaces(
                 NetworkInterfaceIds=[source.network_interface_id]
-            )["NetworkInterfaces"]
+            )
+            interfaces = (
+                network_response.get("NetworkInterfaces") if isinstance(network_response, dict) else None
+            )
+            if (
+                not isinstance(interfaces, list)
+                or len(interfaces) != 1
+                or not isinstance(interfaces[0], dict)
+            ):
+                raise ValueError("Canonical ECS network response required")
+            interface = interfaces[0]
             association = interface.get("Association", {})
+            groups = interface.get("Groups")
+            if (
+                not isinstance(association, dict)
+                or not isinstance(groups, list)
+                or len(groups) != len(source.security_groups)
+                or any(
+                    not isinstance(value, dict) or not isinstance(value.get("GroupId"), str)
+                    for value in groups
+                )
+                or len({value["GroupId"] for value in groups}) != len(groups)
+            ):
+                raise ValueError("Canonical ECS network response required")
             if (
                 interface.get("NetworkInterfaceId") != source.network_interface_id
                 or interface.get("Status") != "in-use"
                 or interface.get("PrivateIpAddress") != source.private_ip
                 or association.get("PublicIp") != source.public_ip
                 or interface.get("VpcId") != source.vpc_id
-                or tuple(sorted(value["GroupId"] for value in interface.get("Groups", [])))
-                != source.security_groups
+                or tuple(sorted(value["GroupId"] for value in groups)) != source.security_groups
             ):
                 raise ValueError("Registered ECS network identity changed")
-            definition = r.ecs.describe_task_definition(taskDefinition=source.task_definition_arn)[
-                "taskDefinition"
-            ]
-            containers = definition.get("containerDefinitions", [])
+            definition_response = r.ecs.describe_task_definition(taskDefinition=source.task_definition_arn)
+            definition = (
+                definition_response.get("taskDefinition") if isinstance(definition_response, dict) else None
+            )
+            containers = definition.get("containerDefinitions") if isinstance(definition, dict) else None
             if (
-                definition.get("taskDefinitionArn") != source.task_definition_arn
+                not isinstance(definition, dict)
+                or not isinstance(containers, list)
+                or definition.get("taskDefinitionArn") != source.task_definition_arn
                 or definition.get("taskRoleArn") is not None
                 or definition.get("executionRoleArn") != source.execution_role_arn
                 or len(containers) != 1
+                or not isinstance(containers[0], dict)
             ):
                 raise ValueError("Registered ECS task definition changed")
             container = containers[0]
             observed_secrets = tuple(
-                sorted((value["name"], value["valueFrom"]) for value in container.get("secrets", []))
+                sorted(
+                    _aws_named_values(
+                        container.get("secrets"),
+                        "name",
+                        "valueFrom",
+                        "container secrets",
+                        maximum=100,
+                    )
+                )
             )
             if (
                 container.get("name") != source.container_name
