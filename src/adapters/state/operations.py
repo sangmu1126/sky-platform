@@ -39,6 +39,11 @@ KINDS = {
     "external_poll",
     "reconcile",
     "observe",
+    # Registration/approval/worker composition remains a separate gate. Merely
+    # accepting a durable kind does not activate any public route or executor.
+    "environment_copy",
+    "environment_transfer",
+    "environment_recover",
 }
 
 DDL = (
@@ -263,6 +268,19 @@ class PostgresOperationStore:
         operation_id = self._uuid(operation_id)
         with self.records._connection() as connection:
             return self._select(connection, operation_id)
+
+    def environment_operations(self, application_id, *, limit=20):
+        """Bounded workspace history; caller must authorize application ownership."""
+        application_id = self._text(application_id, "application_id")
+        limit = self._bounded(limit, 1, 50)
+        with self.records._connection() as connection:
+            rows = connection.execute(
+                """SELECT id FROM sky_state.operations WHERE workspace=%s AND application_id=%s
+                    AND kind IN ('environment_copy','environment_transfer','environment_recover')
+                    ORDER BY created_at DESC,id DESC LIMIT %s""",
+                (self.workspace, application_id, limit),
+            ).fetchall()
+            return [self._select(connection, str(row[0])) for row in rows]
 
     def _event(self, connection, operation_id, stage):
         # Caller owns the operation row lock (or its uncommitted INSERT).
