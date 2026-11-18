@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
 import hashlib
+import io
 import json
 import math
 import os
@@ -11,12 +14,14 @@ import stat
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from zipfile import BadZipFile, ZipFile
 
 PROVIDER = "sky-aws-vm-rehearsal"
 WORKSPACE = "isolated-rehearsal"
 _ENVIRONMENT_KEYS = ("LANG", "LC_ALL", "PATH", "SYSTEMROOT")
 _MAX_WHEEL_BYTES = 256 * 1024 * 1024
+_MAX_WHEEL_ENTRIES = 2048
 _MAX_SUBPROCESS_OUTPUT = 2 * 1024 * 1024
 _SUBPROCESS_TIMEOUT = 60
 _CHECK_CONFIG_OUTPUT = (
@@ -169,8 +174,74 @@ def _wheel_bytes(path):
         os.close(descriptor)
 
 
+def _wheel_path(name):
+    value = PurePosixPath(name)
+    if (
+        not name
+        or "\\" in name
+        or "\x00" in name
+        or name.endswith("/")
+        or name != value.as_posix()
+        or value.is_absolute()
+        or any(part in {"", ".", ".."} for part in value.parts)
+        or len(name.encode()) > 512
+    ):
+        raise ValueError("Canonical provider installation wheel path required")
+    return name
+
+
+def _verify_wheel_archive(data):
+    try:
+        with ZipFile(io.BytesIO(data)) as archive:
+            infos = archive.infolist()
+            names = [_wheel_path(value.filename) for value in infos]
+            records = [name for name in names if name.endswith(".dist-info/RECORD")]
+            if (
+                not 1 <= len(infos) <= _MAX_WHEEL_ENTRIES
+                or len(names) != len(set(names))
+                or len(records) != 1
+                or any(
+                    value.flag_bits & 1
+                    or value.is_dir()
+                    or value.file_size > _MAX_WHEEL_BYTES
+                    or value.compress_size > _MAX_WHEEL_BYTES
+                    for value in infos
+                )
+                or sum(value.file_size for value in infos) > _MAX_WHEEL_BYTES
+            ):
+                raise ValueError("Bounded canonical provider installation wheel required")
+            values = {value.filename: archive.read(value) for value in infos}
+    except (BadZipFile, OSError, RuntimeError):
+        raise ValueError("Readable provider installation wheel archive required") from None
+    record_path = records[0]
+    try:
+        rows = list(csv.reader(io.StringIO(values[record_path].decode("utf-8"))))
+    except (UnicodeError, csv.Error):
+        raise ValueError("Canonical provider installation wheel RECORD required") from None
+    recorded = {}
+    for row in rows:
+        if len(row) != 3:
+            raise ValueError("Canonical provider installation wheel RECORD required")
+        name, digest, size = row
+        _wheel_path(name)
+        if name in recorded or name not in values:
+            raise ValueError("Canonical provider installation wheel RECORD required")
+        if name == record_path:
+            if digest or size:
+                raise ValueError("Canonical provider installation wheel RECORD required")
+        else:
+            content = values[name]
+            expected = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+            if digest != "sha256=" + expected or size != str(len(content)):
+                raise ValueError("Provider installation wheel RECORD differs from archive")
+        recorded[name] = (digest, size)
+    if set(recorded) != set(values):
+        raise ValueError("Provider installation wheel RECORD differs from archive")
+
+
 def _private_wheel(root, source):
     data, digest = _wheel_bytes(source)
+    _verify_wheel_archive(data)
     destination = root / source.name
     descriptor = os.open(
         destination,

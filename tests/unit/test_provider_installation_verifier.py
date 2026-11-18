@@ -1,10 +1,14 @@
 """The provider installation verifier runs outside ambient Python, pip and AWS state."""
 
+import base64
+import csv
 import hashlib
 import importlib.util
+import io
 import os
 import stat
 import sys
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +16,30 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "providers" / "aws-vm-rehearsal" / "tools" / "verify_installation.py"
+
+
+def wheel_archive(name, *, unrecorded=None):
+    prefix = name + "-0.1.0.dist-info"
+    values = {
+        name + "/__init__.py": b"",
+        prefix + "/METADATA": ("Name: " + name + "\nVersion: 0.1.0\n").encode(),
+        prefix + "/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    }
+    record = prefix + "/RECORD"
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    for path, content in sorted(values.items()):
+        digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+        writer.writerow([path, "sha256=" + digest, str(len(content))])
+    writer.writerow([record, "", ""])
+    values[record] = output.getvalue().encode()
+    if unrecorded is not None:
+        values[unrecorded] = b"import unexpected_startup_code\n"
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as wheel:
+        for path, content in sorted(values.items()):
+            wheel.writestr(path, content)
+    return archive.getvalue()
 
 
 @pytest.fixture
@@ -27,8 +55,10 @@ def test_two_installations_use_isolated_python_minimal_environment_and_offline_p
 ):
     base = tmp_path / "sky_platform-0.1.0-py3-none-any.whl"
     provider = tmp_path / "sky_aws_vm_rehearsal_provider-0.1.0-py3-none-any.whl"
-    base.write_bytes(b"base-wheel")
-    provider.write_bytes(b"provider-wheel")
+    base_bytes = wheel_archive("sky_platform")
+    provider_bytes = wheel_archive("sky_aws_vm_rehearsal_provider")
+    base.write_bytes(base_bytes)
+    provider.write_bytes(provider_bytes)
     for key, value in {
         "PYTHONPATH": "/ambient/python",
         "PYTHONHOME": "/ambient/home",
@@ -89,8 +119,8 @@ def test_two_installations_use_isolated_python_minimal_environment_and_offline_p
     monkeypatch.setattr(verifier, "_run", run)
     result = verifier.verify(base, provider, python=sys.executable)
 
-    assert result["base_wheel_sha256"] == hashlib.sha256(b"base-wheel").hexdigest()
-    assert result["provider_wheel_sha256"] == hashlib.sha256(b"provider-wheel").hexdigest()
+    assert result["base_wheel_sha256"] == hashlib.sha256(base_bytes).hexdigest()
+    assert result["provider_wheel_sha256"] == hashlib.sha256(provider_bytes).hexdigest()
     assert result["runtime_chain_pins_match"] is True
     assert result["worker_check_config_without_external_calls"] is True
     pip_calls = [call for call in calls if "pip" in call[0]]
@@ -210,7 +240,7 @@ def test_verifier_subprocess_rejects_oversized_or_non_utf8_stdout(verifier, tmp_
 
 def test_verifier_pinned_wheel_copy_has_exact_mode_under_restrictive_umask(verifier, tmp_path):
     source = tmp_path / "sky_platform-0.1.0-py3-none-any.whl"
-    source.write_bytes(b"wheel")
+    source.write_bytes(wheel_archive("sky_platform"))
     copies = tmp_path / "copies"
     copies.mkdir()
     previous = os.umask(0o777)
@@ -219,6 +249,18 @@ def test_verifier_pinned_wheel_copy_has_exact_mode_under_restrictive_umask(verif
     finally:
         os.umask(previous)
     assert stat.S_IMODE(destination.stat().st_mode) == 0o400
+
+
+def test_verifier_rejects_unrecorded_wheel_file_before_pip(verifier, tmp_path):
+    source = tmp_path / "sky_platform-0.1.0-py3-none-any.whl"
+    source.write_bytes(wheel_archive("sky_platform", unrecorded="unexpected_startup.pth"))
+    copies = tmp_path / "copies"
+    copies.mkdir()
+
+    with pytest.raises(ValueError, match="RECORD differs"):
+        verifier._private_wheel(copies, source)
+
+    assert not tuple(copies.iterdir())
 
 
 def test_verifier_rejects_symlink_or_writable_wheel_before_pip(verifier, tmp_path):
