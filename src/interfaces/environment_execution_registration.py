@@ -140,7 +140,7 @@ def _manifest_bytes(path):
         before = os.fstat(descriptor)
         if (
             not stat.S_ISREG(before.st_mode)
-            or before.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            or before.st_mode & _WRITE_BITS
             or not 1 <= before.st_size <= 65536
         ):
             raise ValueError("Immutable bounded environment execution manifest required")

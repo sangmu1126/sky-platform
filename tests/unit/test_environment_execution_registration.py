@@ -75,7 +75,10 @@ def manifest_file(tmp_path, selected, entry_point=None, **changes):
     }
     value.update(changes)
     path = tmp_path / "environment-worker.json"
+    if path.exists():
+        path.chmod(0o600)
     path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False))
+    path.chmod(0o400)
     return path
 
 
@@ -264,10 +267,12 @@ def test_manifest_requires_one_immutable_canonical_absolute_file(tmp_path, monke
         link.symlink_to(path)
         requested = link
     elif change == "mode":
-        path.chmod(0o666)
+        path.chmod(0o600)
     else:
         value = json.loads(path.read_bytes())
+        path.chmod(0o600)
         path.write_text(json.dumps(value, indent=2, sort_keys=True))
+        path.chmod(0o400)
     with pytest.raises(ValueError, match="manifest"):
         load_environment_execution_manifest(requested, workspace="test")
 
