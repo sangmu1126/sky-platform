@@ -122,6 +122,7 @@ jobs:
               'adapters/onprem/runtime_inventory_install.py',
               'adapters/aws/provider_identity.py',
               'adapters/database/environment_execution_resources.py',
+              'adapters/database/environment_execution_runtime.py',
               'adapters/database/environment_transfer.py', 'adapters/database/environment_fence.py',
               'adapters/database/environment_control.py', 'adapters/database/environment_traffic.py',
               'adapters/state/environment_reviews.py', 'adapters/state/environment_gates.py',
