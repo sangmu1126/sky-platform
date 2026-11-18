@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -117,3 +118,21 @@ def test_verifier_rejects_symlink_or_writable_wheel_before_pip(verifier, tmp_pat
     wheel.chmod(0o666)
     with pytest.raises(ValueError, match="Immutable bounded"):
         verifier._wheel_bytes(wheel)
+
+
+def test_verifier_cli_requires_isolated_python(verifier, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        verifier,
+        "sys",
+        SimpleNamespace(executable=sys.executable, flags=SimpleNamespace(isolated=0)),
+    )
+    with pytest.raises(SystemExit) as error:
+        verifier.main(
+            [
+                "--base-wheel",
+                str(tmp_path / "base.whl"),
+                "--provider-wheel",
+                str(tmp_path / "provider.whl"),
+            ]
+        )
+    assert error.value.code == 2

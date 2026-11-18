@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import ssl
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
@@ -167,3 +168,90 @@ def test_wheel_finalizer_rejects_noncanonical_paths(name):
     spec.loader.exec_module(module)
     with pytest.raises(ValueError, match="Canonical provider wheel path"):
         module._canonical_info(name)
+
+
+def test_provider_build_uses_offline_isolated_pip_and_minimal_environment(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "rehearsal_build_wheel_isolation", PROJECT / "tools" / "build_wheel.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    project = tmp_path / "project"
+    project.mkdir()
+    output = tmp_path / "output"
+    monkeypatch.setattr(module, "_descriptor_bytes", lambda _project: b'{"descriptor":true}\n')
+    for key, value in {
+        "PYTHONPATH": "/ambient/python",
+        "PYTHONHOME": "/ambient/home",
+        "PIP_CONFIG_FILE": "/ambient/pip.conf",
+        "PIP_INDEX_URL": "https://ambient.invalid",
+        "AWS_PROFILE": "ambient-production",
+    }.items():
+        monkeypatch.setenv(key, value)
+    observed = {}
+
+    def run(arguments, **kwargs):
+        observed.update(arguments=arguments, **kwargs)
+        wheel_dir = Path(arguments[arguments.index("--wheel-dir") + 1])
+        destination = wheel_dir / "sky_aws_vm_rehearsal_provider-0.1.0-py3-none-any.whl"
+        record = "sky_aws_vm_rehearsal_provider-0.1.0.dist-info/RECORD"
+        provider_path = "sky_aws_vm_rehearsal/provider.py"
+        with ZipFile(destination, "w") as wheel:
+            wheel.writestr(provider_path, b"provider")
+            wheel.writestr(record, f"{provider_path},,\n{record},,\n".encode())
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    destination = module.build(project, output, python=sys.executable)
+    arguments = observed["arguments"]
+    assert arguments[1:5] == ["-I", "-m", "pip", "wheel"]
+    assert {
+        "--isolated",
+        "--no-index",
+        "--no-input",
+        "--no-cache-dir",
+        "--no-deps",
+        "--no-build-isolation",
+    } <= set(arguments)
+    assert observed["capture_output"] and observed["text"]
+    assert Path(observed["cwd"]).name.startswith("sky-aws-vm-provider-")
+    assert not set(observed["env"]) & {
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PIP_CONFIG_FILE",
+        "PIP_INDEX_URL",
+        "AWS_PROFILE",
+    }
+    assert destination.is_file()
+
+
+def test_wheel_finalizer_rejects_unbounded_source_entries(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "rehearsal_build_wheel_bounds", PROJECT / "tools" / "build_wheel.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source, destination = tmp_path / "source.whl", tmp_path / "destination.whl"
+    record = "provider-0.1.0.dist-info/RECORD"
+    with ZipFile(source, "w") as wheel:
+        wheel.writestr("provider/module.py", b"too-large")
+        wheel.writestr(record, f"provider/module.py,,\n{record},,\n".encode())
+    monkeypatch.setattr(module, "_MAX_ENTRY_BYTES", 4)
+    with pytest.raises(ValueError, match="One unfinalized"):
+        module.finalize(source, destination, b"{}\n")
+
+
+def test_provider_build_cli_requires_isolated_python(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "rehearsal_build_wheel_cli", PROJECT / "tools" / "build_wheel.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module,
+        "sys",
+        SimpleNamespace(executable=sys.executable, flags=SimpleNamespace(isolated=0)),
+    )
+    with pytest.raises(SystemExit) as error:
+        module.main(["--output-dir", str(tmp_path)])
+    assert error.value.code == 2

@@ -10,9 +10,11 @@ Replacing them with reviewed, deployment-specific evidence collectors changes
 the provider artifact digest and the descriptor pins, so a newly reviewed
 manifest is required before an effect can run.
 
-Build with `tools/build_wheel.py`. The build finalizer installs the static
-execution descriptor into the wheel's `.dist-info` directory and updates
-`RECORD`; an unfinalized setuptools wheel is not a valid Sky provider.
+Build with `python -I tools/build_wheel.py --output-dir <directory>`. The build
+finalizer installs the static execution descriptor into the wheel's
+`.dist-info` directory and updates `RECORD`; an unfinalized setuptools wheel is
+not a valid Sky provider. Build and installation verification tools require
+Python isolated mode and run pip offline without ambient user configuration.
 
 Install reviewed provider wheels with `python -m pip install --no-compile`.
 Sky rejects provider bytecode caches and disables bytecode writes before

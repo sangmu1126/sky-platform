@@ -275,6 +275,8 @@ def main(argv=None):
     parser.add_argument("--provider-wheel", required=True)
     parser.add_argument("--python", default=sys.executable)
     args = parser.parse_args(argv)
+    if not sys.flags.isolated:
+        parser.exit(2, "Provider installation verification requires Python isolated mode (-I).\n")
     try:
         result = verify(args.base_wheel, args.provider_wheel, python=args.python)
     except Exception:  # noqa: BLE001 -- temporary paths and provider diagnostics remain private
