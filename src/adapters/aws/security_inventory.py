@@ -251,16 +251,23 @@ class NativeSecurityInventory:
                 if (
                     not isinstance(t, datetime)
                     or t.tzinfo is None
-                    or not stamp - timedelta(minutes=4) <= t <= stamp
+                    or not stamp - timedelta(minutes=6) <= t <= stamp
                     or not isinstance(n, (float, int))
                     or isinstance(n, bool)
                     or not math.isfinite(n)
                     or n < 0
                 ):
                     raise ValueError("Stale, future or malformed RDS metric sample")
-                samples.append((t, n))
+                # CloudWatch rounds StartTime down to a minute. Older points
+                # inside that response are history, not malformed fresh evidence.
+                if t >= stamp - timedelta(minutes=4):
+                    samples.append((t, n))
             samples = sorted(samples)
-            if len(samples) < 2 or len({x[0] for x in samples}) != len(samples):
+            if (
+                len(samples) < 2
+                or len({x[0] for x in samples}) != len(samples)
+                or samples[-1][0] < stamp - timedelta(seconds=150)
+            ):
                 complete = False
             else:
                 matched |= all(n >= threshold if above else n <= threshold for _, n in samples[-2:])
@@ -382,3 +389,82 @@ class NativeSecurityInventory:
             "absence_of_compromise_proven": False,
             "events": events,
         }
+
+    def observe_quota(self, registration, *, now):
+        """Read only trusted control-plane counters; never application estimates."""
+        stamp = self.check(now)
+        fields = {"workspace", "organization_id", "scope", "identity", "metric", "policy_digest"}
+        if not isinstance(registration, dict) or set(registration) != fields:
+            raise ValueError("Exact operational quota source required")
+        if (
+            any(
+                not isinstance(registration[k], str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", registration[k])
+                for k in ("workspace", "organization_id", "identity")
+            )
+            or registration["scope"] not in {"global", "organization", "user", "application"}
+            or not re.fullmatch(r"[a-z][a-z_]{0,39}", registration["metric"])
+            or not re.fullmatch(r"[0-9a-f]{64}", registration["policy_digest"])
+            or (
+                registration["scope"] == "global"
+                and (registration["organization_id"], registration["identity"]) != ("global", "global")
+            )
+        ):
+            raise ValueError("Bounded exact quota dimensions required")
+        dimensions = [
+            {"Name": k, "Value": v}
+            for k, v in {
+                "Workspace": registration["workspace"],
+                "Organization": registration["organization_id"],
+                "Scope": registration["scope"],
+                "Identity": registration["identity"],
+                "Metric": registration["metric"],
+                "PolicyDigest": registration["policy_digest"],
+            }.items()
+        ]
+        series = {}
+        for name in ("ReservedUsage", "ApprovedLimit"):
+            response = self.clients["cloudwatch"].get_metric_statistics(
+                Namespace="Sky/OperationalBudget",
+                MetricName=name,
+                Dimensions=dimensions,
+                StartTime=stamp - timedelta(minutes=5),
+                EndTime=stamp,
+                Period=60,
+                Statistics=["Maximum"],
+            )
+            points = {}
+            for point in response.get("Datapoints", []):
+                t, n = point.get("Timestamp"), point.get("Maximum")
+                if (
+                    not isinstance(t, datetime)
+                    or t.tzinfo is None
+                    or not stamp - timedelta(minutes=6) <= t <= stamp
+                    or not isinstance(n, (float, int))
+                    or isinstance(n, bool)
+                    or not math.isfinite(n)
+                    or n < 0
+                    or (name == "ApprovedLimit" and n == 0)
+                    or t in points
+                ):
+                    raise ValueError("Malformed, duplicate or future operational quota sample")
+                if t >= stamp - timedelta(minutes=4):
+                    points[t] = n
+            series[name] = points
+        common = sorted(set(series["ReservedUsage"]) & set(series["ApprovedLimit"]))
+        complete = len(common) >= 2 and common[-1] >= stamp - timedelta(seconds=150)
+        facts = {
+            t.isoformat(): {"reserved": series["ReservedUsage"][t], "limit": series["ApprovedLimit"][t]}
+            for t in common
+        }
+        exhausted = complete and all(
+            series["ReservedUsage"][t] >= series["ApprovedLimit"][t] for t in common[-2:]
+        )
+        return report(
+            "resource_budget_exhausted",
+            fingerprint(registration),
+            facts,
+            now,
+            complete=complete,
+            matched=exhausted,
+        )

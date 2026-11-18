@@ -146,6 +146,22 @@ def run_build_consumer(args):
         ),
     )
     stop = threading.Event()
+    budget_thread = None
+    if os.environ.get("SKY_BUDGET_OBSERVATION", "false") not in {"true", "false"}:
+        raise ValueError("Explicit budget observation switch required")
+    if os.environ.get("SKY_BUDGET_OBSERVATION") == "true":
+        import boto3
+
+        from adapters.state.budget_observation import BudgetUsageExporter
+
+        exporter = BudgetUsageExporter(
+            store.records._connection,
+            store.effect_budget,
+            boto3.client("cloudwatch", region_name=settings.region),
+            workspace=workspace,
+        )
+        budget_thread = threading.Thread(target=exporter.run, args=(stop,), daemon=True)
+        budget_thread.start()
     previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
         for sig in previous:
@@ -156,5 +172,8 @@ def run_build_consumer(args):
             if args.once or stop.wait(args.interval):
                 break
     finally:
+        stop.set()
+        if budget_thread is not None:
+            budget_thread.join(timeout=10)
         for sig, handler in previous.items():
             signal.signal(sig, handler)
