@@ -324,7 +324,22 @@ def test_verifier_rejects_portable_wheel_path_collisions(verifier):
         verifier._verify_wheel_archive(content)
 
 
-@pytest.mark.parametrize("path", ["sky_platform/__init__.py", "SKY_PLATFORM/__init__.py"])
+def test_verifier_rejects_file_and_implicit_directory_collision_within_wheel(verifier):
+    content = wheel_archive("sky_platform", recorded_extra=("collision", "collision/value.py"))
+
+    with pytest.raises(ValueError, match="canonical"):
+        verifier._verify_wheel_archive(content)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "sky_platform/__init__.py",
+        "SKY_PLATFORM/__init__.py",
+        "sky_platform",
+        "sky_platform/__init__.py/payload",
+    ],
+)
 def test_verifier_rejects_portable_path_collisions_across_wheels_before_pip(
     verifier, tmp_path, monkeypatch, path
 ):

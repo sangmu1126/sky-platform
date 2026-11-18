@@ -202,17 +202,32 @@ def _wheel_startup_hook(name):
     )
 
 
+def _wheel_path_ancestors(names):
+    return {
+        "/".join(parts[:index])
+        for name in names
+        for parts in (name.split("/"),)
+        for index in range(1, len(parts))
+    }
+
+
+def _wheel_path_sets_overlap(left, right):
+    return bool(left & right or left & _wheel_path_ancestors(right) or right & _wheel_path_ancestors(left))
+
+
 def _verify_wheel_archive(data):
     try:
         with ZipFile(io.BytesIO(data)) as archive:
             infos = archive.infolist()
             names = [_wheel_path(value.filename) for value in infos]
             portable_names = [unicodedata.normalize("NFC", name).casefold() for name in names]
+            portable_name_set = frozenset(portable_names)
             records = [name for name in names if name.endswith(".dist-info/RECORD")]
             if (
                 not 1 <= len(infos) <= _MAX_WHEEL_ENTRIES
                 or len(names) != len(set(names))
-                or len(portable_names) != len(set(portable_names))
+                or len(portable_names) != len(portable_name_set)
+                or portable_name_set & _wheel_path_ancestors(portable_name_set)
                 or len(records) != 1
                 or any(_wheel_startup_hook(name) for name in names)
                 or any(
@@ -253,7 +268,7 @@ def _verify_wheel_archive(data):
         recorded[name] = (digest, size)
     if set(recorded) != set(values):
         raise ValueError("Provider installation wheel RECORD differs from archive")
-    return frozenset(portable_names)
+    return portable_name_set
 
 
 def _private_wheel(root, source):
@@ -492,7 +507,7 @@ def verify(base_wheel, provider_wheel, *, python=sys.executable):
         root = Path(temporary)
         root.chmod(0o700)
         pinned = tuple(_private_wheel(root, value) for value in sources)
-        if pinned[0][2] & pinned[1][2]:
+        if _wheel_path_sets_overlap(pinned[0][2], pinned[1][2]):
             raise ValueError("Provider installation wheel paths overlap")
         wheels = tuple(value[0] for value in pinned)
         wheel_digests = tuple(value[1] for value in pinned)
