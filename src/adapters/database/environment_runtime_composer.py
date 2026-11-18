@@ -10,9 +10,11 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import os
 import re
 import ssl
-from dataclasses import asdict, dataclass
+import stat
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -69,18 +71,116 @@ def _control_endpoint(value):
         raise ValueError("Pinned HTTPS control endpoint required")
 
 
-def _file_digest(path, expected, label):
+def _pinned_ca(path, expected, label):
     _digest(expected)
     value = Path(path)
-    if (
-        not value.is_absolute()
-        or value.is_symlink()
-        or not value.is_file()
-        or not 1 <= value.stat().st_size <= 1024 * 1024
-    ):
+    if not value.is_absolute():
         raise ValueError(f"Registered {label} file required")
-    if hashlib.sha256(value.read_bytes()).hexdigest() != expected:
-        raise ValueError(f"Registered {label} file changed")
+    descriptor = os.open(value, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            or not 1 <= before.st_size <= 1024 * 1024
+        ):
+            raise ValueError(f"Registered {label} file required")
+        content = bytearray()
+        while len(content) <= 1024 * 1024:
+            chunk = os.read(descriptor, min(65536, 1024 * 1024 + 1 - len(content)))
+            if not chunk:
+                break
+            content.extend(chunk)
+        after = os.fstat(descriptor)
+        if (
+            len(content) != before.st_size
+            or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or hashlib.sha256(content).hexdigest() != expected
+        ):
+            raise ValueError(f"Registered {label} file changed")
+        try:
+            text = bytes(content).decode()
+        except UnicodeError:
+            raise ValueError(f"Registered {label} file required") from None
+        if "-----BEGIN CERTIFICATE-----" not in text:
+            raise ValueError(f"Registered {label} file required")
+        return bytes(content)
+    finally:
+        os.close(descriptor)
+
+
+def _runtime_workspace(material):
+    paths = (material.private_key, material.known_hosts)
+    directory = paths[0].parent
+    if paths[1].parent != directory or not directory.is_absolute():
+        raise ValueError("One private runtime material workspace required")
+    descriptor = os.open(
+        directory,
+        os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise ValueError("Private runtime material workspace required")
+        for path, expected in zip(
+            paths,
+            (material.private_key_sha256, material.known_hosts_sha256),
+            strict=True,
+        ):
+            source = os.open(
+                path.name,
+                os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=descriptor,
+            )
+            try:
+                before = os.fstat(source)
+                if (
+                    not stat.S_ISREG(before.st_mode)
+                    or before.st_uid != os.getuid()
+                    or stat.S_IMODE(before.st_mode) != 0o600
+                    or not 1 <= before.st_size <= 1024 * 1024
+                ):
+                    raise ValueError("Private runtime transport material required")
+                content = os.read(source, before.st_size + 1)
+                after = os.fstat(source)
+                if (
+                    len(content) != before.st_size
+                    or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                    or hashlib.sha256(content).hexdigest() != expected
+                ):
+                    raise ValueError("Private runtime transport material changed")
+            finally:
+                os.close(source)
+        return directory, descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _materialize_ca(directory, directory_descriptor, name, content):
+    if not re.fullmatch(r"[a-z-]{1,32}\.pem", name):
+        raise ValueError("Canonical runtime CA filename required")
+    path = directory / name
+    descriptor = os.open(
+        name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+        0o400,
+        dir_fd=directory_descriptor,
+    )
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+    finally:
+        os.close(descriptor)
+    return path
 
 
 @dataclass(frozen=True)
@@ -162,7 +262,7 @@ class RegisteredEnvironmentRuntimeComposition:
                 raise ValueError("Pinned application controller identity required")
         if self.source_controller_id == self.target_controller_id:
             raise ValueError("Distinct application controller identities required")
-        _file_digest(self.control_ca_path, self.control_ca_sha256, "control CA")
+        _pinned_ca(self.control_ca_path, self.control_ca_sha256, "control CA")
         if not all(
             isinstance(value, str) and _ADAPTER_REF.fullmatch(value)
             for value in (self.runtime_verifier_ref, self.entrypoint_probe_ref)
@@ -302,14 +402,50 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
             or target_secret.username != r.target_endpoint.inventory.login_role
         ):
             raise ValueError("Database secret roles differ from registered endpoints")
-        _file_digest(r.control_ca_path, r.control_ca_sha256, "control CA")
-        for endpoint in (r.source_endpoint, r.target_endpoint):
-            _file_digest(
-                endpoint.inventory.sslrootcert,
-                endpoint.inventory.ca_sha256,
+        router_material = materials["router_transport"]
+        workspace, workspace_descriptor = _runtime_workspace(router_material)
+        try:
+            control_ca = _pinned_ca(r.control_ca_path, r.control_ca_sha256, "control CA")
+            source_ca = _pinned_ca(
+                r.source_endpoint.inventory.sslrootcert,
+                r.source_endpoint.inventory.ca_sha256,
                 "database CA",
             )
-        router_material = materials["router_transport"]
+            target_ca = _pinned_ca(
+                r.target_endpoint.inventory.sslrootcert,
+                r.target_endpoint.inventory.ca_sha256,
+                "database CA",
+            )
+            source_endpoint = replace(
+                r.source_endpoint,
+                inventory=replace(
+                    r.source_endpoint.inventory,
+                    sslrootcert=str(
+                        _materialize_ca(
+                            workspace,
+                            workspace_descriptor,
+                            "source-ca.pem",
+                            source_ca,
+                        )
+                    ),
+                ),
+            )
+            target_endpoint = replace(
+                r.target_endpoint,
+                inventory=replace(
+                    r.target_endpoint.inventory,
+                    sslrootcert=str(
+                        _materialize_ca(
+                            workspace,
+                            workspace_descriptor,
+                            "target-ca.pem",
+                            target_ca,
+                        )
+                    ),
+                ),
+            )
+        finally:
+            os.close(workspace_descriptor)
         ssh = PinnedVmInventoryCommand(
             host=r.router_host,
             user=r.router_user,
@@ -333,14 +469,14 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
                 or getattr(entrypoint_probe, "reference", None) != r.entrypoint_probe_ref
             ):
                 raise ValueError("Bound entrypoint probe differs from registration")
-        source_connect = self._connect(r.source_endpoint, source_secret)
-        target_connect = self._connect(r.target_endpoint, target_secret)
+        source_connect = self._connect(source_endpoint, source_secret)
+        target_connect = self._connect(target_endpoint, target_secret)
         source_provider = RegisteredRdsInventoryVerifier(
             r.source_rds, sts=self.sts, rds=self.rds, clock=self.clock
         )
         target_provider = VmDatabaseInventoryVerifier(r.target_vm, ssh, clock=self.clock)
         source_verifier = PostgresTransferOwnershipVerifier(
-            r.source_endpoint,
+            source_endpoint,
             source_provider,
             source_connect,
             writer_role=r.source_writer_role,
@@ -348,7 +484,7 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
             clock=self.clock,
         )
         target_verifier = PostgresTransferOwnershipVerifier(
-            r.target_endpoint,
+            target_endpoint,
             target_provider,
             target_connect,
             writer_role=r.target_writer_role,
@@ -358,8 +494,8 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
         transfer = execution.job.transfer
         transport = PostgresEnvironmentTransfer(
             transfer,
-            r.source_endpoint,
-            r.target_endpoint,
+            source_endpoint,
+            target_endpoint,
             source_connect,
             target_connect,
             source_verifier,
@@ -387,7 +523,7 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
             guard()
             return result
 
-        context = ssl.create_default_context(cafile=r.control_ca_path)
+        context = ssl.create_default_context(cadata=control_ca.decode())
         controllers = []
         for side, endpoint, address, controller_id in (
             (

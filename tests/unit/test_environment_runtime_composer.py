@@ -3,6 +3,7 @@
 import hashlib
 import ssl
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -39,10 +40,11 @@ class Adapter:
 
 
 def fixture(tmp_path):
+    tmp_path.chmod(0o700)
     execution = registered()
     transfer = execution.job.transfer
     ca = tmp_path / "ca.pem"
-    ca.write_text("registered-public-ca")
+    ca.write_text("-----BEGIN CERTIFICATE-----\nregistered-public-ca\n-----END CERTIFICATE-----\n")
     digest = hashlib.sha256(ca.read_bytes()).hexdigest()
     source_role, target_role = "sky_transfer_" + "a" * 16, "sky_transfer_" + "b" * 16
     source_endpoint = RegisteredTransferEndpoint(
@@ -183,8 +185,9 @@ def test_composer_builds_one_guarded_transport_and_cutover_graph(tmp_path):
     with patch(
         "adapters.database.environment_runtime_composer.ssl.create_default_context",
         return_value=tls_context(),
-    ):
+    ) as create_context:
         transport, flow = composer(execution, materials, guard=guard, journal=journal)
+    create_context.assert_called_once_with(cadata=(tmp_path / "ca.pem").read_text())
     assert isinstance(flow, EnvironmentDatabaseCutover)
     assert flow.transfer == transport.transfer == execution.job.transfer
     assert flow._external_guard is guard and flow.journal is journal
@@ -197,12 +200,13 @@ def test_composer_builds_one_guarded_transport_and_cutover_graph(tmp_path):
 
 
 def test_database_connectors_use_registered_tls_names_tunnels_and_resolved_roles(tmp_path):
-    execution, _registration, composer, materials = fixture(tmp_path)
+    execution, registration, composer, materials = fixture(tmp_path)
     with patch(
         "adapters.database.environment_runtime_composer.ssl.create_default_context",
         return_value=tls_context(),
     ):
         transport, _flow = composer(execution, materials, guard=Mock(), journal=Mock())
+    Path(registration.source_endpoint.inventory.sslrootcert).write_text("changed-after-composition")
     with patch("psycopg.connect", side_effect=["source-db", "target-db"]) as connect:
         assert transport.source_connect() == "source-db"
         assert transport.target_connect() == "target-db"
@@ -218,6 +222,18 @@ def test_database_connectors_use_registered_tls_names_tunnels_and_resolved_roles
         45432,
     )
     assert source["sslmode"] == target["sslmode"] == "verify-full"
+    assert source["sslrootcert"] != composer.registration.source_endpoint.inventory.sslrootcert
+    assert target["sslrootcert"] != composer.registration.target_endpoint.inventory.sslrootcert
+    assert Path(source["sslrootcert"]).parent == materials["router_transport"].private_key.parent
+    assert Path(target["sslrootcert"]).parent == materials["router_transport"].private_key.parent
+    assert Path(source["sslrootcert"]).stat().st_mode & 0o777 == 0o400
+    assert Path(target["sslrootcert"]).stat().st_mode & 0o777 == 0o400
+    assert hashlib.sha256(Path(source["sslrootcert"]).read_bytes()).hexdigest() == (
+        registration.source_endpoint.inventory.ca_sha256
+    )
+    assert hashlib.sha256(Path(target["sslrootcert"]).read_bytes()).hexdigest() == (
+        registration.target_endpoint.inventory.ca_sha256
+    )
     assert source["password"] == "source-private-password"
     assert target["password"] == "target-private-password"
 
@@ -303,7 +319,10 @@ def test_composer_binds_entrypoint_factory_to_its_separate_short_lived_token(tmp
     assert flow.traffic.router.probe_entrypoint() == {"binding_hash": "a" * 64}
 
 
-@pytest.mark.parametrize("change", ["execution", "resource", "adapter", "secret-role", "ca"])
+@pytest.mark.parametrize(
+    "change",
+    ["execution", "resource", "adapter", "secret-role", "ca", "ca-mode", "workspace", "router-hash"],
+)
 def test_changed_registration_adapter_secret_or_ca_fails_closed(tmp_path, change):
     execution, registration, composer, materials = fixture(tmp_path)
     if change == "execution":
@@ -347,7 +366,18 @@ def test_changed_registration_adapter_secret_or_ca_fails_closed(tmp_path, change
         ):
             composer(execution, materials, guard=Mock(), journal=Mock())
         return
-    with open(registration.control_ca_path, "a") as value:
-        value.write("changed")
-    with pytest.raises(ValueError, match="control CA"):
+    if change == "ca":
+        with open(registration.control_ca_path, "a") as value:
+            value.write("changed")
+        message = "control CA"
+    elif change == "ca-mode":
+        Path(registration.control_ca_path).chmod(0o666)
+        message = "control CA"
+    elif change == "workspace":
+        tmp_path.chmod(0o755)
+        message = "runtime material workspace"
+    else:
+        materials["router_transport"] = replace(materials["router_transport"], private_key_sha256="0" * 64)
+        message = "transport material changed"
+    with pytest.raises(ValueError, match=message):
         composer(execution, materials, guard=Mock(), journal=Mock())

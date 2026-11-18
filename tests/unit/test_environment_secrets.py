@@ -122,8 +122,13 @@ def test_router_files_are_hash_pinned_materialized_and_removed(tmp_path):
         guard=Mock(),
     ) as material:
         assert isinstance(material, RouterTransportSecretMaterial)
-        paths = (material.private_key, material.known_hosts)
-        assert all(path.is_file() and stat_mode(path) == 0o600 for path in paths)
+        ca = material.private_key.parent / "source-ca.pem"
+        ca.write_text("runtime-public-ca")
+        ca.chmod(0o400)
+        paths = (material.private_key, material.known_hosts, ca)
+        assert all(path.is_file() for path in paths)
+        assert all(stat_mode(path) == 0o600 for path in paths[:2])
+        assert stat_mode(ca) == 0o400
         assert all(tmp_path not in path.parents for path in paths)
     assert all(not path.exists() for path in paths)
 
