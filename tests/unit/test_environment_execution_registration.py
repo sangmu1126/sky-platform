@@ -512,6 +512,23 @@ def test_manifest_generator_uses_secret_free_descriptor_without_import(tmp_path,
     assert entry_point.loads == 0
 
 
+def test_provider_descriptor_must_be_canonical_even_with_matching_record(tmp_path):
+    selected = composition()
+    entry_point = EntryPoint(
+        Mock(side_effect=AssertionError("provider imported")), tmp_path / "provider", selected
+    )
+    descriptor = next(
+        entry_point.dist.root / str(value)
+        for value in entry_point.dist.files
+        if str(value).endswith(".dist-info/sky-environment-executions-v1.json")
+    )
+    descriptor.write_text(json.dumps(json.loads(descriptor.read_bytes()), indent=2, sort_keys=True))
+    add_installer_metadata(entry_point, "file:///reviewed-provider.whl")
+    with pytest.raises(ValueError, match="Canonical provider execution descriptor"):
+        render_environment_execution_manifest("installed-provider", "test", entry_points=[entry_point])
+    assert entry_point.loads == 0
+
+
 def test_manifest_and_provider_descriptor_must_match_before_import(tmp_path):
     selected = composition()
     entry_point = EntryPoint(Mock(return_value=(selected,)), tmp_path / "provider", selected)

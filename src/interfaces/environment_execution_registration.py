@@ -517,6 +517,15 @@ def load_environment_execution_provider_descriptor(entry_point):
     ):
         raise ValueError("Invalid provider execution descriptor")
     pins = _execution_pins(value["registrations"])
+    canonical = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode()
+    if content not in {canonical, canonical + b"\n"}:
+        raise ValueError("Canonical provider execution descriptor required")
     if attest_environment_execution_provider(entry_point) != before:
         raise ValueError("Provider package changed while reading execution descriptor")
     return before, pins
