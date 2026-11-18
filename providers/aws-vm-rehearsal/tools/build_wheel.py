@@ -10,6 +10,7 @@ import io
 import json
 import math
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -150,6 +151,61 @@ def _canonical_info(name):
     return info
 
 
+def _write_final_wheel(destination, values):
+    try:
+        directory = os.open(
+            destination.parent,
+            os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+    except OSError:
+        raise ValueError("Private provider wheel output directory required") from None
+    created = False
+    descriptor = None
+    try:
+        metadata = os.fstat(directory)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            raise ValueError("Private provider wheel output directory required")
+        descriptor = os.open(
+            destination.name,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            0o400,
+            dir_fd=directory,
+        )
+        created = True
+        with os.fdopen(descriptor, "w+b") as output:
+            descriptor = None
+            os.fchmod(output.fileno(), 0o400)
+            with ZipFile(output, "w", compression=ZIP_DEFLATED) as wheel:
+                for name in sorted(values):
+                    wheel.writestr(_canonical_info(name), values[name])
+            output.flush()
+            os.fsync(output.fileno())
+            os.fchmod(output.fileno(), 0o400)
+        os.fsync(directory)
+    except OSError:
+        if created:
+            try:
+                os.unlink(destination.name, dir_fd=directory)
+            except OSError:
+                pass
+        raise ValueError("Exclusive provider wheel output required") from None
+    except BaseException:
+        if created:
+            try:
+                os.unlink(destination.name, dir_fd=directory)
+            except OSError:
+                pass
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(directory)
+
+
 def finalize(source, destination, descriptor):
     with ZipFile(source) as wheel:
         infos = wheel.infolist()
@@ -183,9 +239,7 @@ def finalize(source, destination, descriptor):
         values,
     )
     values[descriptor_path] = descriptor
-    with ZipFile(destination, "x", compression=ZIP_DEFLATED) as wheel:
-        for name in sorted(values):
-            wheel.writestr(_canonical_info(name), values[name])
+    _write_final_wheel(Path(destination), values)
 
 
 def build(project, output, *, python=sys.executable):

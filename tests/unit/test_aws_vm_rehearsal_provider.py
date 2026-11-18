@@ -7,7 +7,9 @@ import importlib
 import importlib.util
 import io
 import json
+import os
 import ssl
+import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -154,6 +156,7 @@ def test_wheel_finalizer_adds_descriptor_and_is_reproducible(tmp_path):
     for source, destination in zip(sources, destinations, strict=True):
         module.finalize(source, destination, raw)
     assert destinations[0].read_bytes() == destinations[1].read_bytes()
+    assert all(stat.S_IMODE(value.stat().st_mode) == 0o400 for value in destinations)
     descriptor_path = record_path.rsplit("/", 1)[0] + "/" + module.DESCRIPTOR
     with ZipFile(destinations[0]) as wheel:
         assert wheel.read(descriptor_path) == raw
@@ -175,6 +178,47 @@ def test_wheel_finalizer_rejects_noncanonical_paths(name):
     spec.loader.exec_module(module)
     with pytest.raises(ValueError, match="Canonical provider wheel path"):
         module._canonical_info(name)
+
+
+def test_wheel_finalizer_does_not_follow_or_replace_destination(tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        "rehearsal_build_wheel_destination", PROJECT / "tools" / "build_wheel.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = tmp_path / "source.whl"
+    record_path = "provider-0.1.0.dist-info/RECORD"
+    module_path = "provider/module.py"
+    content = b"provider"
+    digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+    with ZipFile(source, "w") as wheel:
+        wheel.writestr(module_path, content)
+        wheel.writestr(
+            record_path,
+            f"{module_path},sha256={digest},{len(content)}\n{record_path},,\n".encode(),
+        )
+    victim = tmp_path / "victim"
+    victim.write_text("preserve")
+    destination = tmp_path / "final.whl"
+    destination.symlink_to(victim)
+    with pytest.raises(ValueError, match="Exclusive provider wheel output"):
+        module.finalize(source, destination, b"{}\n")
+    assert victim.read_text() == "preserve" and destination.is_symlink()
+
+
+def test_wheel_finalizer_sets_exact_mode_under_restrictive_umask(tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        "rehearsal_build_wheel_mode", PROJECT / "tools" / "build_wheel.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    destination = tmp_path / "final.whl"
+    previous = os.umask(0o777)
+    try:
+        module._write_final_wheel(destination, {"provider/module.py": b"provider"})
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o400
 
 
 @pytest.mark.parametrize(

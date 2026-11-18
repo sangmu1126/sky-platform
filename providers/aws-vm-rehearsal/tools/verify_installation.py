@@ -154,6 +154,7 @@ def _private_wheel(root, source):
     )
     try:
         with os.fdopen(descriptor, "wb", closefd=False) as output:
+            os.fchmod(output.fileno(), 0o400)
             output.write(data)
             output.flush()
             os.fsync(output.fileno())

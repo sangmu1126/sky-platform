@@ -157,6 +157,19 @@ def test_verifier_rejects_writable_private_file_parent(verifier, tmp_path):
         verifier._private_text_file(tmp_path / "manifest.json", "{}", maximum=1024)
 
 
+def test_verifier_pinned_wheel_copy_has_exact_mode_under_restrictive_umask(verifier, tmp_path):
+    source = tmp_path / "sky_platform-0.1.0-py3-none-any.whl"
+    source.write_bytes(b"wheel")
+    copies = tmp_path / "copies"
+    copies.mkdir()
+    previous = os.umask(0o777)
+    try:
+        destination, _digest = verifier._private_wheel(copies, source)
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o400
+
+
 def test_verifier_rejects_symlink_or_writable_wheel_before_pip(verifier, tmp_path):
     wheel = tmp_path / "sky_platform-0.1.0-py3-none-any.whl"
     wheel.write_bytes(b"wheel")
