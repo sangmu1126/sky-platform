@@ -26,6 +26,7 @@ _EFFECT_REF = re.compile(r"EEF-[a-f0-9]{64}\Z")
 _DISTRIBUTION = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+!-]{0,63}\Z")
 _INSTALLER_METADATA = {"INSTALLER", "REQUESTED", "direct_url.json"}
+_WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 
 
 @dataclass(frozen=True)
@@ -235,11 +236,7 @@ def _provider_file(path, *, maximum):
     descriptor = os.open(path, flags)
     try:
         before = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-            or before.st_size > maximum
-        ):
+        if not stat.S_ISREG(before.st_mode) or before.st_mode & _WRITE_BITS or before.st_size > maximum:
             raise ValueError("Immutable bounded provider package file required")
         digest = hashlib.sha256()
         content = bytearray()
@@ -282,11 +279,7 @@ def _provider_path(root, relative, distribution):
     for part in relative.parts[:-1]:
         cursor /= part
         info = cursor.lstat()
-        if (
-            stat.S_ISLNK(info.st_mode)
-            or not stat.S_ISDIR(info.st_mode)
-            or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-        ):
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or info.st_mode & _WRITE_BITS:
             raise ValueError("Immutable provider package directory required")
     if candidate.is_symlink():
         raise ValueError("Provider package symlinks are forbidden")
@@ -402,7 +395,7 @@ def attest_environment_execution_provider(entry_point):
         raise ValueError("Bounded installed provider distribution required")
     root = Path(distribution.locate_file("")).resolve(strict=True)
     root_info = root.stat()
-    if not stat.S_ISDIR(root_info.st_mode) or root_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+    if not stat.S_ISDIR(root_info.st_mode) or root_info.st_mode & _WRITE_BITS:
         raise ValueError("Immutable provider distribution root required")
     records = []
     total = 0

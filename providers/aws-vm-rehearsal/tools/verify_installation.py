@@ -224,6 +224,28 @@ def _provider_cache_absent(site):
     )
 
 
+def _seal_installation(site):
+    values = sorted(site.rglob("*"), key=lambda value: len(value.parts), reverse=True)
+    for value in values:
+        metadata = value.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError("Provider installation symlinks are forbidden")
+        if stat.S_ISREG(metadata.st_mode):
+            value.chmod(0o400)
+        elif stat.S_ISDIR(metadata.st_mode):
+            value.chmod(0o500)
+        else:
+            raise ValueError("Plain provider installation tree required")
+    site.chmod(0o500)
+
+
+def _unseal_directories(site):
+    site.chmod(0o700)
+    for value in site.rglob("*"):
+        if value.is_dir() and not value.is_symlink():
+            value.chmod(0o700)
+
+
 def _inspect(python, site, workspace, manifest, *, cwd):
     env = _environment(
         AWS_EC2_METADATA_DISABLED="true",
@@ -381,19 +403,23 @@ def verify(base_wheel, provider_wheel, *, python=sys.executable):
                 env=_environment(),
                 cwd=root,
             )
-            if not _provider_cache_absent(site):
-                raise ValueError("Provider installation must not contain bytecode")
-            observations.append(
-                _inspect(
-                    python,
-                    site,
-                    WORKSPACE,
-                    root / f"manifest-{name}.json",
-                    cwd=root,
+            _seal_installation(site)
+            try:
+                if not _provider_cache_absent(site):
+                    raise ValueError("Provider installation must not contain bytecode")
+                observations.append(
+                    _inspect(
+                        python,
+                        site,
+                        WORKSPACE,
+                        root / f"manifest-{name}.json",
+                        cwd=root,
+                    )
                 )
-            )
-            if not _provider_cache_absent(site):
-                raise ValueError("Provider import created bytecode")
+                if not _provider_cache_absent(site):
+                    raise ValueError("Provider import created bytecode")
+            finally:
+                _unseal_directories(site)
     if observations[0] != observations[1]:
         raise ValueError("Provider installation differs by target path")
     artifact, manifest, composition, check_config = observations[0]

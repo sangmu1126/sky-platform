@@ -31,6 +31,12 @@ from interfaces.environment_execution_registration import (
 from tests.unit.test_environment_admission import registered
 
 
+def seal_provider(root):
+    for path in sorted(root.rglob("*"), key=lambda value: len(value.parts), reverse=True):
+        path.chmod(0o500 if path.is_dir() else 0o400)
+    root.chmod(0o500)
+
+
 def composition():
     execution = registered()
     resource_ref = "EVR-" + "a" * 64
@@ -126,6 +132,7 @@ class Distribution:
             path.write_text(content)
             path.chmod(0o644)
         self.files = tuple(PurePosixPath(value) for value in documents)
+        seal_provider(root)
 
     def locate_file(self, value):
         return self.root / str(value)
@@ -151,6 +158,8 @@ def add_installer_metadata(entry_point, marker):
     distribution = entry_point.dist
     root = distribution.root
     dist_info = PurePosixPath("sky_environment_provider-1.2.3.dist-info")
+    root.chmod(0o700)
+    (root / str(dist_info)).chmod(0o700)
     for name, content in (
         ("INSTALLER", "pip\n"),
         ("REQUESTED", ""),
@@ -172,7 +181,10 @@ def add_installer_metadata(entry_point, marker):
         digest = base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode()
         writer.writerow([str(relative), "sha256=" + digest, str(len(raw))])
     writer.writerow([str(record_path), "", ""])
-    (root / str(record_path)).write_text(output.getvalue())
+    record = root / str(record_path)
+    record.chmod(0o600)
+    record.write_text(output.getvalue())
+    seal_provider(root)
 
 
 def test_operator_manifest_and_installed_provider_must_match_exactly(tmp_path, monkeypatch):
@@ -406,7 +418,9 @@ def test_provider_artifact_is_verified_before_and_after_import(tmp_path):
     manifest = load_environment_execution_manifest(
         manifest_file(tmp_path, selected, entry_point), workspace="test"
     )
+    entry_point.module_path.chmod(0o600)
     entry_point.module_path.write_text("changed before import\n")
+    entry_point.module_path.chmod(0o400)
     with pytest.raises(ValueError, match="RECORD digest|differs from operator pin"):
         compose_environment_executions(manifest, entry_points=[entry_point])
     assert entry_point.loads == 0
@@ -414,7 +428,9 @@ def test_provider_artifact_is_verified_before_and_after_import(tmp_path):
     after = EntryPoint(Mock(), tmp_path / "after-provider", selected)
 
     def change_after_import(_selected):
+        after.module_path.chmod(0o600)
         after.module_path.write_text("changed during provider load\n")
+        after.module_path.chmod(0o400)
         return (selected,)
 
     after.provider.side_effect = change_after_import
@@ -428,7 +444,7 @@ def test_provider_artifact_rejects_writable_or_unbounded_package(tmp_path):
     entry_point.module_path.chmod(0o666)
     with pytest.raises(ValueError, match="Immutable bounded"):
         attest_environment_execution_provider(entry_point)
-    entry_point.module_path.chmod(0o644)
+    entry_point.module_path.chmod(0o400)
     entry_point.dist.files = (*entry_point.dist.files, PurePosixPath("../outside.py"))
     with pytest.raises(ValueError, match="Canonical provider distribution path"):
         attest_environment_execution_provider(entry_point)
@@ -445,7 +461,9 @@ def test_provider_artifact_requires_record_to_match_installed_files(tmp_path, fi
         rows[0][2] = str(int(rows[0][2]) + 1)
     output = io.StringIO(newline="")
     csv.writer(output, lineterminator="\n").writerows(rows)
+    record.chmod(0o600)
     record.write_text(output.getvalue())
+    record.chmod(0o400)
     with pytest.raises(ValueError, match="RECORD digest or size"):
         attest_environment_execution_provider(entry_point)
 
@@ -461,6 +479,7 @@ def test_provider_artifact_ignores_installer_location_metadata(tmp_path):
 def test_provider_artifact_rejects_bytecode_cache(tmp_path):
     entry_point = EntryPoint(Mock(), tmp_path / "provider")
     cache = entry_point.dist.root / "__pycache__"
+    entry_point.dist.root.chmod(0o700)
     cache.mkdir()
     bytecode = cache / "sky_env_provider.cpython-314.pyc"
     bytecode.write_bytes(b"executable-bytecode")
@@ -522,6 +541,7 @@ def test_provider_descriptor_must_be_canonical_even_with_matching_record(tmp_pat
         for value in entry_point.dist.files
         if str(value).endswith(".dist-info/sky-environment-executions-v1.json")
     )
+    descriptor.chmod(0o600)
     descriptor.write_text(json.dumps(json.loads(descriptor.read_bytes()), indent=2, sort_keys=True))
     add_installer_metadata(entry_point, "file:///reviewed-provider.whl")
     with pytest.raises(ValueError, match="Canonical provider execution descriptor"):
