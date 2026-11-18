@@ -1,5 +1,6 @@
 """Remote resource observations require pinned identities, persistence and ownership."""
 
+import hashlib
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -109,12 +110,22 @@ def test_transport_requires_private_pinned_host_key_and_rejects_mutations(tmp_pa
         path.write_text("unit-test-placeholder")
         path.chmod(0o600)
     command = PinnedVmInventoryCommand(
-        host="127.0.0.1", user="operator", port=2222, private_key=key, known_hosts=hosts
+        host="127.0.0.1",
+        user="operator",
+        port=2222,
+        private_key=key,
+        known_hosts=hosts,
+        private_key_sha256=hashlib.sha256(key.read_bytes()).hexdigest(),
+        known_hosts_sha256=hashlib.sha256(hosts.read_bytes()).hexdigest(),
     )
     with patch("adapters.onprem.database_inventory.bounded_command", return_value=(0, '"daemon"')) as run:
         assert command(["info", "--format", "{{json .ID}}"]) == '"daemon"'
         arguments = run.call_args.args[0]
         assert "StrictHostKeyChecking=yes" in arguments and "ForwardAgent=no" in arguments
+        assert "IdentityAgent=none" in arguments and "PreferredAuthentications=publickey" in arguments
+        assert "PasswordAuthentication=no" in arguments and "KbdInteractiveAuthentication=no" in arguments
+        assert "ProxyCommand=none" in arguments and "ControlMaster=no" in arguments
+        assert "ControlPath=none" in arguments and "UpdateHostKeys=no" in arguments
         assert run.call_args.kwargs["output_limit"] == 65536
         with pytest.raises(ValueError):
             command(["exec", "container", "sh"])
@@ -122,5 +133,46 @@ def test_transport_requires_private_pinned_host_key_and_rejects_mutations(tmp_pa
     hosts.chmod(0o644)
     with pytest.raises(ValueError):
         PinnedVmInventoryCommand(
-            host="127.0.0.1", user="operator", port=2222, private_key=key, known_hosts=hosts
+            host="127.0.0.1",
+            user="operator",
+            port=2222,
+            private_key=key,
+            known_hosts=hosts,
+            private_key_sha256=hashlib.sha256(key.read_bytes()).hexdigest(),
+            known_hosts_sha256=hashlib.sha256(hosts.read_bytes()).hexdigest(),
+        )
+
+
+@pytest.mark.parametrize("host", ["8.8.8.8", "169.254.169.254", "vm.example", "127.0.0.01"])
+def test_transport_rejects_public_metadata_dns_or_noncanonical_addresses(tmp_path, host):
+    key, hosts = tmp_path / "key", tmp_path / "known_hosts"
+    for path in (key, hosts):
+        path.write_text("unit-test-placeholder")
+        path.chmod(0o600)
+    with pytest.raises(ValueError, match="private SSH address"):
+        PinnedVmInventoryCommand(
+            host=host,
+            user="operator",
+            port=2222,
+            private_key=key,
+            known_hosts=hosts,
+            private_key_sha256=hashlib.sha256(key.read_bytes()).hexdigest(),
+            known_hosts_sha256=hashlib.sha256(hosts.read_bytes()).hexdigest(),
+        )
+
+
+def test_transport_rejects_private_file_digest_drift(tmp_path):
+    key, hosts = tmp_path / "key", tmp_path / "known_hosts"
+    for path in (key, hosts):
+        path.write_text("unit-test-placeholder")
+        path.chmod(0o600)
+    with pytest.raises(ValueError, match="operator-private"):
+        PinnedVmInventoryCommand(
+            host="127.0.0.1",
+            user="operator",
+            port=2222,
+            private_key=key,
+            known_hosts=hosts,
+            private_key_sha256="0" * 64,
+            known_hosts_sha256=hashlib.sha256(hosts.read_bytes()).hexdigest(),
         )

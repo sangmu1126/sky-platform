@@ -422,6 +422,8 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
             port=r.router_port,
             private_key=router_material.private_key,
             known_hosts=router_material.known_hosts,
+            private_key_sha256=router_material.private_key_sha256,
+            known_hosts_sha256=router_material.known_hosts_sha256,
         )
         runtime_verifier = self.runtime_verifier
         if callable(getattr(runtime_verifier, "bind", None)):

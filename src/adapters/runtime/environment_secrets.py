@@ -137,7 +137,7 @@ class RegisteredAwsEnvironmentSecret:
             raise ValueError("Canonical owned AWS secret tags required")
 
 
-def _private_file(path, expected_sha256=None):
+def pinned_private_file(path, expected_sha256=None):
     value = Path(path)
     if expected_sha256 is not None:
         _digest(expected_sha256)
@@ -217,8 +217,8 @@ class RegisteredPrivateRouterTransportSecret:
 
 def private_router_transport_registration(secret_ref, private_key, known_hosts):
     key_path, hosts_path = Path(private_key), Path(known_hosts)
-    key = _private_file(key_path)
-    hosts = _private_file(hosts_path)
+    key = pinned_private_file(key_path)
+    hosts = pinned_private_file(hosts_path)
     key_digest, hosts_digest = hashlib.sha256(key).hexdigest(), hashlib.sha256(hosts).hexdigest()
     version = hashlib.sha256(
         json.dumps(
@@ -347,8 +347,8 @@ class AwsAndPrivateEnvironmentSecretResolver:
 
     @contextmanager
     def _router_material(self, target):
-        key = _private_file(target.private_key, target.private_key_sha256)
-        hosts = _private_file(target.known_hosts, target.known_hosts_sha256)
+        key = pinned_private_file(target.private_key, target.private_key_sha256)
+        hosts = pinned_private_file(target.known_hosts, target.known_hosts_sha256)
         directory = Path(tempfile.mkdtemp(prefix="sky-environment-router-"))
         directory.chmod(0o700)
         private_key, known_hosts = directory / "identity", directory / "known_hosts"

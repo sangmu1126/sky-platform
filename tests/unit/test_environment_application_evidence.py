@@ -159,6 +159,8 @@ def fixture(tmp_path):
         port=2222,
         private_key=key,
         known_hosts=hosts,
+        private_key_sha256=hashlib.sha256(key.read_bytes()).hexdigest(),
+        known_hosts_sha256=hashlib.sha256(hosts.read_bytes()).hexdigest(),
     )
     container = {
         "Id": target.container_id,

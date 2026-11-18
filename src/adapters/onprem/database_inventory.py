@@ -14,6 +14,8 @@ from datetime import UTC
 from pathlib import Path
 
 from adapters.build.process import bounded_command
+from adapters.runtime.environment_secrets import pinned_private_file
+from adapters.runtime.private_network import pinned_private_address
 from domain.database_inventory import DatabaseInventoryUnavailable, DatabaseResourceEvidence
 from domain.database_migration import DatabasePlacement, _reference
 
@@ -30,17 +32,31 @@ _VOLUME = (
 
 
 class PinnedVmInventoryCommand:
-    def __init__(self, *, host, user, port, private_key, known_hosts):
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", host) or not re.fullmatch(
-            r"[a-z_][a-z0-9_-]{0,31}", user
-        ):
+    def __init__(
+        self,
+        *,
+        host,
+        user,
+        port,
+        private_key,
+        known_hosts,
+        private_key_sha256,
+        known_hosts_sha256,
+    ):
+        try:
+            address = pinned_private_address(host)
+        except ValueError:
+            raise ValueError("Pinned private SSH address required") from None
+        if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", user):
             raise ValueError("Pinned SSH host and user required")
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValueError("Pinned SSH port required")
-        for path in (private_key, known_hosts):
-            path = Path(path)
-            if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077:
-                raise ValueError("Private key and pinned host-key file must be operator-private")
+        private_key, known_hosts = Path(private_key), Path(known_hosts)
+        try:
+            pinned_private_file(private_key, private_key_sha256)
+            pinned_private_file(known_hosts, known_hosts_sha256)
+        except ValueError:
+            raise ValueError("Private key and pinned host-key file must be operator-private") from None
         self.arguments = [
             "ssh",
             "-F",
@@ -54,22 +70,42 @@ class PinnedVmInventoryCommand:
             "-o",
             "IdentitiesOnly=yes",
             "-o",
+            "IdentityAgent=none",
+            "-o",
+            "PreferredAuthentications=publickey",
+            "-o",
+            "PasswordAuthentication=no",
+            "-o",
+            "KbdInteractiveAuthentication=no",
+            "-o",
             "StrictHostKeyChecking=yes",
             "-o",
             "UserKnownHostsFile=" + str(known_hosts),
             "-o",
             "GlobalKnownHostsFile=/dev/null",
             "-o",
+            "UpdateHostKeys=no",
+            "-o",
+            "VerifyHostKeyDNS=no",
+            "-o",
             "ForwardAgent=no",
             "-o",
             "ClearAllForwardings=yes",
+            "-o",
+            "ProxyCommand=none",
+            "-o",
+            "ControlMaster=no",
+            "-o",
+            "ControlPath=none",
+            "-o",
+            "PermitLocalCommand=no",
             "-o",
             "ConnectTimeout=5",
             "-o",
             "ServerAliveInterval=5",
             "-o",
             "ServerAliveCountMax=1",
-            user + "@" + host,
+            user + "@" + str(address),
         ]
 
     def __call__(self, arguments):
