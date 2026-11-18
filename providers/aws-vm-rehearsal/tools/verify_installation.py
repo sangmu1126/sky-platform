@@ -191,6 +191,15 @@ def _wheel_path(name):
     return name
 
 
+def _wheel_startup_hook(name):
+    value = PurePosixPath(name)
+    return (
+        value.suffix in {".pth", ".egg-link"}
+        or value.name in {"sitecustomize.py", "usercustomize.py"}
+        or any(part in {"sitecustomize", "usercustomize"} for part in value.parts)
+    )
+
+
 def _verify_wheel_archive(data):
     try:
         with ZipFile(io.BytesIO(data)) as archive:
@@ -201,6 +210,7 @@ def _verify_wheel_archive(data):
                 not 1 <= len(infos) <= _MAX_WHEEL_ENTRIES
                 or len(names) != len(set(names))
                 or len(records) != 1
+                or any(_wheel_startup_hook(name) for name in names)
                 or any(
                     value.flag_bits & 1
                     or value.is_dir()

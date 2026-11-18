@@ -261,7 +261,7 @@ def test_verifier_pinned_wheel_copy_has_exact_mode_under_restrictive_umask(verif
 
 def test_verifier_rejects_unrecorded_wheel_file_before_pip(verifier, tmp_path):
     source = tmp_path / "sky_platform-0.1.0-py3-none-any.whl"
-    source.write_bytes(wheel_archive("sky_platform", unrecorded="unexpected_startup.pth"))
+    source.write_bytes(wheel_archive("sky_platform", unrecorded="unexpected-data.bin"))
     copies = tmp_path / "copies"
     copies.mkdir()
 
@@ -280,6 +280,21 @@ def test_verifier_rejects_unrecorded_wheel_file_before_pip(verifier, tmp_path):
 )
 def test_verifier_rejects_noncanonical_or_nonregular_wheel_entries(verifier, content):
     with pytest.raises(ValueError, match="canonical|Canonical"):
+        verifier._verify_wheel_archive(content)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "reviewed-provider.pth",
+        "distribution.data/purelib/sitecustomize.py",
+        "usercustomize/__init__.py",
+    ],
+)
+def test_verifier_rejects_recorded_python_startup_hooks(verifier, path):
+    content = wheel_archive("sky_platform", recorded_extra=path)
+
+    with pytest.raises(ValueError, match="canonical"):
         verifier._verify_wheel_archive(content)
 
 
