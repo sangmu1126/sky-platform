@@ -187,7 +187,29 @@ class EnvironmentNginxRouter:
         if len(containers) != 1 or not isinstance(containers[0], dict):
             raise ValueError("Exact router inspection required")
         (container,) = containers
-        labels = container.get("Config", {}).get("Labels", {})
+        state = container.get("State")
+        host_config = container.get("HostConfig")
+        config = container.get("Config")
+        network_settings = container.get("NetworkSettings")
+        mounts = container.get("Mounts")
+        if (
+            not all(isinstance(value, dict) for value in (state, host_config, config, network_settings))
+            or not isinstance(mounts, list)
+            or not 1 <= len(mounts) <= 16
+            or any(not isinstance(value, dict) for value in mounts)
+            or not isinstance(config.get("Labels"), dict)
+            or any(
+                not isinstance(key, str)
+                or not isinstance(value, str)
+                or not 1 <= len(key.encode()) <= 256
+                or len(value.encode()) > 4096
+                for key, value in config["Labels"].items()
+            )
+            or not isinstance(network_settings.get("Networks"), dict)
+        ):
+            raise ValueError("Router ownership or execution changed")
+        labels = config["Labels"]
+        networks = network_settings["Networks"]
         required = {
             "sky-managed": "true",
             "sky-organization-id": r.transfer.source.organization_id,
@@ -198,19 +220,18 @@ class EnvironmentNginxRouter:
         if (
             container.get("Id") != r.container_id
             or container.get("Image") != r.image_id
-            or container.get("State", {}).get("Running") is not True
-            or container.get("HostConfig", {}).get("Privileged") is not False
-            or container.get("HostConfig", {}).get("ReadonlyRootfs") is not True
-            or container.get("HostConfig", {}).get("NetworkMode") in {"host", "none"}
-            or set(container.get("NetworkSettings", {}).get("Networks", {})) != {r.network_name}
+            or state.get("Running") is not True
+            or host_config.get("Privileged") is not False
+            or host_config.get("ReadonlyRootfs") is not True
+            or host_config.get("NetworkMode") in {"host", "none"}
+            or set(networks) != {r.network_name}
             or any(labels.get(k) != v for k, v in required.items())
             or any(
                 m.get("Source") == "/" or m.get("Destination") in {"/run/docker.sock", "/var/run/docker.sock"}
-                for m in container.get("Mounts", [])
+                for m in mounts
             )
         ):
             raise ValueError("Router ownership or execution changed")
-        mounts = container.get("Mounts", [])
         volumes = [m for m in mounts if m.get("Type") == "volume"]
         if (
             len(volumes) != 1

@@ -151,6 +151,15 @@ def test_duplicate_nested_router_metadata_is_rejected():
         router.current()
 
 
+@pytest.mark.parametrize("field", ["State", "HostConfig", "Config", "Mounts", "NetworkSettings"])
+def test_malformed_router_inspection_is_rejected_before_runtime_verification(field):
+    router, _, container = fixture()
+    container[field] = [] if field != "Mounts" else [[]]
+    with pytest.raises(ValueError, match="ownership"):
+        router.current()
+    router.verify_runtime.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "address",
     [
