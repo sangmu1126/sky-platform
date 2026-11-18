@@ -20,7 +20,13 @@ from tests.unit.test_environment_admission import registered
 
 ACCOUNT = "111111111111"
 REGION = "ap-northeast-2"
-PURPOSES = ("source_control", "source_database", "target_control", "target_database")
+PURPOSES = (
+    "entrypoint_probe",
+    "source_control",
+    "source_database",
+    "target_control",
+    "target_database",
+)
 
 
 def private_files(tmp_path):

@@ -191,7 +191,13 @@ def _aws_secrets():
     tags = (("sky-application-id", "rehearsal-app"), ("sky-managed", "true"))
     values = []
     for index, purpose in enumerate(
-        ("source_control", "source_database", "target_control", "target_database"),
+        (
+            "entrypoint_probe",
+            "source_control",
+            "source_database",
+            "target_control",
+            "target_database",
+        ),
         start=1,
     ):
         values.append(
@@ -326,6 +332,7 @@ def _compose(selected, *, sts, secretsmanager, rds):
     }
     purposes = (
         "router_transport",
+        "entrypoint_probe",
         "source_control",
         "source_database",
         "target_control",

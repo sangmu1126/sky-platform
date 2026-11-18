@@ -22,6 +22,7 @@ _COMPOSITION_REF = re.compile(r"RTC-[a-f0-9]{64}\Z")
 _RESOLVER_REF = re.compile(r"ESR-[a-f0-9]{64}\Z")
 _PURPOSES = (
     "router_transport",
+    "entrypoint_probe",
     "source_control",
     "source_database",
     "target_control",

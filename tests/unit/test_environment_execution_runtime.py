@@ -22,6 +22,7 @@ from tests.unit.test_environment_router import fixture as router_fixture
 
 PURPOSES = (
     "router_transport",
+    "entrypoint_probe",
     "source_control",
     "source_database",
     "target_control",
@@ -140,7 +141,7 @@ def test_runtime_opens_exact_versions_and_closes_them_in_reverse_order(tmp_path)
         assert flow._external_guard is guard and flow.journal is journal
         assert [value[1] for value in resolver.events if value[0] == "open"] == list(PURPOSES)
     assert [value[1] for value in resolver.events if value[0] == "close"] == list(reversed(PURPOSES))
-    assert guard.call_count == 11
+    assert guard.call_count == 13
 
 
 def test_resolution_or_composition_drift_is_sanitized_and_open_secrets_close(tmp_path):
@@ -155,6 +156,7 @@ def test_resolution_or_composition_drift_is_sanitized_and_open_secrets_close(tmp
     assert [value[1] for value in resolver.events if value[0] == "close"] == [
         "source_database",
         "source_control",
+        "entrypoint_probe",
         "router_transport",
     ]
 
@@ -170,7 +172,7 @@ def test_resolution_or_composition_drift_is_sanitized_and_open_secrets_close(tmp
         runtime(execution, guard=Mock(), journal=Mock()),
     ):
         pass
-    assert len([value for value in resolver.events if value[0] == "close"]) == 5
+    assert len([value for value in resolver.events if value[0] == "close"]) == 6
 
 
 def test_effect_failure_propagates_after_runtime_validation_and_still_closes_secrets(tmp_path):
@@ -181,7 +183,7 @@ def test_effect_failure_propagates_after_runtime_validation_and_still_closes_sec
 
     with pytest.raises(EffectFailure), runtime(execution, guard=Mock(), journal=Mock()):
         raise EffectFailure("external effect outcome")
-    assert len([value for value in resolver.events if value[0] == "close"]) == 5
+    assert len([value for value in resolver.events if value[0] == "close"]) == 6
 
 
 def test_secret_cleanup_never_replaces_an_uncertain_effect_outcome(tmp_path):

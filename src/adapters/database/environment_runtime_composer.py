@@ -49,6 +49,7 @@ _WRITER = re.compile(r"sky_transfer_[a-f0-9]{16,32}\Z")
 _MARKER = re.compile(r"sky-transfer-v1:[a-f0-9]{64}\Z")
 _MATERIALS = {
     "router_transport": RouterTransportSecretMaterial,
+    "entrypoint_probe": ControlRuntimeSecretMaterial,
     "source_control": ControlRuntimeSecretMaterial,
     "source_database": DatabaseRuntimeSecretMaterial,
     "target_control": ControlRuntimeSecretMaterial,
@@ -251,9 +252,9 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
             not callable(runtime_verifier) and not callable(getattr(runtime_verifier, "bind", None))
         ) or getattr(runtime_verifier, "reference", None) != registration.runtime_verifier_ref:
             raise ValueError("Attested runtime verifier required")
-        if not callable(entrypoint_probe) or getattr(entrypoint_probe, "reference", None) != (
-            registration.entrypoint_probe_ref
-        ):
+        if (
+            not callable(entrypoint_probe) and not callable(getattr(entrypoint_probe, "bind", None))
+        ) or getattr(entrypoint_probe, "reference", None) != registration.entrypoint_probe_ref:
             raise ValueError("Attested entrypoint probe required")
         if not callable(clock):
             raise TypeError("Runtime evidence clock required")
@@ -324,6 +325,14 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
                 or getattr(runtime_verifier, "reference", None) != r.runtime_verifier_ref
             ):
                 raise ValueError("Bound runtime verifier differs from registration")
+        entrypoint_probe = self.entrypoint_probe
+        if callable(getattr(entrypoint_probe, "bind", None)):
+            entrypoint_probe = entrypoint_probe.bind(materials["entrypoint_probe"], guard=guard)
+            if (
+                not callable(entrypoint_probe)
+                or getattr(entrypoint_probe, "reference", None) != r.entrypoint_probe_ref
+            ):
+                raise ValueError("Bound entrypoint probe differs from registration")
         source_connect = self._connect(r.source_endpoint, source_secret)
         target_connect = self._connect(r.target_endpoint, target_secret)
         source_provider = RegisteredRdsInventoryVerifier(
@@ -374,7 +383,7 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
 
         def probe_entrypoint():
             guard()
-            result = self.entrypoint_probe()
+            result = entrypoint_probe()
             guard()
             return result
 

@@ -180,8 +180,8 @@ def test_runtime_check_opens_pinned_materials_for_read_only_database_and_route_p
     assert check.reference.startswith("ERC-")
     assert receipt["check_ref"] == check.reference
     assert receipt["evidence_ref"].startswith("ENVRT-")
-    assert len([event for event in runtime.resolver.events if event[0] == "open"]) == 5
-    assert len([event for event in runtime.resolver.events if event[0] == "close"]) == 5
+    assert len([event for event in runtime.resolver.events if event[0] == "open"]) == 6
+    assert len([event for event in runtime.resolver.events if event[0] == "close"]) == 6
     resources = RegisteredEnvironmentTransferResources(execution, (check.check(),))
     assert resources.verify(execution, guard=Mock())["verified"] is True
 

@@ -51,7 +51,7 @@ def _wait_absent(client, secret_arn):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Create, resolve, and retire four temporary Sky runtime secrets"
+        description="Create, resolve, and retire five temporary Sky runtime secrets"
     )
     parser.add_argument("--apply", action="store_true", help="Create temporary billable AWS secrets")
     parser.add_argument("--account", required=True)
@@ -73,7 +73,7 @@ def main(argv=None):
             {
                 "account": args.account,
                 "region": args.region,
-                "resources": ["four temporary versioned Secrets Manager secrets"],
+                "resources": ["five temporary versioned Secrets Manager secrets"],
                 "retirement": "force-delete and absence verification required",
             },
             sort_keys=True,
@@ -86,7 +86,13 @@ def main(argv=None):
 
     client = session.client("secretsmanager")
     suffix = uuid.uuid4().hex[:12]
-    purposes = ("source_control", "source_database", "target_control", "target_database")
+    purposes = (
+        "entrypoint_probe",
+        "source_control",
+        "source_database",
+        "target_control",
+        "target_database",
+    )
     created = []
     temporary = tempfile.TemporaryDirectory(prefix="sky-live-secret-resolver-")
     private_root = Path(temporary.name)
@@ -176,7 +182,7 @@ def main(argv=None):
             materialized = (material.private_key, material.known_hosts)
             if not all(value.is_file() and value.stat().st_mode & 0o777 == 0o600 for value in materialized):
                 raise RuntimeError("Private router copies differ")
-        if any(value.exists() for value in materialized) or guard_calls != 10:
+        if any(value.exists() for value in materialized) or guard_calls != 12:
             raise RuntimeError("Resolver cleanup or guard boundary differs")
         print(
             json.dumps(
@@ -209,7 +215,7 @@ def main(argv=None):
                 raise RuntimeError(message)
         if created:
             print(
-                "PASS: four temporary Secrets Manager resources retired and absence confirmed",
+                "PASS: five temporary Secrets Manager resources retired and absence confirmed",
                 flush=True,
             )
 

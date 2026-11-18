@@ -16,7 +16,13 @@ from pathlib import Path
 from application.environment_admission import RegisteredEnvironmentExecution
 from domain.environment_transition import _digest, _ref
 
-_AWS_PURPOSES = {"source_control", "source_database", "target_control", "target_database"}
+_AWS_PURPOSES = {
+    "entrypoint_probe",
+    "source_control",
+    "source_database",
+    "target_control",
+    "target_database",
+}
 _VERSION = re.compile(r"[A-Za-z0-9-]{32,64}\Z")
 
 

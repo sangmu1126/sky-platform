@@ -137,6 +137,7 @@ def fixture(tmp_path):
             hashlib.sha256(key.read_bytes()).hexdigest(),
             hashlib.sha256(hosts.read_bytes()).hexdigest(),
         ),
+        "entrypoint_probe": ControlRuntimeSecretMaterial("entrypoint-private-token"),
         "source_control": ControlRuntimeSecretMaterial("source-private-token"),
         "source_database": DatabaseRuntimeSecretMaterial(source_role, "source-private-password"),
         "target_control": ControlRuntimeSecretMaterial("target-private-token"),
@@ -260,6 +261,46 @@ def test_composer_binds_runtime_evidence_factory_to_short_lived_router_transport
         materials["router_transport"].private_key
     )
     assert flow.traffic.router.verify_runtime(flow.traffic.router.bindings[0]) is True
+
+
+def test_composer_binds_entrypoint_factory_to_its_separate_short_lived_token(tmp_path):
+    execution, registration, composer, materials = fixture(tmp_path)
+
+    class Bound:
+        reference = registration.entrypoint_probe_ref
+
+        def __call__(self):
+            return {"binding_hash": "a" * 64}
+
+    class Factory:
+        reference = registration.entrypoint_probe_ref
+
+        def __init__(self):
+            self.material, self.guard = None, None
+
+        def bind(self, material, *, guard):
+            self.material, self.guard = material, guard
+            return Bound()
+
+    factory = Factory()
+    guard = Mock()
+    composer = RegisteredAwsVmEnvironmentRuntimeComposer(
+        execution,
+        registration,
+        sts=composer.sts,
+        rds=composer.rds,
+        runtime_verifier=composer.runtime_verifier,
+        entrypoint_probe=factory,
+        clock=composer.clock,
+    )
+    with patch(
+        "adapters.database.environment_runtime_composer.ssl.create_default_context",
+        return_value=tls_context(),
+    ):
+        _transport, flow = composer(execution, materials, guard=guard, journal=Mock())
+    assert factory.material is materials["entrypoint_probe"]
+    assert factory.guard is guard
+    assert flow.traffic.router.probe_entrypoint() == {"binding_hash": "a" * 64}
 
 
 @pytest.mark.parametrize("change", ["execution", "resource", "adapter", "secret-role", "ca"])
