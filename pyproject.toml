@@ -15,6 +15,8 @@ agent-sdk = ["openai-agents==0.24.0"]
 [project.scripts]
 sky-platform = "sky_platform:main"
 sky-service = "interfaces.service:main"
+sky-runtime-inventory-helper = "interfaces.runtime_inventory_helper:main"
+sky-runtime-inventory-ssh-gate = "interfaces.runtime_inventory_ssh_gate:main"
 
 [build-system]
 requires = ["setuptools>=69"]
