@@ -79,6 +79,20 @@ def test_resource_check_drift_duplicate_evidence_or_changed_execution_is_rejecte
         RegisteredEnvironmentResourceCheck(first.reference, Mock(reference="ERC-" + "f" * 64))
 
 
+def test_resource_check_rechecks_collector_pin_before_guard_or_collection():
+    execution = registered()
+    check = resource_check(1)
+    verifier = RegisteredEnvironmentTransferResources(execution, (check,))
+    guard = Mock()
+    check.collect.reference = "ERC-" + "f" * 64
+
+    with pytest.raises(ValueError, match="Exact guarded"):
+        verifier.verify(execution, guard=guard)
+
+    guard.assert_not_called()
+    check.collect.assert_not_called()
+
+
 def effect_fixture():
     execution = registered()
     transfer = execution.job.transfer

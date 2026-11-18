@@ -42,6 +42,11 @@ def _digest(prefix, value):
     return prefix + hashlib.sha256(raw).hexdigest()
 
 
+def _collector_reference(collector):
+    owner = getattr(collector, "__self__", None)
+    return getattr(owner, "reference", None) if owner is not None else getattr(collector, "reference", None)
+
+
 @dataclass(frozen=True)
 class RegisteredEnvironmentResourceCheck:
     reference: str
@@ -52,13 +57,7 @@ class RegisteredEnvironmentResourceCheck:
             raise ValueError("Digest-bound environment resource check required")
         if not callable(self.collect):
             raise TypeError("Environment resource collector required")
-        owner = getattr(self.collect, "__self__", None)
-        collector_reference = (
-            getattr(owner, "reference", None)
-            if owner is not None
-            else getattr(self.collect, "reference", None)
-        )
-        if collector_reference != self.reference:
+        if _collector_reference(self.collect) != self.reference:
             raise ValueError("Environment resource collector differs from check reference")
 
 
@@ -86,7 +85,14 @@ class RegisteredEnvironmentTransferResources:
         )
 
     def verify(self, execution, *, guard):
-        if execution != self.execution or not callable(guard):
+        if (
+            execution != self.execution
+            or not callable(guard)
+            or any(
+                not callable(check.collect) or _collector_reference(check.collect) != check.reference
+                for check in self.checks
+            )
+        ):
             raise ValueError("Exact guarded environment resource execution required")
         evidence = []
         for check in self.checks:
