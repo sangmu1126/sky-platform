@@ -10,7 +10,7 @@ import json
 import ssl
 from pathlib import Path
 from types import SimpleNamespace
-from zipfile import ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 import pytest
 
@@ -122,24 +122,48 @@ def test_production_entrypoint_uses_ambient_clients_without_aws_calls(provider, 
     assert provider.provide(selected) is expected
 
 
-def test_wheel_finalizer_adds_dist_info_descriptor_and_record_hash(tmp_path):
+def test_wheel_finalizer_adds_descriptor_and_is_reproducible(tmp_path):
     spec = importlib.util.spec_from_file_location(
         "rehearsal_build_wheel", PROJECT / "tools" / "build_wheel.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    source, destination = tmp_path / "source.whl", tmp_path / "final.whl"
+    sources = (tmp_path / "source-one.whl", tmp_path / "source-two.whl")
+    destinations = (tmp_path / "final-one.whl", tmp_path / "final-two.whl")
     record_path = "sky_aws_vm_rehearsal_provider-0.1.0.dist-info/RECORD"
     module_path = "sky_aws_vm_rehearsal/provider.py"
-    with ZipFile(source, "w") as wheel:
-        wheel.writestr(module_path, b"provider")
-        wheel.writestr(record_path, f"{module_path},,\n{record_path},,\n")
+    for index, source in enumerate(sources, start=1):
+        with ZipFile(source, "w") as wheel:
+            for name, value in (
+                (module_path, b"provider"),
+                (record_path, f"{module_path},,\n{record_path},,\n".encode()),
+            ):
+                info = ZipInfo(name, date_time=(2026, index, index, index, index, index * 2))
+                info.compress_type = ZIP_DEFLATED
+                info.external_attr = (0o100600 + index) << 16
+                wheel.writestr(info, value)
     raw = (PROJECT / "descriptor" / module.DESCRIPTOR).read_bytes()
-    module.finalize(source, destination, raw)
+    for source, destination in zip(sources, destinations, strict=True):
+        module.finalize(source, destination, raw)
+    assert destinations[0].read_bytes() == destinations[1].read_bytes()
     descriptor_path = record_path.rsplit("/", 1)[0] + "/" + module.DESCRIPTOR
-    with ZipFile(destination) as wheel:
+    with ZipFile(destinations[0]) as wheel:
         assert wheel.read(descriptor_path) == raw
+        assert all(value.date_time == (1980, 1, 1, 0, 0, 0) for value in wheel.infolist())
+        assert all(value.external_attr >> 16 == 0o100644 for value in wheel.infolist())
+        assert wheel.namelist() == sorted(wheel.namelist())
         rows = list(csv.reader(io.StringIO(wheel.read(record_path).decode())))
     recorded = next(value for value in rows if value[0] == descriptor_path)
     digest = base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode()
     assert recorded == [descriptor_path, "sha256=" + digest, str(len(raw))]
+
+
+@pytest.mark.parametrize("name", ["/absolute", "../escape", "a//b", "a\\b", "directory/", "a\x00b"])
+def test_wheel_finalizer_rejects_noncanonical_paths(name):
+    spec = importlib.util.spec_from_file_location(
+        "rehearsal_build_wheel_paths", PROJECT / "tools" / "build_wheel.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with pytest.raises(ValueError, match="Canonical provider wheel path"):
+        module._canonical_info(name)

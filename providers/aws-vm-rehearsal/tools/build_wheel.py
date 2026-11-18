@@ -11,10 +11,11 @@ import json
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 DESCRIPTOR = "sky-environment-executions-v1.json"
+_WHEEL_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 
 def _expected_descriptor(project):
@@ -62,12 +63,37 @@ def _record_with_descriptor(record, descriptor_path, descriptor):
     return output.getvalue().encode()
 
 
+def _canonical_info(name):
+    path = PurePosixPath(name)
+    if (
+        not name
+        or "\\" in name
+        or "\x00" in name
+        or name.endswith("/")
+        or name != path.as_posix()
+        or path.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or len(name) > 512
+    ):
+        raise ValueError("Canonical provider wheel path required")
+    info = ZipInfo(name, date_time=_WHEEL_TIMESTAMP)
+    info.compress_type = ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = 0o100644 << 16
+    return info
+
+
 def finalize(source, destination, descriptor):
     with ZipFile(source) as wheel:
         infos = wheel.infolist()
         names = [value.filename for value in infos]
         records = [value for value in names if value.endswith(".dist-info/RECORD")]
-        if len(records) != 1 or any(value.endswith(".dist-info/" + DESCRIPTOR) for value in names):
+        if (
+            not 1 <= len(infos) <= 512
+            or len(names) != len(set(names))
+            or len(records) != 1
+            or any(value.endswith(".dist-info/" + DESCRIPTOR) for value in names)
+        ):
             raise ValueError("One unfinalized provider wheel required")
         record_path = records[0]
         descriptor_path = record_path.rsplit("/", 1)[0] + "/" + DESCRIPTOR
@@ -77,13 +103,10 @@ def finalize(source, destination, descriptor):
         descriptor_path,
         descriptor,
     )
-    descriptor_info = ZipInfo(descriptor_path, date_time=(1980, 1, 1, 0, 0, 0))
-    descriptor_info.compress_type = ZIP_DEFLATED
-    descriptor_info.external_attr = 0o100644 << 16
+    values[descriptor_path] = descriptor
     with ZipFile(destination, "x", compression=ZIP_DEFLATED) as wheel:
-        for info in infos:
-            wheel.writestr(info, values[info.filename])
-        wheel.writestr(descriptor_info, descriptor)
+        for name in sorted(values):
+            wheel.writestr(_canonical_info(name), values[name])
 
 
 def main(argv=None):
