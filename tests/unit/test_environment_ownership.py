@@ -157,6 +157,17 @@ def test_rds_verifier_rejects_custom_evidence_endpoint(client):
     verifier.rds.describe_db_instances.assert_not_called()
 
 
+@pytest.mark.parametrize("client", ["sts", "rds"])
+def test_rds_verifier_rechecks_regional_authority_before_aws_calls(client):
+    verifier, _ = rds_verifier()
+    getattr(verifier, client).meta.endpoint_url = "https://localhost.invalid"
+
+    with pytest.raises(DatabaseInventoryUnavailable):
+        verifier.verify(verifier.registration.placement)
+    verifier.sts.get_caller_identity.assert_not_called()
+    verifier.rds.describe_db_instances.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "invalid", [None, "db_marker", "privileged", "inherits", "unbounded", "creates", "other_db"]
 )

@@ -14,6 +14,17 @@ from domain.database_inventory import DatabaseInventoryUnavailable, DatabaseReso
 from domain.database_migration import DatabasePlacement
 
 
+def _regional_rds_authority(sts, rds, region):
+    clients = ((sts, "sts", "get_caller_identity"), (rds, "rds", "describe_db_instances"))
+    return all(
+        callable(getattr(client, operation, None))
+        and getattr(getattr(client, "meta", None), "region_name", None) == region
+        and getattr(getattr(client, "meta", None), "endpoint_url", None)
+        == f"https://{service}.{region}.amazonaws.com"
+        for client, service, operation in clients
+    )
+
+
 @dataclass(frozen=True)
 class RegisteredRdsInventory:
     placement: DatabasePlacement
@@ -68,14 +79,7 @@ class RegisteredRdsInventoryVerifier:
         if not isinstance(registration, RegisteredRdsInventory):
             raise TypeError("Typed existing RDS registration required")
         region = registration.placement.location.location
-        clients = ((sts, "sts", "get_caller_identity"), (rds, "rds", "describe_db_instances"))
-        if any(
-            not callable(getattr(client, operation, None))
-            or getattr(getattr(client, "meta", None), "region_name", None) != region
-            or getattr(getattr(client, "meta", None), "endpoint_url", None)
-            != f"https://{service}.{region}.amazonaws.com"
-            for client, service, operation in clients
-        ):
+        if not _regional_rds_authority(sts, rds, region):
             raise ValueError("Regional AWS RDS evidence authority required")
         self.registration, self.sts, self.rds, self.clock = registration, sts, rds, clock
 
@@ -86,7 +90,10 @@ class RegisteredRdsInventoryVerifier:
         try:
             account = placement.location.authority_ref
             region = placement.location.location
-            if self.sts.get_caller_identity()["Account"] != account or self.rds.meta.region_name != region:
+            if (
+                not _regional_rds_authority(self.sts, self.rds, region)
+                or self.sts.get_caller_identity()["Account"] != account
+            ):
                 raise ValueError("AWS caller or region changed")
             response = self.rds.describe_db_instances(DBInstanceIdentifier=placement.instance_id)
             instances = response.get("DBInstances") if isinstance(response, dict) else None
