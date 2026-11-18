@@ -8,6 +8,7 @@ import csv
 import hashlib
 import io
 import json
+import math
 import os
 import subprocess
 import sys
@@ -20,6 +21,41 @@ _WHEEL_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _ENVIRONMENT_KEYS = ("LANG", "LC_ALL", "PATH", "SYSTEMROOT")
 _MAX_ENTRY_BYTES = 32 * 1024 * 1024
 _MAX_WHEEL_BYTES = 64 * 1024 * 1024
+_MAX_DESCRIPTOR_BYTES = 64 * 1024
+
+
+def _unique_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("Duplicate provider descriptor field")
+        value[key] = item
+    return value
+
+
+def _finite_float(value):
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("Finite provider descriptor number required")
+    return result
+
+
+def _reject_constant(_value):
+    raise ValueError("Standard provider descriptor JSON required")
+
+
+def _strict_json(value):
+    if not isinstance(value, bytes) or not 1 <= len(value) <= _MAX_DESCRIPTOR_BYTES:
+        raise ValueError("Bounded provider descriptor required")
+    result = json.loads(
+        value,
+        object_pairs_hook=_unique_object,
+        parse_constant=_reject_constant,
+        parse_float=_finite_float,
+    )
+    if not isinstance(result, dict):
+        raise TypeError("Provider descriptor JSON object required")
+    return result
 
 
 def _environment():
@@ -49,7 +85,7 @@ def _expected_descriptor(project):
 def _descriptor_bytes(project):
     path = project / "descriptor" / DESCRIPTOR
     raw = path.read_bytes()
-    value = json.loads(raw)
+    value = _strict_json(raw)
     if value != _expected_descriptor(project):
         raise ValueError("Provider descriptor differs from composed public pins")
     canonical = json.dumps(

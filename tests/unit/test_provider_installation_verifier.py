@@ -111,6 +111,27 @@ def test_verifier_requires_an_absolute_executable_python(verifier, tmp_path):
         verifier.verify(tmp_path / "base", tmp_path / "provider", python="python")
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        '{"value":1,"value":2}',
+        '{"nested":{"value":1,"value":2}}',
+        '{"value":NaN}',
+        '{"value":Infinity}',
+        '{"value":1e999}',
+        "[]",
+    ],
+)
+def test_verifier_rejects_ambiguous_or_non_object_subprocess_json(verifier, value):
+    with pytest.raises((TypeError, ValueError)):
+        verifier._strict_json(value, maximum=1024)
+
+
+def test_verifier_rejects_unbounded_subprocess_json(verifier):
+    with pytest.raises(ValueError, match="Bounded"):
+        verifier._strict_json('{"value":"' + "x" * 1024 + '"}', maximum=128)
+
+
 def test_verifier_rejects_symlink_or_writable_wheel_before_pip(verifier, tmp_path):
     wheel = tmp_path / "sky_platform-0.1.0-py3-none-any.whl"
     wheel.write_bytes(b"wheel")

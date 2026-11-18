@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import stat
 import subprocess
@@ -19,6 +20,40 @@ _MAX_WHEEL_BYTES = 256 * 1024 * 1024
 _CHECK_CONFIG_OUTPUT = (
     "Reviewed environment worker configuration valid; provider code, AWS and DB were not called"
 )
+
+
+def _unique_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("Duplicate verifier JSON field")
+        value[key] = item
+    return value
+
+
+def _finite_float(value):
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("Finite verifier JSON number required")
+    return result
+
+
+def _reject_constant(_value):
+    raise ValueError("Standard verifier JSON required")
+
+
+def _strict_json(value, *, maximum):
+    if not isinstance(value, str) or not 1 <= len(value.encode()) <= maximum:
+        raise ValueError("Bounded verifier JSON required")
+    result = json.loads(
+        value,
+        object_pairs_hook=_unique_object,
+        parse_constant=_reject_constant,
+        parse_float=_finite_float,
+    )
+    if not isinstance(result, dict):
+        raise TypeError("Verifier JSON object required")
+    return result
 
 
 def _run(arguments, *, env, cwd):
@@ -141,7 +176,7 @@ def _inspect(python, site, workspace, manifest, *, cwd):
         AWS_SECRET_ACCESS_KEY="isolated-installation-check",
         AWS_DEFAULT_REGION="ap-northeast-2",
     )
-    artifact = json.loads(
+    artifact = _strict_json(
         _run(
             _isolated_python(
                 python,
@@ -153,9 +188,10 @@ def _inspect(python, site, workspace, manifest, *, cwd):
             ),
             env=env,
             cwd=cwd,
-        )
+        ),
+        maximum=65536,
     )
-    document = json.loads(
+    document = _strict_json(
         _run(
             _isolated_python(
                 python,
@@ -167,7 +203,8 @@ def _inspect(python, site, workspace, manifest, *, cwd):
             ),
             env=env,
             cwd=cwd,
-        )
+        ),
+        maximum=1024 * 1024,
     )
     manifest.write_text(json.dumps(document, sort_keys=True, separators=(",", ":")))
     manifest.chmod(0o400)
@@ -223,7 +260,7 @@ def _inspect(python, site, workspace, manifest, *, cwd):
     )
     if check_config != _CHECK_CONFIG_OUTPUT or not _provider_cache_absent(site):
         raise ValueError("Worker check-config imported provider code or changed external state")
-    result = json.loads(
+    result = _strict_json(
         _run(
             _isolated_python(
                 python,
@@ -245,7 +282,8 @@ def _inspect(python, site, workspace, manifest, *, cwd):
             ),
             env=env,
             cwd=cwd,
-        )
+        ),
+        maximum=65536,
     )
     return artifact, document, result, check_config
 

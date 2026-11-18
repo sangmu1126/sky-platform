@@ -177,6 +177,27 @@ def test_wheel_finalizer_rejects_noncanonical_paths(name):
         module._canonical_info(name)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        b'{"value":1,"value":2}',
+        b'{"nested":{"value":1,"value":2}}',
+        b'{"value":NaN}',
+        b'{"value":Infinity}',
+        b'{"value":1e999}',
+        b"[]",
+    ],
+)
+def test_provider_build_rejects_ambiguous_descriptor_json(value):
+    spec = importlib.util.spec_from_file_location(
+        "rehearsal_build_wheel_descriptor", PROJECT / "tools" / "build_wheel.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with pytest.raises((TypeError, ValueError)):
+        module._strict_json(value)
+
+
 def test_provider_build_uses_offline_isolated_pip_and_minimal_environment(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location(
         "rehearsal_build_wheel_isolation", PROJECT / "tools" / "build_wheel.py"
