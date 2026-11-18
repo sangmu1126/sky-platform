@@ -27,6 +27,7 @@ def preparation_scope(env, artifacts):
         env.get("SKY_SHARED_DATABASE_QUEUE_URL", ""),
         env.get("SKY_DEDICATED_DATABASE_QUEUE_URL", ""),
         env.get("SKY_DATABASE_CUTOVER_QUEUE_URL", ""),
+        env.get("SKY_ENVIRONMENT_EXECUTION_QUEUE_URL", ""),
     }
     if workspace == base_workspace or url in reserved_queues:
         raise ValueError(

@@ -16,6 +16,7 @@ from application.environment_admission import (
 )
 from domain.access import Action, Principal, permitted
 
+KIND = "environment_transfer"
 _EVIDENCE_REF = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,127}\Z")
 
 
@@ -100,7 +101,7 @@ class RegisteredEnvironmentExecutionWorker:
         if (
             operation is None
             or operation.attempt_id != attempt_id
-            or operation.kind != "environment_transfer"
+            or operation.kind != KIND
             or operation.status != "queued"
             or operation.external_pending
         ):
@@ -116,7 +117,7 @@ class RegisteredEnvironmentExecutionWorker:
         lease = store.claim(operation.id, operation.attempt_id, self.owner, seconds=900)
         if lease is None:
             return {"status": "not_claimed"}
-        journal = OperationCutoverJournal(store, lease, effect_kind="environment_transfer")
+        journal = OperationCutoverJournal(store, lease, effect_kind=KIND)
 
         def check():
             journal.guard()

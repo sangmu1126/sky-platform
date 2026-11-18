@@ -13,12 +13,16 @@ from adapters.state.environment_gates import PostgresPreservationGates
 from adapters.state.environment_reviews import PostgresEnvironmentReviews
 from adapters.state.operations import PostgresOperationStore
 from application.environment_admission import RegisteredEnvironmentExecution
+from application.environment_execution_consumer import ReviewedEnvironmentExecutionConsumer
 from application.environment_execution_worker import RegisteredEnvironmentExecutionWorker
 from application.environment_jobs import RegisteredEnvironmentJob
+from application.outbox import OutboxPublisher
+from application.shared_database_consumer import AllocationQueueRouter
 from domain.access import LoginSource, Principal, ResourceOwner, Role
 from domain.environment_transition import BASELINE_CAPABILITIES
 from engine.environment_transition import assess_environment_transition
 from ports.operations import IdempotencyConflict
+from ports.queue import ReceivedOperation
 from tests.contract.test_database_migration_reviews import database as database  # noqa: PLC0414
 from tests.unit.test_database_transfer import transfer
 from tests.unit.test_environment_gate_review import case, observations
@@ -186,6 +190,58 @@ def test_registered_worker_parks_uncertain_effect_and_never_replays(stores, data
     saved = store.operations.get(operation.id)
     assert saved.status == "needs_attention" and saved.external_pending is True
     assert worker.execute(operation.id, operation.attempt_id) == {"status": "not_claimed"}
+    effect.assert_called_once()
+
+
+def test_outbox_routes_only_to_reviewed_queue_and_consumer_acknowledges_terminal_state(stores, database):
+    store, *_ = stores
+    registered, review, gate = prepared(stores, database)
+    operation = submit(store, registered, review, gate)
+
+    class Queue:
+        def __init__(self):
+            self.messages = []
+            self.extended = []
+            self.deleted = []
+
+        def publish(self, delivery):
+            self.messages.append(ReceivedOperation(str(uuid4()), delivery.message()))
+
+        def receive(self):
+            return self.messages[0] if self.messages else None
+
+        def extend(self, delivery, *, seconds=300):
+            self.extended.append((delivery.receipt, seconds))
+
+        def delete(self, delivery):
+            self.deleted.append(delivery.receipt)
+            self.messages.remove(delivery)
+
+    queue = Queue()
+    wrong = Mock()
+    router = AllocationQueueRouter(
+        store.operations,
+        wrong,
+        wrong,
+        environment_queue=queue,
+    )
+    report = OutboxPublisher(store.operations, router, "reviewed-outbox").dispatch_once()
+    assert (report.confirmed, report.deferred) == (1, 0)
+    wrong.publish.assert_not_called()
+    assert queue.messages[0].message["operation_id"] == operation.id
+
+    effect = Mock(return_value={"result_ref": "hosted-environment-result"})
+    worker, _resources = execution_worker(store, registered, effect=effect)
+    consumer = ReviewedEnvironmentExecutionConsumer(
+        store.operations,
+        queue,
+        worker,
+        heartbeat_seconds=300,
+    )
+    assert consumer.consume_once() == "succeeded"
+    assert queue.deleted and not queue.messages
+    saved = store.operations.get(operation.id)
+    assert saved.status == "succeeded" and saved.result == {"result_ref": "hosted-environment-result"}
     effect.assert_called_once()
 
 

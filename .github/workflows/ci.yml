@@ -109,6 +109,7 @@ jobs:
               'application/environment_transition.py', 'application/environment_gate_review.py',
               'application/environment_admission.py', 'application/environment_cutover.py',
               'application/environment_execution_worker.py',
+              'application/environment_execution_consumer.py',
               'application/environment_agent_tools.py',
               'application/environment_dependency_inventory.py', 'engine/workload_inventory.py',
               'adapters/source/workload_inventory.py',
@@ -127,6 +128,7 @@ jobs:
               'adapters/state/provider_identity.py',
               'adapters/state/worker_connection.py', 'adapters/onprem/published_endpoint.py',
               'adapters/ai/environment_agent_sdk.py', 'interfaces/environment_demo.py',
+              'interfaces/environment_execution_consumer.py',
               'interfaces/runtime_inventory_helper.py',
               'interfaces/runtime_inventory_ssh_gate.py',
           }

@@ -435,3 +435,15 @@ def test_outbox_validates_distinct_cutover_fifo_without_aws_calls(worker_environ
     monkeypatch.setenv("SKY_DATABASE_CUTOVER_QUEUE_URL", os.environ["SKY_JOB_QUEUE_URL"])
     with pytest.raises(SystemExit):
         main(["worker", "--mode", "outbox", "--check-config"])
+
+
+def test_outbox_validates_distinct_reviewed_environment_fifo_without_aws_calls(
+    worker_environment, monkeypatch
+):
+    url = "https://sqs.ap-northeast-2.amazonaws.com/977889523182/environment.fifo"
+    monkeypatch.setenv("SKY_ENVIRONMENT_EXECUTION_QUEUE_URL", url)
+    with patch("boto3.client", side_effect=AssertionError("AWS call")):
+        main(["worker", "--mode", "outbox", "--check-config"])
+    monkeypatch.setenv("SKY_ENVIRONMENT_EXECUTION_QUEUE_URL", os.environ["SKY_JOB_QUEUE_URL"])
+    with pytest.raises(SystemExit):
+        main(["worker", "--mode", "outbox", "--check-config"])

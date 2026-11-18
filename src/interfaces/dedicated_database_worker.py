@@ -122,6 +122,7 @@ def run_dedicated_database(args, parser):
                 os.environ.get("SKY_JOB_QUEUE_URL"),
                 os.environ.get("SKY_SHARED_DATABASE_QUEUE_URL"),
                 os.environ.get("SKY_DATABASE_CUTOVER_QUEUE_URL"),
+                os.environ.get("SKY_ENVIRONMENT_EXECUTION_QUEUE_URL"),
             }:
                 raise ValueError("Dedicated queue must be separate")
             if args.operation_id or args.attempt_id:

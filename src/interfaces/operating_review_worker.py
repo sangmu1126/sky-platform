@@ -55,6 +55,7 @@ def run_operating_review(args, parser):
                     "SKY_JOB_QUEUE_URL",
                     "SKY_SHARED_DATABASE_QUEUE_URL",
                     "SKY_DATABASE_CUTOVER_QUEUE_URL",
+                    "SKY_ENVIRONMENT_EXECUTION_QUEUE_URL",
                 )
             }:
                 raise ValueError("Automatic preparation requires a separate registered queue")

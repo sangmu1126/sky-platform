@@ -680,6 +680,20 @@ def main(argv):
             if cutover_url in {url, allocation_url, dedicated_url}:
                 raise ValueError("Cutover queue must be separate")
             SqsOperationQueue(cutover_url, region=settings.region, account_id=account, client=object())
+        environment_url = os.environ.get("SKY_ENVIRONMENT_EXECUTION_QUEUE_URL", "")
+        if environment_url:
+            from interfaces.environment_execution_consumer import require_isolated_environment_queue
+
+            require_isolated_environment_queue(
+                environment_url,
+                (url, allocation_url, dedicated_url, cutover_url),
+            )
+            SqsOperationQueue(
+                environment_url,
+                region=settings.region,
+                account_id=account,
+                client=object(),
+            )
         workspace = os.environ.get("SKY_STATE_WORKSPACE", "team")
         PostgresOperationStore(None, workspace=workspace)
     except ValueError:
@@ -705,6 +719,13 @@ def main(argv):
             else None,
             cutover_queue=SqsOperationQueue(cutover_url, region=settings.region, account_id=account)
             if cutover_url
+            else None,
+            environment_queue=SqsOperationQueue(
+                environment_url,
+                region=settings.region,
+                account_id=account,
+            )
+            if environment_url
             else None,
         )
         publisher = OutboxPublisher(store, queue, "outbox-" + uuid4().hex)

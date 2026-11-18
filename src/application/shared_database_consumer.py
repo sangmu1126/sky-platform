@@ -4,9 +4,10 @@ import threading
 import time
 from contextlib import contextmanager
 
-from application.shared_database_workflow import KIND
-from application.database_promotion_workflow import KIND as PROMOTION_KIND
 from application.database_cutover_workflow import KIND as CUTOVER_KIND
+from application.database_promotion_workflow import KIND as PROMOTION_KIND
+from application.environment_execution_worker import KIND as ENVIRONMENT_KIND
+from application.shared_database_workflow import KIND
 
 
 class AllocationOwnershipLost(OSError):
@@ -17,7 +18,14 @@ class AllocationQueueRouter:
     """Route using durable operation kind, never fields supplied in queue payloads."""
 
     def __init__(
-        self, operations, default_queue, allocation_queue, *, promotion_queue=None, cutover_queue=None
+        self,
+        operations,
+        default_queue,
+        allocation_queue,
+        *,
+        promotion_queue=None,
+        cutover_queue=None,
+        environment_queue=None,
     ):
         self.operations, self.default_queue, self.allocation_queue = (
             operations,
@@ -26,6 +34,7 @@ class AllocationQueueRouter:
         )
         self.promotion_queue = promotion_queue
         self.cutover_queue = cutover_queue
+        self.environment_queue = environment_queue
 
     def publish(self, delivery):
         operation = self.operations.get(delivery.operation_id)
@@ -34,7 +43,12 @@ class AllocationQueueRouter:
             or operation.application_id != delivery.application_id
         ):
             raise OSError("Outbox scope does not match durable operation")
-        if operation.kind == CUTOVER_KIND:
+        if (
+            operation.kind == ENVIRONMENT_KIND
+            and getattr(operation, "command", {}).get("profile") == "registered_environment_execution_v1"
+        ):
+            queue = self.environment_queue
+        elif operation.kind == CUTOVER_KIND:
             queue = self.cutover_queue
         elif operation.kind == PROMOTION_KIND:
             queue = self.promotion_queue

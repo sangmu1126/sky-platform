@@ -28,7 +28,12 @@ def load_preparation_api_configuration(*, policies, source):
     url = os.environ.get("SKY_DEDICATED_DATABASE_QUEUE_URL", "")
     if url in {
         os.environ.get(name, "")
-        for name in ("SKY_JOB_QUEUE_URL", "SKY_SHARED_DATABASE_QUEUE_URL", "SKY_DATABASE_CUTOVER_QUEUE_URL")
+        for name in (
+            "SKY_JOB_QUEUE_URL",
+            "SKY_SHARED_DATABASE_QUEUE_URL",
+            "SKY_DATABASE_CUTOVER_QUEUE_URL",
+            "SKY_ENVIRONMENT_EXECUTION_QUEUE_URL",
+        )
     }:
         raise ValueError("Dedicated preparation queue must be separate")
     SqsOperationQueue(url, region=source.pool.region, account_id=source.pool.account_id, client=object())

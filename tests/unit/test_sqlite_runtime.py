@@ -44,7 +44,12 @@ def test_shared_build_scope_rejected(field, base):
 
 @pytest.mark.parametrize(
     "field",
-    ["SKY_SHARED_DATABASE_QUEUE_URL", "SKY_DEDICATED_DATABASE_QUEUE_URL", "SKY_DATABASE_CUTOVER_QUEUE_URL"],
+    [
+        "SKY_SHARED_DATABASE_QUEUE_URL",
+        "SKY_DEDICATED_DATABASE_QUEUE_URL",
+        "SKY_DATABASE_CUTOVER_QUEUE_URL",
+        "SKY_ENVIRONMENT_EXECUTION_QUEUE_URL",
+    ],
 )
 def test_preparation_cannot_consume_database_operation_queue(field):
     env = environment()
