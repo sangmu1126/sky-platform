@@ -131,6 +131,7 @@ jobs:
               'adapters/ai/environment_agent_sdk.py', 'interfaces/environment_demo.py',
               'interfaces/environment_execution_consumer.py',
               'interfaces/environment_execution_registration.py',
+              'interfaces/environment_execution_provider.py',
               'interfaces/environment_execution_worker.py',
               'interfaces/runtime_inventory_helper.py',
               'interfaces/runtime_inventory_ssh_gate.py',
@@ -138,6 +139,7 @@ jobs:
           assert required <= files, sorted(required - files)
           PY
       - run: sky-platform --help
+      - run: sky-environment-provider-inspect --help
       - run: ruff check .
       - run: ruff format --check .
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

@@ -17,6 +17,7 @@ sky-platform = "sky_platform:main"
 sky-service = "interfaces.service:main"
 sky-runtime-inventory-helper = "interfaces.runtime_inventory_helper:main"
 sky-runtime-inventory-ssh-gate = "interfaces.runtime_inventory_ssh_gate:main"
+sky-environment-provider-inspect = "interfaces.environment_execution_provider:main"
 
 [build-system]
 requires = ["setuptools>=69"]

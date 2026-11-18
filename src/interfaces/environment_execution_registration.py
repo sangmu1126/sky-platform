@@ -2,10 +2,12 @@
 
 import hashlib
 import json
+import os
 import re
+import stat
 from dataclasses import dataclass
 from importlib import metadata
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from application.environment_execution_composition import (
     RegisteredEnvironmentExecutionComposition,
@@ -17,6 +19,37 @@ _PROVIDER = re.compile(r"[a-z][a-z0-9-]{2,63}\Z")
 _DIGEST = re.compile(r"[a-f0-9]{64}\Z")
 _RESOURCE_REF = re.compile(r"EVR-[a-f0-9]{64}\Z")
 _EFFECT_REF = re.compile(r"EEF-[a-f0-9]{64}\Z")
+_DISTRIBUTION = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+!-]{0,63}\Z")
+
+
+@dataclass(frozen=True)
+class EnvironmentProviderArtifact:
+    provider: str
+    distribution: str
+    version: str
+    artifact_sha256: str
+
+    def __post_init__(self):
+        if (
+            not isinstance(self.provider, str)
+            or not _PROVIDER.fullmatch(self.provider)
+            or not isinstance(self.distribution, str)
+            or not _DISTRIBUTION.fullmatch(self.distribution)
+            or not isinstance(self.version, str)
+            or not _VERSION.fullmatch(self.version)
+            or not isinstance(self.artifact_sha256, str)
+            or not _DIGEST.fullmatch(self.artifact_sha256)
+        ):
+            raise ValueError("Exact installed environment provider artifact required")
+
+    def document(self):
+        return {
+            "provider": self.provider,
+            "provider_distribution": self.distribution,
+            "provider_version": self.version,
+            "provider_artifact_sha256": self.artifact_sha256,
+        }
 
 
 @dataclass(frozen=True)
@@ -49,7 +82,7 @@ class EnvironmentExecutionPin:
 @dataclass(frozen=True)
 class EnvironmentExecutionManifest:
     workspace: str
-    provider: str
+    provider_artifact: EnvironmentProviderArtifact
     registrations: tuple[EnvironmentExecutionPin, ...]
     digest: str
 
@@ -57,8 +90,7 @@ class EnvironmentExecutionManifest:
         if (
             not isinstance(self.workspace, str)
             or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", self.workspace)
-            or not isinstance(self.provider, str)
-            or not _PROVIDER.fullmatch(self.provider)
+            or not isinstance(self.provider_artifact, EnvironmentProviderArtifact)
             or not isinstance(self.registrations, tuple)
             or not 1 <= len(self.registrations) <= 50
             or not all(isinstance(value, EnvironmentExecutionPin) for value in self.registrations)
@@ -69,6 +101,10 @@ class EnvironmentExecutionManifest:
             or not _DIGEST.fullmatch(self.digest)
         ):
             raise ValueError("Canonical reviewed environment worker manifest required")
+
+    @property
+    def provider(self):
+        return self.provider_artifact.provider
 
 
 def _unique(pairs):
@@ -90,10 +126,20 @@ def load_environment_execution_manifest(path, *, workspace):
     value = json.loads(raw, object_pairs_hook=_unique)
     if (
         not isinstance(value, dict)
-        or set(value) != {"schema_version", "profile", "workspace", "provider", "registrations"}
+        or set(value)
+        != {
+            "schema_version",
+            "profile",
+            "workspace",
+            "provider",
+            "provider_distribution",
+            "provider_version",
+            "provider_artifact_sha256",
+            "registrations",
+        }
         or type(value["schema_version"]) is not int
-        or value["schema_version"] != 1
-        or value["profile"] != "reviewed_environment_execution_worker_v1"
+        or value["schema_version"] != 2
+        or value["profile"] != "reviewed_environment_execution_worker_v2"
         or value["workspace"] != workspace
         or not isinstance(value["registrations"], list)
     ):
@@ -115,7 +161,12 @@ def load_environment_execution_manifest(path, *, workspace):
     ).encode()
     return EnvironmentExecutionManifest(
         value["workspace"],
-        value["provider"],
+        EnvironmentProviderArtifact(
+            value["provider"],
+            value["provider_distribution"],
+            value["provider_version"],
+            value["provider_artifact_sha256"],
+        ),
         tuple(pins),
         hashlib.sha256(canonical).hexdigest(),
     )
@@ -136,10 +187,147 @@ def environment_execution_entry_points(provider, *, entry_points=None):
     return matches
 
 
+def _provider_file(path, *, maximum):
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            or before.st_size > maximum
+        ):
+            raise ValueError("Immutable bounded provider package file required")
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            chunk = os.read(descriptor, min(65536, maximum + 1 - size))
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > maximum:
+                raise ValueError("Provider package file exceeds bound")
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ) or size != before.st_size:
+            raise ValueError("Provider package changed during inspection")
+        return size, digest.hexdigest()
+    finally:
+        os.close(descriptor)
+
+
+def _provider_path(root, relative, distribution):
+    candidate = Path(distribution.locate_file(relative))
+    expected = root.joinpath(*relative.parts)
+    cursor = root
+    for part in relative.parts[:-1]:
+        cursor /= part
+        info = cursor.lstat()
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            raise ValueError("Immutable provider package directory required")
+    if candidate.is_symlink():
+        raise ValueError("Provider package symlinks are forbidden")
+    resolved = candidate.resolve(strict=True)
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise ValueError("Provider package file escaped its distribution") from None
+    if resolved != expected.resolve(strict=True):
+        raise ValueError("Provider package file must remain inside its distribution")
+    return candidate
+
+
+def attest_environment_execution_provider(entry_point):
+    """Hash an installed provider distribution without importing its code."""
+    if (
+        getattr(entry_point, "group", None) != ENTRY_POINT_GROUP
+        or not isinstance(getattr(entry_point, "name", None), str)
+        or not _PROVIDER.fullmatch(entry_point.name)
+        or not isinstance(getattr(entry_point, "value", None), str)
+        or not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*", entry_point.value)
+    ):
+        raise ValueError("Exact environment provider entry point required")
+    distribution = getattr(entry_point, "dist", None)
+    name = None if distribution is None else distribution.metadata.get("Name")
+    version = None if distribution is None else distribution.version
+    pin = EnvironmentProviderArtifact(entry_point.name, name, version, "0" * 64)
+    files = () if distribution.files is None else tuple(distribution.files)
+    if not 3 <= len(files) <= 512:
+        raise ValueError("Bounded installed provider distribution required")
+    root = Path(distribution.locate_file("")).resolve(strict=True)
+    root_info = root.stat()
+    if not stat.S_ISDIR(root_info.st_mode) or root_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise ValueError("Immutable provider distribution root required")
+    records = []
+    total = 0
+    paths = set()
+    for item in files:
+        raw_path = str(item)
+        relative = PurePosixPath(raw_path)
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or ".." in relative.parts
+            or any(not part or part in {".", ".."} for part in relative.parts)
+            or relative.as_posix() != raw_path
+            or "\\" in raw_path
+            or any(ord(value) < 33 for value in raw_path)
+            or len(relative.as_posix().encode()) > 512
+            or relative.as_posix() in paths
+        ):
+            raise ValueError("Canonical provider distribution path required")
+        paths.add(relative.as_posix())
+        candidate = _provider_path(root, relative, distribution)
+        size, digest = _provider_file(candidate, maximum=1024 * 1024)
+        total += size
+        if total > 16 * 1024 * 1024:
+            raise ValueError("Provider distribution exceeds bound")
+        records.append({"path": relative.as_posix(), "size": size, "sha256": digest})
+    module = entry_point.value.split(":", 1)[0].replace(".", "/")
+    if not ({module + ".py", module + "/__init__.py"} & paths):
+        raise ValueError("Entry point module is absent from provider distribution")
+    if not any(path.endswith(".dist-info/METADATA") for path in paths) or not any(
+        path.endswith(".dist-info/entry_points.txt") for path in paths
+    ):
+        raise ValueError("Provider distribution metadata is incomplete")
+    payload = {
+        "schema_version": 1,
+        "profile": "reviewed_environment_provider_artifact_v1",
+        "provider": pin.provider,
+        "distribution": pin.distribution,
+        "version": pin.version,
+        "entry_point": entry_point.value,
+        "files": sorted(records, key=lambda value: value["path"]),
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    ).hexdigest()
+    return EnvironmentProviderArtifact(pin.provider, pin.distribution, pin.version, digest)
+
+
+def verify_environment_execution_provider(manifest, entry_point):
+    if not isinstance(manifest, EnvironmentExecutionManifest):
+        raise TypeError("Reviewed environment worker manifest required")
+    observed = attest_environment_execution_provider(entry_point)
+    if observed != manifest.provider_artifact:
+        raise ValueError("Installed environment provider artifact differs from operator pin")
+    return observed
+
+
 def compose_environment_executions(manifest, *, entry_points=None):
     if not isinstance(manifest, EnvironmentExecutionManifest):
         raise TypeError("Reviewed environment worker manifest required")
     (entry_point,) = environment_execution_entry_points(manifest.provider, entry_points=entry_points)
+    verify_environment_execution_provider(manifest, entry_point)
     provider = entry_point.load()
     if not callable(provider):
         raise TypeError("Environment composition provider must be callable")
@@ -167,4 +355,5 @@ def compose_environment_executions(manifest, *, entry_points=None):
             or composition.effect_ref != pin.effect_ref
         ):
             raise ValueError("Installed environment composition differs from operator pins")
+    verify_environment_execution_provider(manifest, entry_point)
     return tuple(by_id[value] for value in selected)

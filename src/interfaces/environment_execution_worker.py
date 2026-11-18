@@ -41,6 +41,7 @@ def run_environment_execution_worker(args, parser):
     from interfaces.environment_execution_registration import (
         environment_execution_entry_points,
         load_environment_execution_manifest,
+        verify_environment_execution_provider,
     )
     from interfaces.shared_database_worker import load_hosted_identity
 
@@ -66,7 +67,8 @@ def run_environment_execution_worker(args, parser):
         identity = load_hosted_identity(args)
         manifest = load_environment_execution_manifest(args.environment_execution_config, workspace=workspace)
         # Discover metadata only. Provider code and effects are not imported in check mode.
-        environment_execution_entry_points(manifest.provider)
+        (entry_point,) = environment_execution_entry_points(manifest.provider)
+        verify_environment_execution_provider(manifest, entry_point)
     except Exception:  # noqa: BLE001 -- provider/config diagnostics can contain private paths
         parser.error(
             "Invalid reviewed environment worker manifest, identity, state or isolated queue configuration"
