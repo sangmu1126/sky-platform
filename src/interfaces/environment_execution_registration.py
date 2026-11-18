@@ -1,10 +1,13 @@
 """Operator manifest for server-installed reviewed environment compositions."""
 
+import csv
 import hashlib
+import io
 import json
 import os
 import re
 import stat
+import sys
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path, PurePosixPath
@@ -21,6 +24,7 @@ _RESOURCE_REF = re.compile(r"EVR-[a-f0-9]{64}\Z")
 _EFFECT_REF = re.compile(r"EEF-[a-f0-9]{64}\Z")
 _DISTRIBUTION = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+!-]{0,63}\Z")
+_INSTALLER_METADATA = {"INSTALLER", "REQUESTED", "direct_url.json"}
 
 
 @dataclass(frozen=True)
@@ -237,6 +241,88 @@ def _provider_path(root, relative, distribution):
     return candidate
 
 
+def _provider_relative(raw_path):
+    relative = PurePosixPath(raw_path)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or ".." in relative.parts
+        or any(not part or part in {".", ".."} for part in relative.parts)
+        or relative.as_posix() != raw_path
+        or "\\" in raw_path
+        or any(ord(value) < 33 for value in raw_path)
+        or len(relative.as_posix().encode()) > 512
+    ):
+        raise ValueError("Canonical provider distribution path required")
+    return relative
+
+
+def _installer_metadata(relative):
+    return (
+        len(relative.parts) >= 2
+        and relative.parts[-2].endswith(".dist-info")
+        and relative.name in _INSTALLER_METADATA
+    )
+
+
+def _provider_record(content, paths, record_path):
+    try:
+        rows = list(csv.reader(io.StringIO(content.decode())))
+    except (UnicodeError, csv.Error):
+        raise ValueError("Canonical provider RECORD required") from None
+    values = {}
+    for row in rows:
+        if len(row) != 3:
+            raise ValueError("Canonical provider RECORD required")
+        relative = _provider_relative(row[0])
+        name = relative.as_posix()
+        if name in values:
+            raise ValueError("Canonical provider RECORD required")
+        digest, size = row[1:]
+        if name == record_path:
+            if digest or size:
+                raise ValueError("Canonical provider RECORD required")
+        elif digest:
+            if not re.fullmatch(r"sha256=[A-Za-z0-9_-]{43}", digest) or not re.fullmatch(
+                r"0|[1-9][0-9]{0,9}", size
+            ):
+                raise ValueError("Canonical provider RECORD required")
+        elif size:
+            raise ValueError("Canonical provider RECORD required")
+        values[name] = (digest, size)
+    if set(values) != paths or record_path not in values:
+        raise ValueError("Provider RECORD differs from installed distribution")
+    return [
+        {"path": name, "digest": values[name][0], "size": values[name][1]}
+        for name in sorted(values)
+        if not _installer_metadata(PurePosixPath(name))
+    ]
+
+
+def _reject_provider_bytecode(root, module, paths):
+    if any(value.suffix == ".pyc" or "__pycache__" in value.parts for value in paths):
+        raise ValueError("Provider bytecode caches are forbidden")
+    top = module.split(".", 1)[0]
+    package = root / top
+    if package.is_dir():
+        prefix = top + "/"
+        expected = {value for value in paths if value.as_posix().startswith(prefix)}
+        observed = set()
+        for value in package.rglob("*"):
+            relative = PurePosixPath(value.relative_to(root).as_posix())
+            info = value.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise ValueError("Provider package symlinks are forbidden")
+            if value.is_file():
+                observed.add(relative)
+        if observed != expected:
+            raise ValueError("Provider package tree differs from distribution RECORD")
+    else:
+        cache = root / "__pycache__"
+        if cache.is_dir() and any(cache.glob(top + ".*.pyc")):
+            raise ValueError("Provider bytecode caches are forbidden")
+
+
 def attest_environment_execution_provider(entry_point):
     """Hash an installed provider distribution without importing its code."""
     if (
@@ -261,31 +347,38 @@ def attest_environment_execution_provider(entry_point):
     records = []
     total = 0
     paths = set()
+    relatives = []
     for item in files:
         raw_path = str(item)
-        relative = PurePosixPath(raw_path)
-        if (
-            relative.is_absolute()
-            or not relative.parts
-            or ".." in relative.parts
-            or any(not part or part in {".", ".."} for part in relative.parts)
-            or relative.as_posix() != raw_path
-            or "\\" in raw_path
-            or any(ord(value) < 33 for value in raw_path)
-            or len(relative.as_posix().encode()) > 512
-            or relative.as_posix() in paths
-        ):
+        relative = _provider_relative(raw_path)
+        if relative.as_posix() in paths:
             raise ValueError("Canonical provider distribution path required")
         paths.add(relative.as_posix())
+        relatives.append(relative)
+    record_paths = [
+        value for value in relatives if value.name == "RECORD" and value.parent.name.endswith(".dist-info")
+    ]
+    if len(record_paths) != 1:
+        raise ValueError("Exactly one provider RECORD required")
+    record_path = record_paths[0].as_posix()
+    record_content, _record_digest = _provider_file(
+        _provider_path(root, record_paths[0], distribution), maximum=1024 * 1024
+    )
+    canonical_record = _provider_record(record_content, paths, record_path)
+    module = entry_point.value.split(":", 1)[0]
+    _reject_provider_bytecode(root, module, tuple(relatives))
+    for relative in relatives:
         candidate = _provider_path(root, relative, distribution)
         content, digest = _provider_file(candidate, maximum=1024 * 1024)
         size = len(content)
         total += size
         if total > 16 * 1024 * 1024:
             raise ValueError("Provider distribution exceeds bound")
+        if relative.as_posix() == record_path or _installer_metadata(relative):
+            continue
         records.append({"path": relative.as_posix(), "size": size, "sha256": digest})
-    module = entry_point.value.split(":", 1)[0].replace(".", "/")
-    if not ({module + ".py", module + "/__init__.py"} & paths):
+    module_path = module.replace(".", "/")
+    if not ({module_path + ".py", module_path + "/__init__.py"} & paths):
         raise ValueError("Entry point module is absent from provider distribution")
     if not any(path.endswith(".dist-info/METADATA") for path in paths) or not any(
         path.endswith(".dist-info/entry_points.txt") for path in paths
@@ -299,6 +392,7 @@ def attest_environment_execution_provider(entry_point):
         "version": pin.version,
         "entry_point": entry_point.value,
         "files": sorted(records, key=lambda value: value["path"]),
+        "record": canonical_record,
     }
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
@@ -407,6 +501,7 @@ def compose_environment_executions(manifest, *, entry_points=None):
     (entry_point,) = environment_execution_entry_points(manifest.provider, entry_points=entry_points)
     verify_environment_execution_provider(manifest, entry_point)
     verify_environment_execution_descriptor(manifest, entry_point)
+    sys.dont_write_bytecode = True
     provider = entry_point.load()
     if not callable(provider):
         raise TypeError("Environment composition provider must be callable")

@@ -1,5 +1,9 @@
 """Installed provider and operator pins are both required for hosted execution."""
 
+import base64
+import csv
+import hashlib
+import io
 import json
 from pathlib import PurePosixPath
 from unittest.mock import Mock, patch
@@ -106,6 +110,15 @@ class Distribution:
                 separators=(",", ":"),
             ),
         }
+        record_path = "sky_environment_provider-1.2.3.dist-info/RECORD"
+        output = io.StringIO(newline="")
+        writer = csv.writer(output, lineterminator="\n")
+        for path, content in sorted(documents.items()):
+            raw = content.encode()
+            digest = base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode()
+            writer.writerow([path, "sha256=" + digest, str(len(raw))])
+        writer.writerow([record_path, "", ""])
+        documents[record_path] = output.getvalue()
         for name, content in documents.items():
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,7 +146,36 @@ class EntryPoint:
         return self.provider
 
 
-def test_operator_manifest_and_installed_provider_must_match_exactly(tmp_path):
+def add_installer_metadata(entry_point, marker):
+    distribution = entry_point.dist
+    root = distribution.root
+    dist_info = PurePosixPath("sky_environment_provider-1.2.3.dist-info")
+    for name, content in (
+        ("INSTALLER", "pip\n"),
+        ("REQUESTED", ""),
+        ("direct_url.json", json.dumps({"url": marker})),
+    ):
+        relative = dist_info / name
+        path = root / str(relative)
+        path.write_text(content)
+        path.chmod(0o644)
+        if relative not in distribution.files:
+            distribution.files = (*distribution.files, relative)
+    record_path = dist_info / "RECORD"
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    for relative in sorted(distribution.files, key=str):
+        if relative == record_path:
+            continue
+        raw = (root / str(relative)).read_bytes()
+        digest = base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode()
+        writer.writerow([str(relative), "sha256=" + digest, str(len(raw))])
+    writer.writerow([str(record_path), "", ""])
+    (root / str(record_path)).write_text(output.getvalue())
+
+
+def test_operator_manifest_and_installed_provider_must_match_exactly(tmp_path, monkeypatch):
+    monkeypatch.setattr(__import__("sys"), "dont_write_bytecode", False)
     selected = composition()
     provider = Mock(return_value=(selected,))
     entry_point = EntryPoint(provider, tmp_path / "provider", selected)
@@ -142,6 +184,7 @@ def test_operator_manifest_and_installed_provider_must_match_exactly(tmp_path):
     )
 
     assert compose_environment_executions(manifest, entry_points=[entry_point]) == (selected,)
+    assert __import__("sys").dont_write_bytecode is True
     provider.assert_called_once_with((selected.execution.job.id,))
     assert entry_point.loads == 1
 
@@ -346,6 +389,27 @@ def test_provider_artifact_rejects_writable_or_unbounded_package(tmp_path):
     entry_point.module_path.chmod(0o644)
     entry_point.dist.files = (*entry_point.dist.files, PurePosixPath("../outside.py"))
     with pytest.raises(ValueError, match="Canonical provider distribution path"):
+        attest_environment_execution_provider(entry_point)
+
+
+def test_provider_artifact_ignores_installer_location_metadata(tmp_path):
+    one = EntryPoint(Mock(), tmp_path / "one")
+    two = EntryPoint(Mock(), tmp_path / "two")
+    add_installer_metadata(one, "file:///private/build/one/provider.whl")
+    add_installer_metadata(two, "file:///different/image/path/provider.whl")
+    assert attest_environment_execution_provider(one) == attest_environment_execution_provider(two)
+
+
+def test_provider_artifact_rejects_bytecode_cache(tmp_path):
+    entry_point = EntryPoint(Mock(), tmp_path / "provider")
+    cache = entry_point.dist.root / "__pycache__"
+    cache.mkdir()
+    bytecode = cache / "sky_env_provider.cpython-314.pyc"
+    bytecode.write_bytes(b"executable-bytecode")
+    relative = PurePosixPath(bytecode.relative_to(entry_point.dist.root).as_posix())
+    entry_point.dist.files = (*entry_point.dist.files, relative)
+    add_installer_metadata(entry_point, "file:///provider.whl")
+    with pytest.raises(ValueError, match="bytecode caches are forbidden"):
         attest_environment_execution_provider(entry_point)
 
 

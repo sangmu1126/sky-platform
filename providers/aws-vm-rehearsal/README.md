@@ -13,3 +13,8 @@ manifest is required before an effect can run.
 Build with `tools/build_wheel.py`. The build finalizer installs the static
 execution descriptor into the wheel's `.dist-info` directory and updates
 `RECORD`; an unfinalized setuptools wheel is not a valid Sky provider.
+
+Install reviewed provider wheels with `python -m pip install --no-compile`.
+Sky rejects provider bytecode caches and disables bytecode writes before
+loading provider code so artifact pins stay independent of the installation
+path while every executable source and packaged data file remains attested.
