@@ -44,6 +44,7 @@ def registration(execution):
 
 class Resolver:
     def __init__(self, values=None, *, fail_close=False):
+        self.reference = "ESR-" + "a" * 64
         self.values = values or {purpose: "material-" + purpose for purpose in PURPOSES}
         self.events = []
         self.fail_close = fail_close
@@ -101,6 +102,7 @@ def composer_fixture(tmp_path, execution):
         )
         return transport, flow
 
+    compose.reference = "RTC-" + "b" * 64
     return compose
 
 
@@ -165,7 +167,7 @@ def test_resolution_or_composition_drift_is_sanitized_and_open_secrets_close(tmp
         execution,
         registration(execution),
         resolver,
-        lambda *_args, **_kwargs: (Mock(), Mock()),
+        Mock(return_value=(Mock(), Mock()), reference="RTC-" + "b" * 64),
     )
     with (
         pytest.raises(OSError, match="runtime unavailable"),
@@ -239,3 +241,19 @@ def test_runtime_registration_rejects_ambiguous_or_changed_authority(tmp_path, c
         else:
             value = replace(value, secret_resolver_ref="latest")
         RegisteredEnvironmentTransferRuntime(execution, value, resolver, runtime.composer)
+
+
+@pytest.mark.parametrize("implementation", ["resolver", "composer"])
+def test_runtime_implementations_must_match_registered_references(tmp_path, implementation):
+    execution, resolver, runtime = runtime_fixture(tmp_path)
+    if implementation == "resolver":
+        resolver.reference = "ESR-" + "f" * 64
+    else:
+        runtime.composer.reference = "RTC-" + "f" * 64
+    with pytest.raises(ValueError, match="differs from registration"):
+        RegisteredEnvironmentTransferRuntime(
+            execution,
+            runtime.registration,
+            resolver,
+            runtime.composer,
+        )

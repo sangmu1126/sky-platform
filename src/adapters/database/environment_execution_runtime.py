@@ -94,6 +94,11 @@ class RegisteredEnvironmentTransferRuntime:
             raise ValueError("Runtime registration differs from reviewed execution")
         if not callable(getattr(resolver, "open", None)) or not callable(composer):
             raise TypeError("Registered secret resolver and runtime composer required")
+        if (
+            getattr(resolver, "reference", None) != registration.secret_resolver_ref
+            or getattr(composer, "reference", None) != registration.composition_ref
+        ):
+            raise ValueError("Runtime resolver or composer differs from registration")
         self.execution, self.registration = execution, registration
         self.resolver, self.composer = resolver, composer
         self.reference = registration.document()["runtime_ref"]
