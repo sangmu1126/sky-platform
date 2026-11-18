@@ -346,11 +346,16 @@ def _unseal_directories(site):
 
 
 def _inspect(python, site, workspace, manifest, *, cwd):
+    private_home = str(Path(cwd))
     env = _environment(
+        HOME=private_home,
         AWS_EC2_METADATA_DISABLED="true",
         AWS_ACCESS_KEY_ID="isolated-installation-check",
         AWS_SECRET_ACCESS_KEY="isolated-installation-check",
         AWS_DEFAULT_REGION="ap-northeast-2",
+        AWS_CONFIG_FILE=str(Path(cwd) / "aws-config-disabled"),
+        AWS_SHARED_CREDENTIALS_FILE=str(Path(cwd) / "aws-credentials-disabled"),
+        BOTO_CONFIG=str(Path(cwd) / "boto-config-disabled"),
     )
     artifact = _strict_json(
         _run(

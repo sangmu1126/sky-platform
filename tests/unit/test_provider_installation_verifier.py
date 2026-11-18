@@ -167,6 +167,10 @@ def test_two_installations_use_isolated_python_minimal_environment_and_offline_p
         assert env["AWS_EC2_METADATA_DISABLED"] == "true"
         assert env["AWS_ACCESS_KEY_ID"] == "isolated-installation-check"
         assert env["AWS_SECRET_ACCESS_KEY"] == "isolated-installation-check"
+        assert env["HOME"] == str(cwd)
+        assert env["AWS_CONFIG_FILE"] == str(cwd / "aws-config-disabled")
+        assert env["AWS_SHARED_CREDENTIALS_FILE"] == str(cwd / "aws-credentials-disabled")
+        assert env["BOTO_CONFIG"] == str(cwd / "boto-config-disabled")
         assert not set(env) & {
             "PYTHONPATH",
             "PYTHONHOME",
