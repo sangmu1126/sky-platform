@@ -134,11 +134,27 @@ def source_responses(source):
 def fixture(tmp_path):
     plan, source, target = registrations()
     task, interface, definition = source_responses(source)
-    sts = Mock(get_caller_identity=Mock(return_value={"Account": ACCOUNT}))
-    ecs = Mock(meta=SimpleNamespace(region_name=REGION))
+    sts = Mock(
+        meta=SimpleNamespace(
+            region_name=REGION,
+            endpoint_url=f"https://sts.{REGION}.amazonaws.com",
+        ),
+        get_caller_identity=Mock(return_value={"Account": ACCOUNT}),
+    )
+    ecs = Mock(
+        meta=SimpleNamespace(
+            region_name=REGION,
+            endpoint_url=f"https://ecs.{REGION}.amazonaws.com",
+        )
+    )
     ecs.describe_tasks.return_value = {"tasks": [task], "failures": []}
     ecs.describe_task_definition.return_value = {"taskDefinition": definition}
-    ec2 = Mock(meta=SimpleNamespace(region_name=REGION))
+    ec2 = Mock(
+        meta=SimpleNamespace(
+            region_name=REGION,
+            endpoint_url=f"https://ec2.{REGION}.amazonaws.com",
+        )
+    )
     ec2.describe_network_interfaces.return_value = {"NetworkInterfaces": [interface]}
     factory = RegisteredAwsVmEnvironmentRuntimeEvidence(
         plan,
@@ -287,9 +303,25 @@ def test_duplicate_vm_runtime_metadata_is_sanitized(tmp_path):
 def test_runtime_factory_reference_changes_with_any_registered_identity():
     plan, source, target = registrations()
     clients = {
-        "sts": Mock(get_caller_identity=Mock()),
-        "ecs": Mock(meta=SimpleNamespace(region_name=REGION)),
-        "ec2": Mock(meta=SimpleNamespace(region_name=REGION)),
+        "sts": Mock(
+            meta=SimpleNamespace(
+                region_name=REGION,
+                endpoint_url=f"https://sts.{REGION}.amazonaws.com",
+            ),
+            get_caller_identity=Mock(),
+        ),
+        "ecs": Mock(
+            meta=SimpleNamespace(
+                region_name=REGION,
+                endpoint_url=f"https://ecs.{REGION}.amazonaws.com",
+            )
+        ),
+        "ec2": Mock(
+            meta=SimpleNamespace(
+                region_name=REGION,
+                endpoint_url=f"https://ec2.{REGION}.amazonaws.com",
+            )
+        ),
     }
     original = RegisteredAwsVmEnvironmentRuntimeEvidence(plan, source, target, **clients)
     changed = RegisteredAwsVmEnvironmentRuntimeEvidence(
@@ -303,3 +335,35 @@ def test_runtime_factory_reference_changes_with_any_registered_identity():
         **clients,
     )
     assert original.reference != changed.reference
+
+
+@pytest.mark.parametrize("changed", ["sts", "ecs", "ec2"])
+def test_runtime_factory_rejects_custom_aws_evidence_endpoints(changed):
+    plan, source, target = registrations()
+    clients = {
+        "sts": Mock(
+            meta=SimpleNamespace(
+                region_name=REGION,
+                endpoint_url=f"https://sts.{REGION}.amazonaws.com",
+            ),
+            get_caller_identity=Mock(),
+        ),
+        "ecs": Mock(
+            meta=SimpleNamespace(
+                region_name=REGION,
+                endpoint_url=f"https://ecs.{REGION}.amazonaws.com",
+            ),
+            describe_tasks=Mock(),
+            describe_task_definition=Mock(),
+        ),
+        "ec2": Mock(
+            meta=SimpleNamespace(
+                region_name=REGION,
+                endpoint_url=f"https://ec2.{REGION}.amazonaws.com",
+            ),
+            describe_network_interfaces=Mock(),
+        ),
+    }
+    clients[changed].meta.endpoint_url = "https://localhost.invalid"
+    with pytest.raises(ValueError, match="Regional AWS application evidence authority"):
+        RegisteredAwsVmEnvironmentRuntimeEvidence(plan, source, target, **clients)

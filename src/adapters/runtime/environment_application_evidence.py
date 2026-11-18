@@ -51,6 +51,15 @@ def _pairs_sha256(values):
     ).hexdigest()
 
 
+def _regional_aws_client(client, service, region):
+    metadata = getattr(client, "meta", None)
+    if (
+        getattr(metadata, "region_name", None) != region
+        or getattr(metadata, "endpoint_url", None) != f"https://{service}.{region}.amazonaws.com"
+    ):
+        raise ValueError("Regional AWS application evidence authority required")
+
+
 def _aws_environment(values):
     if (
         not isinstance(values, list)
@@ -284,8 +293,8 @@ class RegisteredAwsVmEnvironmentRuntimeEvidence:
         ):
             raise TypeError("Read-only AWS application clients required")
         region = source.placement.location.location
-        if any(getattr(getattr(value, "meta", None), "region_name", None) != region for value in (ecs, ec2)):
-            raise ValueError("AWS application clients differ from registered region")
+        for client, service in ((sts, "sts"), (ecs, "ecs"), (ec2, "ec2")):
+            _regional_aws_client(client, service, region)
         self.transfer, self.source, self.target = transfer, source, target
         self.sts, self.ecs, self.ec2 = sts, ecs, ec2
         value = {
