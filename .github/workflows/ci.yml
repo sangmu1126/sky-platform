@@ -172,6 +172,11 @@ jobs:
           assert descriptor['registrations'][0]['registration_id'] == 'aws-vm-rehearsal'
           assert any(row[0] == descriptors[0] and row[1].startswith('sha256=') for row in record)
           PY
+      - name: Verify path-independent provider installation
+        run: |
+          python providers/aws-vm-rehearsal/tools/verify_installation.py \
+            --base-wheel /tmp/sky-wheels \
+            --provider-wheel /tmp/sky-environment-provider-wheels
       - run: sky-platform --help
       - run: sky-environment-provider-inspect --help
       - run: sky-environment-manifest --help
