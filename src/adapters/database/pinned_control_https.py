@@ -6,12 +6,13 @@ The TLS identity remains the registered DNS name even when a task IP is used.
 """
 
 import http.client
-import ipaddress
 import json
 import re
 import socket
 import ssl
 from urllib.parse import urlsplit
+
+from adapters.runtime.private_network import pinned_private_address
 
 
 def _unique(pairs):
@@ -31,7 +32,7 @@ class PinnedHTTPSControlTransport:
     def __init__(self, endpoint, token, *, address, ssl_context, guard, response_timeout=30):
         url = urlsplit(endpoint)
         try:
-            ip = ipaddress.ip_address(address)
+            ip = pinned_private_address(address)
             port = url.port or 443
         except ValueError:
             raise ValueError(
@@ -47,9 +48,6 @@ class PinnedHTTPSControlTransport:
             or url.password
             or url.query
             or url.fragment
-            or not ip.is_private
-            or ip.is_unspecified
-            or ip.is_multicast
             or not isinstance(token, str)
             or not 1 <= len(token.encode()) <= 4096
             or "\r" in token

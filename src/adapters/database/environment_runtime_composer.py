@@ -8,7 +8,6 @@ secret resolver and are never included in the composition document.
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import json
 import os
 import re
@@ -41,6 +40,7 @@ from adapters.runtime.environment_secrets import (
     DatabaseRuntimeSecretMaterial,
     RouterTransportSecretMaterial,
 )
+from adapters.runtime.private_network import pinned_private_address
 from application.environment_admission import RegisteredEnvironmentExecution
 from application.environment_cutover import EnvironmentDatabaseCutover
 from domain.environment_transition import _digest
@@ -60,9 +60,10 @@ _MATERIALS = {
 
 
 def _private_address(value):
-    address = ipaddress.ip_address(value)
-    if not address.is_private or address.is_unspecified or address.is_multicast:
-        raise ValueError("Private control address required")
+    try:
+        pinned_private_address(value)
+    except ValueError:
+        raise ValueError("Private control address required") from None
 
 
 def _control_endpoint(value):

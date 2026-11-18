@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import http.client
-import ipaddress
 import json
 import os
 import re
@@ -16,6 +15,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from adapters.runtime.environment_secrets import ControlRuntimeSecretMaterial
+from adapters.runtime.private_network import pinned_private_address
 from domain.database_transfer import RegisteredDatabaseTransfer
 
 
@@ -84,9 +84,9 @@ class RegisteredHttpsEnvironmentEntrypointProbe:
             raise TypeError("Registered environment transfer required")
         url = urlsplit(self.endpoint)
         try:
-            address = ipaddress.ip_address(self.address)
+            pinned_private_address(self.address)
         except ValueError:
-            raise ValueError("Pinned private entrypoint address required") from None
+            raise ValueError("Pinned private HTTPS entrypoint required") from None
         if (
             url.scheme != "https"
             or not url.hostname
@@ -97,9 +97,6 @@ class RegisteredHttpsEnvironmentEntrypointProbe:
             or url.password
             or url.query
             or url.fragment
-            or not address.is_private
-            or address.is_unspecified
-            or address.is_multicast
             or type(self.response_timeout) is not int
             or not 1 <= self.response_timeout <= 30
         ):
