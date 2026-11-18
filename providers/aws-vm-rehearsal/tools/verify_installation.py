@@ -184,6 +184,7 @@ def _wheel_path(name):
         or name != value.as_posix()
         or value.is_absolute()
         or any(part in {"", ".", ".."} for part in value.parts)
+        or any(ord(character) < 33 for character in name)
         or len(name.encode()) > 512
     ):
         raise ValueError("Canonical provider installation wheel path required")
@@ -203,6 +204,7 @@ def _verify_wheel_archive(data):
                 or any(
                     value.flag_bits & 1
                     or value.is_dir()
+                    or stat.S_IFMT(value.external_attr >> 16) not in {0, stat.S_IFREG}
                     or value.file_size > _MAX_WHEEL_BYTES
                     or value.compress_size > _MAX_WHEEL_BYTES
                     for value in infos

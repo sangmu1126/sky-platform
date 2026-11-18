@@ -18,13 +18,15 @@ ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "providers" / "aws-vm-rehearsal" / "tools" / "verify_installation.py"
 
 
-def wheel_archive(name, *, unrecorded=None):
+def wheel_archive(name, *, unrecorded=None, recorded_extra=None, symlink=False):
     prefix = name + "-0.1.0.dist-info"
     values = {
         name + "/__init__.py": b"",
         prefix + "/METADATA": ("Name: " + name + "\nVersion: 0.1.0\n").encode(),
         prefix + "/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
     }
+    if recorded_extra is not None:
+        values[recorded_extra] = b"target"
     record = prefix + "/RECORD"
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\n")
@@ -38,7 +40,13 @@ def wheel_archive(name, *, unrecorded=None):
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as wheel:
         for path, content in sorted(values.items()):
-            wheel.writestr(path, content)
+            if symlink and path == recorded_extra:
+                info = zipfile.ZipInfo(path)
+                info.create_system = 3
+                info.external_attr = 0o120777 << 16
+                wheel.writestr(info, content)
+            else:
+                wheel.writestr(path, content)
     return archive.getvalue()
 
 
@@ -261,6 +269,18 @@ def test_verifier_rejects_unrecorded_wheel_file_before_pip(verifier, tmp_path):
         verifier._private_wheel(copies, source)
 
     assert not tuple(copies.iterdir())
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        wheel_archive("sky_platform", recorded_extra="unsafe\nname"),
+        wheel_archive("sky_platform", recorded_extra="linked-file", symlink=True),
+    ],
+)
+def test_verifier_rejects_noncanonical_or_nonregular_wheel_entries(verifier, content):
+    with pytest.raises(ValueError, match="canonical|Canonical"):
+        verifier._verify_wheel_archive(content)
 
 
 def test_verifier_rejects_symlink_or_writable_wheel_before_pip(verifier, tmp_path):
