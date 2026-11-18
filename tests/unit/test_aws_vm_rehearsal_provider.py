@@ -297,6 +297,54 @@ def test_provider_build_rejects_ambiguous_descriptor_json(value):
         module._strict_json(value)
 
 
+def verifier_module(name="rehearsal_verify_installation"):
+    spec = importlib.util.spec_from_file_location(name, PROJECT / "tools" / "verify_installation.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_provider_installation_verifier_seals_files_and_directories(tmp_path):
+    module = verifier_module()
+    site = tmp_path / "site"
+    package = site / "provider"
+    package.mkdir(parents=True)
+    source = package / "provider.py"
+    source.write_text("provider = True\n")
+    module._seal_installation(site)
+    assert stat.S_IMODE(site.stat().st_mode) == 0o500
+    assert stat.S_IMODE(package.stat().st_mode) == 0o500
+    assert stat.S_IMODE(source.stat().st_mode) == 0o400
+    module._unseal_directories(site)
+    assert stat.S_IMODE(site.stat().st_mode) == 0o700
+    assert stat.S_IMODE(package.stat().st_mode) == 0o700
+    assert stat.S_IMODE(source.stat().st_mode) == 0o400
+
+
+def test_provider_installation_verifier_rejects_symlinks_without_touching_target(tmp_path):
+    module = verifier_module("rehearsal_verify_installation_symlink")
+    site = tmp_path / "site"
+    site.mkdir()
+    target = tmp_path / "outside"
+    target.write_text("preserve")
+    target.chmod(0o600)
+    (site / "linked").symlink_to(target)
+    with pytest.raises(ValueError, match="symlinks"):
+        module._seal_installation(site)
+    assert target.read_text() == "preserve"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['{"value":1,"value":2}', '{"nested":{"value":1,"value":2}}', '{"value":NaN}', "[]"],
+)
+def test_provider_installation_verifier_rejects_ambiguous_json(value):
+    module = verifier_module("rehearsal_verify_installation_json")
+    with pytest.raises((TypeError, ValueError)):
+        module._strict_json(value, maximum=1024)
+
+
 def test_provider_build_uses_offline_isolated_pip_and_minimal_environment(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location(
         "rehearsal_build_wheel_isolation", PROJECT / "tools" / "build_wheel.py"
