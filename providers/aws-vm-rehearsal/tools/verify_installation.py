@@ -86,6 +86,7 @@ def _run(arguments, *, env, cwd):
             env=env,
             cwd=cwd,
             timeout=_SUBPROCESS_TIMEOUT,
+            umask=0o077,
         )
         output.seek(0, os.SEEK_END)
         errors.seek(0, os.SEEK_END)
@@ -483,12 +484,14 @@ def verify(base_wheel, provider_wheel, *, python=sys.executable):
     observations = []
     with tempfile.TemporaryDirectory(prefix="sky-provider-installation-") as temporary:
         root = Path(temporary)
+        root.chmod(0o700)
         pinned = tuple(_private_wheel(root, value) for value in sources)
         wheels = tuple(value[0] for value in pinned)
         wheel_digests = tuple(value[1] for value in pinned)
         for name in ("one", "two"):
             site = root / name
             site.mkdir(mode=0o700)
+            site.chmod(0o700)
             _run(
                 [
                     python,

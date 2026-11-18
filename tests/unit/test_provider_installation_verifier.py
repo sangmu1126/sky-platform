@@ -103,7 +103,10 @@ def test_two_installations_use_isolated_python_minimal_environment_and_offline_p
         calls.append((arguments, env, Path(cwd)))
         if "pip" in arguments:
             site = Path(arguments[arguments.index("--target") + 1])
-            (site / "sky_aws_vm_rehearsal").mkdir()
+            assert stat.S_IMODE(site.stat().st_mode) == 0o700
+            package = site / "sky_aws_vm_rehearsal"
+            package.mkdir()
+            package.chmod(0o700)
             return ""
         script = arguments[-1]
         if "interfaces.b_runtime" in script:
@@ -132,7 +135,11 @@ def test_two_installations_use_isolated_python_minimal_environment_and_offline_p
         raise AssertionError("Unexpected verifier subprocess")
 
     monkeypatch.setattr(verifier, "_run", run)
-    result = verifier.verify(base, provider, python=sys.executable)
+    previous = os.umask(0o777)
+    try:
+        result = verifier.verify(base, provider, python=sys.executable)
+    finally:
+        os.umask(previous)
 
     assert result["base_wheel_sha256"] == hashlib.sha256(base_bytes).hexdigest()
     assert result["provider_wheel_sha256"] == hashlib.sha256(provider_bytes).hexdigest()
@@ -232,6 +239,7 @@ def test_verifier_subprocess_has_timeout_bounded_file_capture_and_utf8(verifier,
     monkeypatch.setattr(verifier.subprocess, "run", run)
     assert verifier._run(["provider-check"], env={}, cwd=tmp_path) == "verified"
     assert observed["check"] is True and observed["timeout"] == verifier._SUBPROCESS_TIMEOUT
+    assert observed["umask"] == 0o077
     assert "capture_output" not in observed and "text" not in observed
 
 
