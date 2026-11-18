@@ -2888,6 +2888,10 @@ def handler_for(app: App):
             except Exception as exc:
                 self.json_response(400, {"error": str(exc)})
 
+    environment_transfers = getattr(app, 'environment_transfers', None)
+    if environment_transfers is not None:
+        from interfaces.http.environment_transfers import handler_for_environment_transfers
+        return handler_for_environment_transfers(app, environment_transfers, Handler)
     return Handler
 
 

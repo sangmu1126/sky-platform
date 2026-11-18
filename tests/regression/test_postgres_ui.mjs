@@ -251,6 +251,26 @@ test('dashboard counts active services and jobs needing attention', async () => 
   assert.equal(element('history').children.length, 4);
 });
 
+test('registered game jobs count once and stale runtime observations stop counting as active', () => {
+  const start = html.indexOf('function updateWorkspaceMetrics(');
+  const end = html.indexOf('async function history(', start);
+  const values = new Map();
+  const element = id => { if (!values.has(id)) values.set(id, {textContent: ''}); return values.get(id); };
+  const context = {el: element, String, historyItems: [], skyEnvironmentSummary: {registrations: [
+    {runtime: {available: true, environment: 'aws'}, operations: [
+      {status: 'succeeded'}, {status: 'succeeded'}, {status: 'failed'},
+    ]},
+  ]}};
+  runInNewContext(html.slice(start, end), context);
+  context.updateWorkspaceMetrics([]);
+  assert.equal(element('metricTotal').textContent, '3');
+  assert.equal(element('metricActive').textContent, '1');
+  assert.equal(element('metricAttention').textContent, '0');
+  context.skyEnvironmentSummary.registrations[0].runtime.available = false;
+  context.updateWorkspaceMetrics([]);
+  assert.equal(element('metricActive').textContent, '0');
+});
+
 test('interrupted local deployment shows cleanup only for recorded attempts', async () => {
   const elements = new Map();
   const element = id => {
