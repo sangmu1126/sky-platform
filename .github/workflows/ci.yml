@@ -108,6 +108,7 @@ jobs:
               'ports/environment_transition.py', 'ports/workload_inventory.py',
               'application/environment_transition.py', 'application/environment_gate_review.py',
               'application/environment_admission.py', 'application/environment_cutover.py',
+              'application/environment_execution_worker.py',
               'application/environment_agent_tools.py',
               'application/environment_dependency_inventory.py', 'engine/workload_inventory.py',
               'adapters/source/workload_inventory.py',

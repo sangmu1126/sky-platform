@@ -17,6 +17,7 @@ from application.environment_admission import (
     RegisteredEnvironmentExecution,
     environment_execution_command,
     require_current_execution_gate,
+    validate_environment_execution_operation,
 )
 from application.environment_gate_review import validate_preservation_gate_record
 from domain.environment_transition import BASELINE_CAPABILITIES
@@ -200,6 +201,62 @@ class PostgresEnvironmentExecutionAdmission:
                 )
         self._live(principal, execution)
         return operation
+
+    def revalidate(self, principal, execution, operation):
+        """Reload every mutable authority before a registered worker effect."""
+        self._live(principal, execution)
+        command = validate_environment_execution_operation(operation, execution)
+        with self.operations.records._connection() as db:
+            self.authorizer._owner(db, principal, execution.job.transfer.source.application_id)
+            if self.current_principal(principal) != principal:
+                raise PermissionError("Environment execution membership changed")
+            stored = self.operations._select(db, operation.id, lock=False)
+            if (
+                stored.attempt_id != operation.attempt_id
+                or stored.application_id != operation.application_id
+                or stored.kind != "environment_transfer"
+                or stored.status not in {"queued", "running"}
+                or stored.command != command
+            ):
+                raise ValueError("Durable environment operation changed")
+            row = db.execute(
+                """SELECT application_id,organization_id,created_by,registration_id,
+                execution_revision,review_id::text,gate_record_id,operation_id::text
+                FROM sky_state.environment_execution_admissions
+                WHERE workspace=%s AND operation_id=%s FOR SHARE""",
+                (self.operations.workspace, operation.id),
+            ).fetchone()
+            if row != (
+                operation.application_id,
+                principal.organization_id,
+                principal.user_id,
+                execution.job.id,
+                execution.revision,
+                command["review_id"],
+                command["gate_record_id"],
+                operation.id,
+            ):
+                raise ValueError("Environment execution admission binding changed")
+            now = db.execute("SELECT clock_timestamp()").fetchone()[0]
+            if now >= execution.job.expires_at:
+                raise ValueError("Environment execution registration expired")
+            self._require_review(
+                db,
+                principal,
+                execution,
+                review_id=command["review_id"],
+                report_id=command["report_id"],
+                now=now,
+            )
+            self._require_gate(
+                db,
+                principal,
+                execution,
+                gate_record_id=command["gate_record_id"],
+                now=now,
+            )
+        self._live(principal, execution)
+        return True
 
     def _require_review(self, db, principal, execution, *, review_id, report_id, now):
         row = db.execute(

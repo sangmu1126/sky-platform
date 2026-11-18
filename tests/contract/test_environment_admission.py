@@ -2,7 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 import pytest
@@ -13,6 +13,7 @@ from adapters.state.environment_gates import PostgresPreservationGates
 from adapters.state.environment_reviews import PostgresEnvironmentReviews
 from adapters.state.operations import PostgresOperationStore
 from application.environment_admission import RegisteredEnvironmentExecution
+from application.environment_execution_worker import RegisteredEnvironmentExecutionWorker
 from application.environment_jobs import RegisteredEnvironmentJob
 from domain.access import LoginSource, Principal, ResourceOwner, Role
 from domain.environment_transition import BASELINE_CAPABILITIES
@@ -129,7 +130,63 @@ def test_current_review_and_g7_are_consumed_with_one_operation(stores, database)
     assert operation.command["review_id"] == review.id
     assert operation.command["gate_record_id"] == gate["record_id"]
     assert counts(store, database) == (1, 1, 1, 1)
+    assert store.revalidate(ACTOR, registered, operation)
     store.check_ready()
+
+
+def execution_worker(store, registered, *, effect):
+    resources = Mock(
+        verify=Mock(
+            return_value={
+                "execution_revision": registered.revision,
+                "verified": True,
+                "evidence_refs": ["WPI-" + "a" * 64, "WRI-" + "b" * 64],
+            }
+        )
+    )
+    worker = RegisteredEnvironmentExecutionWorker(
+        store.operations,
+        store,
+        {registered.job.id: registered},
+        lambda user_id, organization_id: (
+            ACTOR if (user_id, organization_id) == (ACTOR.user_id, ACTOR.organization_id) else None
+        ),
+        resources,
+        effect,
+        owner="reviewed-worker",
+        clock=lambda: registered.job.expires_at - timedelta(minutes=4),
+    )
+    return worker, resources
+
+
+def test_registered_worker_revalidates_real_admission_and_finishes(stores, database):
+    store, *_ = stores
+    registered, review, gate = prepared(stores, database)
+    operation = submit(store, registered, review, gate)
+    effect = Mock(return_value={"result_ref": "registered-environment-result"})
+    worker, resources = execution_worker(store, registered, effect=effect)
+
+    assert worker.execute(operation.id, operation.attempt_id) == {"status": "succeeded"}
+    saved = store.operations.get(operation.id)
+    assert saved.status == "succeeded" and saved.external_pending is False
+    assert saved.result == {"result_ref": "registered-environment-result"}
+    resources.verify.assert_called_once()
+    effect.assert_called_once()
+    assert saved.checkpoint["cutover_steps"][0]["stage"] == "resource_ownership"
+
+
+def test_registered_worker_parks_uncertain_effect_and_never_replays(stores, database):
+    store, *_ = stores
+    registered, review, gate = prepared(stores, database)
+    operation = submit(store, registered, review, gate)
+    effect = Mock(side_effect=OSError("provider response lost"))
+    worker, _resources = execution_worker(store, registered, effect=effect)
+
+    assert worker.execute(operation.id, operation.attempt_id) == {"status": "needs_attention"}
+    saved = store.operations.get(operation.id)
+    assert saved.status == "needs_attention" and saved.external_pending is True
+    assert worker.execute(operation.id, operation.attempt_id) == {"status": "not_claimed"}
+    effect.assert_called_once()
 
 
 def test_gate_is_single_use_and_request_key_cannot_change_meaning(stores, database):

@@ -20,6 +20,24 @@ from application.environment_gate_review import (
 from application.environment_jobs import RegisteredEnvironmentJob
 from domain.environment_transition import _ref, _time
 
+_COMMAND_FIELDS = {
+    "schema_version",
+    "profile",
+    "registration_id",
+    "registration_revision",
+    "review_registration_id",
+    "review_id",
+    "report_id",
+    "gate_policy_id",
+    "gate_record_id",
+    "organization_id",
+    "created_by",
+    "request_key",
+    "action",
+    "write_pause_consent",
+    "websocket_reconnect_consent",
+}
+
 
 @dataclass(frozen=True)
 class RegisteredEnvironmentExecution:
@@ -117,3 +135,32 @@ def environment_execution_command(
         "write_pause_consent": True,
         "websocket_reconnect_consent": True,
     }
+
+
+def validate_environment_execution_operation(operation, execution):
+    if not isinstance(execution, RegisteredEnvironmentExecution):
+        raise TypeError("Registered environment execution required")
+    command = operation.command
+    policy = execution.policy.document()
+    job = execution.job
+    if (
+        not isinstance(command, dict)
+        or set(command) != _COMMAND_FIELDS
+        or command["schema_version"] != 1
+        or command["profile"] != "registered_environment_execution_v1"
+        or command["registration_id"] != job.id
+        or command["registration_revision"] != execution.revision
+        or command["review_registration_id"] != execution.review_registration_id
+        or command["gate_policy_id"] != policy["policy_id"]
+        or command["organization_id"] != job.owner.organization_id
+        or command["action"] != "transfer"
+        or command["write_pause_consent"] is not True
+        or command["websocket_reconnect_consent"] is not True
+        or operation.kind != "environment_transfer"
+        or operation.application_id != job.transfer.source.application_id
+    ):
+        raise ValueError("Persisted reviewed environment command is invalid")
+    for field in ("review_id", "report_id", "gate_record_id", "request_key", "created_by"):
+        if not isinstance(command[field], str) or not command[field]:
+            raise ValueError("Persisted reviewed environment command is incomplete")
+    return command
