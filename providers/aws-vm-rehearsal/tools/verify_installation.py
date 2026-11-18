@@ -162,6 +162,47 @@ def _private_wheel(root, source):
     return destination, digest
 
 
+def _private_text_file(path, content, *, maximum):
+    if (
+        not isinstance(content, str)
+        or not 1 <= len(content.encode()) <= maximum
+        or path.name in {"", ".", ".."}
+        or path.parent == path
+    ):
+        raise ValueError("Bounded private verifier file required")
+    directory = os.open(
+        path.parent,
+        os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        metadata = os.fstat(directory)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            raise ValueError("Private verifier directory required")
+        descriptor = os.open(
+            path.name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            0o400,
+            dir_fd=directory,
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as output:
+                os.fchmod(output.fileno(), 0o400)
+                output.write(content)
+                output.flush()
+                os.fsync(output.fileno())
+        finally:
+            os.close(descriptor)
+        os.fsync(directory)
+    except OSError:
+        raise ValueError("Private verifier file creation failed") from None
+    finally:
+        os.close(directory)
+
+
 def _provider_cache_absent(site):
     package = site / "sky_aws_vm_rehearsal"
     return package.is_dir() and not any(
@@ -206,11 +247,13 @@ def _inspect(python, site, workspace, manifest, *, cwd):
         ),
         maximum=1024 * 1024,
     )
-    manifest.write_text(json.dumps(document, sort_keys=True, separators=(",", ":")))
-    manifest.chmod(0o400)
+    _private_text_file(
+        manifest,
+        json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False),
+        maximum=1024 * 1024,
+    )
     state_ca = manifest.with_name("state-ca-" + site.name + ".pem")
-    state_ca.write_text("isolated-check-ca\n")
-    state_ca.chmod(0o400)
+    _private_text_file(state_ca, "isolated-check-ca\n", maximum=1024)
     check_env = {
         **env,
         "SKY_DATABASE_HOST": "state.rehearsal.invalid",

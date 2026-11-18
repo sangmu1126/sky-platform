@@ -2,6 +2,8 @@
 
 import hashlib
 import importlib.util
+import os
+import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -130,6 +132,29 @@ def test_verifier_rejects_ambiguous_or_non_object_subprocess_json(verifier, valu
 def test_verifier_rejects_unbounded_subprocess_json(verifier):
     with pytest.raises(ValueError, match="Bounded"):
         verifier._strict_json('{"value":"' + "x" * 1024 + '"}', maximum=128)
+
+
+def test_verifier_creates_private_files_without_following_existing_paths(verifier, tmp_path):
+    target = tmp_path / "manifest.json"
+    previous = os.umask(0o777)
+    try:
+        verifier._private_text_file(target, '{"schema_version":1}', maximum=1024)
+    finally:
+        os.umask(previous)
+    assert target.read_text() == '{"schema_version":1}'
+    assert stat.S_IMODE(target.stat().st_mode) == 0o400
+    with pytest.raises(ValueError, match="creation failed"):
+        verifier._private_text_file(target, "replacement", maximum=1024)
+    link = tmp_path / "state.pem"
+    link.symlink_to(target)
+    with pytest.raises(ValueError, match="creation failed"):
+        verifier._private_text_file(link, "replacement", maximum=1024)
+
+
+def test_verifier_rejects_writable_private_file_parent(verifier, tmp_path):
+    tmp_path.chmod(0o777)
+    with pytest.raises(ValueError, match="Private verifier directory"):
+        verifier._private_text_file(tmp_path / "manifest.json", "{}", maximum=1024)
 
 
 def test_verifier_rejects_symlink_or_writable_wheel_before_pip(verifier, tmp_path):
