@@ -144,18 +144,7 @@ def load_environment_execution_manifest(path, *, workspace):
         or not isinstance(value["registrations"], list)
     ):
         raise ValueError("Invalid reviewed environment worker manifest")
-    fields = {
-        "registration_id",
-        "execution_revision",
-        "application_id",
-        "resource_verifier_ref",
-        "effect_ref",
-    }
-    pins = []
-    for item in value["registrations"]:
-        if not isinstance(item, dict) or set(item) != fields:
-            raise ValueError("Exact environment execution registration required")
-        pins.append(EnvironmentExecutionPin(**item))
+    pins = _execution_pins(value["registrations"])
     canonical = json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
     ).encode()
@@ -167,7 +156,7 @@ def load_environment_execution_manifest(path, *, workspace):
             value["provider_version"],
             value["provider_artifact_sha256"],
         ),
-        tuple(pins),
+        pins,
         hashlib.sha256(canonical).hexdigest(),
     )
 
@@ -199,6 +188,7 @@ def _provider_file(path, *, maximum):
         ):
             raise ValueError("Immutable bounded provider package file required")
         digest = hashlib.sha256()
+        content = bytearray()
         size = 0
         while True:
             chunk = os.read(descriptor, min(65536, maximum + 1 - size))
@@ -208,6 +198,7 @@ def _provider_file(path, *, maximum):
             if size > maximum:
                 raise ValueError("Provider package file exceeds bound")
             digest.update(chunk)
+            content.extend(chunk)
         after = os.fstat(descriptor)
         if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
             after.st_dev,
@@ -216,7 +207,7 @@ def _provider_file(path, *, maximum):
             after.st_mtime_ns,
         ) or size != before.st_size:
             raise ValueError("Provider package changed during inspection")
-        return size, digest.hexdigest()
+        return bytes(content), digest.hexdigest()
     finally:
         os.close(descriptor)
 
@@ -287,7 +278,8 @@ def attest_environment_execution_provider(entry_point):
             raise ValueError("Canonical provider distribution path required")
         paths.add(relative.as_posix())
         candidate = _provider_path(root, relative, distribution)
-        size, digest = _provider_file(candidate, maximum=1024 * 1024)
+        content, digest = _provider_file(candidate, maximum=1024 * 1024)
+        size = len(content)
         total += size
         if total > 16 * 1024 * 1024:
             raise ValueError("Provider distribution exceeds bound")
@@ -314,6 +306,92 @@ def attest_environment_execution_provider(entry_point):
     return EnvironmentProviderArtifact(pin.provider, pin.distribution, pin.version, digest)
 
 
+def _provider_descriptor_path(entry_point):
+    distribution = entry_point.dist
+    matches = tuple(
+        PurePosixPath(str(value))
+        for value in distribution.files
+        if str(value).endswith(".dist-info/sky-environment-executions-v1.json")
+    )
+    if len(matches) != 1:
+        raise ValueError("Exactly one provider execution descriptor required")
+    root = Path(distribution.locate_file("")).resolve(strict=True)
+    return _provider_path(root, matches[0], distribution)
+
+
+def _execution_pins(values):
+    fields = {
+        "registration_id",
+        "execution_revision",
+        "application_id",
+        "resource_verifier_ref",
+        "effect_ref",
+    }
+    if not isinstance(values, list) or not 1 <= len(values) <= 50:
+        raise ValueError("Bounded environment execution registrations required")
+    pins = []
+    for item in values:
+        if not isinstance(item, dict) or set(item) != fields:
+            raise ValueError("Exact environment execution registration required")
+        pins.append(EnvironmentExecutionPin(**item))
+    result = tuple(pins)
+    if tuple(sorted(result, key=lambda value: value.registration_id)) != result or len(
+        {value.registration_id for value in result}
+    ) != len(result):
+        raise ValueError("Canonical provider execution registrations required")
+    return result
+
+
+def load_environment_execution_provider_descriptor(entry_point):
+    """Load secret-free pins from an already installed and hashed provider package."""
+    before = attest_environment_execution_provider(entry_point)
+    content, _digest = _provider_file(_provider_descriptor_path(entry_point), maximum=65536)
+    value = json.loads(content, object_pairs_hook=_unique)
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema_version", "profile", "provider", "registrations"}
+        or type(value["schema_version"]) is not int
+        or value["schema_version"] != 1
+        or value["profile"] != "reviewed_environment_provider_executions_v1"
+        or value["provider"] != entry_point.name
+    ):
+        raise ValueError("Invalid provider execution descriptor")
+    pins = _execution_pins(value["registrations"])
+    if attest_environment_execution_provider(entry_point) != before:
+        raise ValueError("Provider package changed while reading execution descriptor")
+    return before, pins
+
+
+def render_environment_execution_manifest(provider, workspace, *, entry_points=None):
+    if not isinstance(workspace, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", workspace):
+        raise ValueError("Registered environment workspace required")
+    (entry_point,) = environment_execution_entry_points(provider, entry_points=entry_points)
+    artifact, pins = load_environment_execution_provider_descriptor(entry_point)
+    return {
+        "schema_version": 2,
+        "profile": "reviewed_environment_execution_worker_v2",
+        "workspace": workspace,
+        **artifact.document(),
+        "registrations": [
+            {
+                "registration_id": value.registration_id,
+                "execution_revision": value.execution_revision,
+                "application_id": value.application_id,
+                "resource_verifier_ref": value.resource_verifier_ref,
+                "effect_ref": value.effect_ref,
+            }
+            for value in pins
+        ],
+    }
+
+
+def verify_environment_execution_descriptor(manifest, entry_point):
+    artifact, pins = load_environment_execution_provider_descriptor(entry_point)
+    if artifact != manifest.provider_artifact or pins != manifest.registrations:
+        raise ValueError("Provider execution descriptor differs from operator manifest")
+    return pins
+
+
 def verify_environment_execution_provider(manifest, entry_point):
     if not isinstance(manifest, EnvironmentExecutionManifest):
         raise TypeError("Reviewed environment worker manifest required")
@@ -328,6 +406,7 @@ def compose_environment_executions(manifest, *, entry_points=None):
         raise TypeError("Reviewed environment worker manifest required")
     (entry_point,) = environment_execution_entry_points(manifest.provider, entry_points=entry_points)
     verify_environment_execution_provider(manifest, entry_point)
+    verify_environment_execution_descriptor(manifest, entry_point)
     provider = entry_point.load()
     if not callable(provider):
         raise TypeError("Environment composition provider must be callable")

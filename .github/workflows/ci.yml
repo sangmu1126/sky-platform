@@ -132,6 +132,7 @@ jobs:
               'interfaces/environment_execution_consumer.py',
               'interfaces/environment_execution_registration.py',
               'interfaces/environment_execution_provider.py',
+              'interfaces/environment_execution_manifest.py',
               'interfaces/environment_execution_worker.py',
               'interfaces/runtime_inventory_helper.py',
               'interfaces/runtime_inventory_ssh_gate.py',
@@ -140,6 +141,7 @@ jobs:
           PY
       - run: sky-platform --help
       - run: sky-environment-provider-inspect --help
+      - run: sky-environment-manifest --help
       - run: ruff check .
       - run: ruff format --check .
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

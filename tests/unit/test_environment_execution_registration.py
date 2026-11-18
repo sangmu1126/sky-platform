@@ -12,6 +12,7 @@ from application.environment_execution_composition import (
     RegisteredEnvironmentResourceRouter,
 )
 from interfaces.b_runtime import main
+from interfaces.environment_execution_manifest import main as render_manifest
 from interfaces.environment_execution_provider import main as inspect_provider
 from interfaces.environment_execution_registration import (
     ENTRY_POINT_GROUP,
@@ -20,6 +21,7 @@ from interfaces.environment_execution_registration import (
     compose_environment_executions,
     environment_execution_entry_points,
     load_environment_execution_manifest,
+    render_environment_execution_manifest,
 )
 from tests.unit.test_environment_admission import registered
 
@@ -63,10 +65,24 @@ def manifest_file(tmp_path, selected, entry_point=None, **changes):
 
 
 class Distribution:
-    def __init__(self, root, source="def provide(selected): return ()\n"):
+    def __init__(self, root, source="def provide(selected): return ()\n", selected=None):
         self.root = root
         self.metadata = {"Name": "sky-environment-provider"}
         self.version = "1.2.3"
+        execution = selected.execution if selected is not None else None
+        registrations = [
+            {
+                "registration_id": execution.job.id if execution is not None else "game",
+                "execution_revision": execution.revision if execution is not None else "d" * 64,
+                "application_id": (
+                    execution.job.transfer.source.application_id if execution is not None else "app"
+                ),
+                "resource_verifier_ref": (
+                    selected.resource_verifier_ref if selected is not None else "EVR-" + "a" * 64
+                ),
+                "effect_ref": selected.effect_ref if selected is not None else "EEF-" + "b" * 64,
+            }
+        ]
         documents = {
             "sky_env_provider.py": source,
             "sky_environment_provider-1.2.3.dist-info/METADATA": (
@@ -74,6 +90,16 @@ class Distribution:
             ),
             "sky_environment_provider-1.2.3.dist-info/entry_points.txt": (
                 "[sky.environment_execution.v1]\ninstalled-provider=sky_env_provider:provide\n"
+            ),
+            "sky_environment_provider-1.2.3.dist-info/sky-environment-executions-v1.json": json.dumps(
+                {
+                    "schema_version": 1,
+                    "profile": "reviewed_environment_provider_executions_v1",
+                    "provider": "installed-provider",
+                    "registrations": registrations,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
             ),
         }
         for name, content in documents.items():
@@ -92,10 +118,10 @@ class EntryPoint:
     name = "installed-provider"
     value = "sky_env_provider:provide"
 
-    def __init__(self, provider, root):
+    def __init__(self, provider, root, selected=None):
         self.provider = provider
         self.loads = 0
-        self.dist = Distribution(root)
+        self.dist = Distribution(root, selected=selected)
         self.module_path = root / "sky_env_provider.py"
 
     def load(self):
@@ -106,7 +132,7 @@ class EntryPoint:
 def test_operator_manifest_and_installed_provider_must_match_exactly(tmp_path):
     selected = composition()
     provider = Mock(return_value=(selected,))
-    entry_point = EntryPoint(provider, tmp_path / "provider")
+    entry_point = EntryPoint(provider, tmp_path / "provider", selected)
     manifest = load_environment_execution_manifest(
         manifest_file(tmp_path, selected, entry_point), workspace="test"
     )
@@ -122,7 +148,7 @@ def test_operator_manifest_and_installed_provider_must_match_exactly(tmp_path):
         selected.effect_ref,
         selected.effect,
     )
-    changed_entry_point = EntryPoint(lambda _selected: (changed,), tmp_path / "changed-provider")
+    changed_entry_point = EntryPoint(lambda _selected: (changed,), tmp_path / "changed-provider", selected)
     with pytest.raises(ValueError, match="differs from operator pins"):
         compose_environment_executions(
             load_environment_execution_manifest(
@@ -177,7 +203,9 @@ def test_provider_discovery_requires_one_installed_entry_point(tmp_path):
 
 def test_cli_check_config_does_not_import_provider_or_call_aws_or_database(tmp_path, monkeypatch, capsys):
     selected = composition()
-    entry_point = EntryPoint(Mock(side_effect=AssertionError("provider called")), tmp_path / "provider")
+    entry_point = EntryPoint(
+        Mock(side_effect=AssertionError("provider called")), tmp_path / "provider", selected
+    )
     path = manifest_file(tmp_path, selected, entry_point)
     ca = tmp_path / "ca.pem"
     ca.write_text("configuration-only")
@@ -222,7 +250,7 @@ def test_cli_check_config_does_not_import_provider_or_call_aws_or_database(tmp_p
 
 def test_cli_composes_only_pinned_provider_and_runs_one_hosted_delivery(tmp_path, monkeypatch, capsys):
     selected = composition()
-    entry_point = EntryPoint(Mock(return_value=(selected,)), tmp_path / "provider")
+    entry_point = EntryPoint(Mock(return_value=(selected,)), tmp_path / "provider", selected)
     path = manifest_file(tmp_path, selected, entry_point)
     ca = tmp_path / "ca.pem"
     ca.write_text("runtime-test")
@@ -284,7 +312,7 @@ def test_cli_composes_only_pinned_provider_and_runs_one_hosted_delivery(tmp_path
 
 def test_provider_artifact_is_verified_before_and_after_import(tmp_path):
     selected = composition()
-    entry_point = EntryPoint(Mock(return_value=(selected,)), tmp_path / "provider")
+    entry_point = EntryPoint(Mock(return_value=(selected,)), tmp_path / "provider", selected)
     manifest = load_environment_execution_manifest(
         manifest_file(tmp_path, selected, entry_point), workspace="test"
     )
@@ -293,7 +321,7 @@ def test_provider_artifact_is_verified_before_and_after_import(tmp_path):
         compose_environment_executions(manifest, entry_points=[entry_point])
     assert entry_point.loads == 0
 
-    after = EntryPoint(Mock(), tmp_path / "after-provider")
+    after = EntryPoint(Mock(), tmp_path / "after-provider", selected)
 
     def change_after_import(_selected):
         after.module_path.write_text("changed during provider load\n")
@@ -330,6 +358,50 @@ def test_provider_inspection_prints_approval_pin_without_import(tmp_path, capsys
         "profile": "reviewed_environment_provider_artifact_v1",
         **expected.document(),
     }
+
+
+def test_manifest_generator_uses_secret_free_descriptor_without_import(tmp_path, capsys):
+    selected = composition()
+    entry_point = EntryPoint(
+        Mock(side_effect=AssertionError("provider imported")), tmp_path / "provider", selected
+    )
+    with patch(
+        "interfaces.environment_execution_registration.metadata.entry_points",
+        return_value=[entry_point],
+    ):
+        render_manifest(["--provider", "installed-provider", "--workspace", "test"])
+    document = json.loads(capsys.readouterr().out)
+    expected = render_environment_execution_manifest("installed-provider", "test", entry_points=[entry_point])
+    assert document == expected
+    assert document["registrations"] == [
+        {
+            "registration_id": selected.execution.job.id,
+            "execution_revision": selected.execution.revision,
+            "application_id": selected.execution.job.transfer.source.application_id,
+            "resource_verifier_ref": selected.resource_verifier_ref,
+            "effect_ref": selected.effect_ref,
+        }
+    ]
+    assert entry_point.loads == 0
+
+
+def test_manifest_and_provider_descriptor_must_match_before_import(tmp_path):
+    selected = composition()
+    entry_point = EntryPoint(Mock(return_value=(selected,)), tmp_path / "provider", selected)
+    registration = {
+        "registration_id": selected.execution.job.id,
+        "execution_revision": selected.execution.revision,
+        "application_id": selected.execution.job.transfer.source.application_id,
+        "resource_verifier_ref": selected.resource_verifier_ref,
+        "effect_ref": "EEF-" + "c" * 64,
+    }
+    manifest = load_environment_execution_manifest(
+        manifest_file(tmp_path, selected, entry_point, registrations=[registration]),
+        workspace="test",
+    )
+    with pytest.raises(ValueError, match="descriptor differs"):
+        compose_environment_executions(manifest, entry_points=[entry_point])
+    assert entry_point.loads == 0
 
 
 @pytest.mark.parametrize("mode", ["outbox", "operating-review", "dedicated-database"])
