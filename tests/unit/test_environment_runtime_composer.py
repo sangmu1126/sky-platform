@@ -119,8 +119,19 @@ def fixture(tmp_path):
     )
     runtime_verifier = Adapter(registration.runtime_verifier_ref, True)
     entrypoint_probe = Adapter(registration.entrypoint_probe_ref, {"binding_hash": "unused"})
-    sts = Mock(get_caller_identity=Mock(return_value={"Account": "111111111111"}))
-    rds = Mock(meta=SimpleNamespace(region_name="ap-northeast-2"))
+    sts = Mock(
+        meta=SimpleNamespace(
+            region_name="ap-northeast-2",
+            endpoint_url="https://sts.ap-northeast-2.amazonaws.com",
+        ),
+        get_caller_identity=Mock(return_value={"Account": "111111111111"}),
+    )
+    rds = Mock(
+        meta=SimpleNamespace(
+            region_name="ap-northeast-2",
+            endpoint_url="https://rds.ap-northeast-2.amazonaws.com",
+        )
+    )
     composer = RegisteredAwsVmEnvironmentRuntimeComposer(
         execution,
         registration,

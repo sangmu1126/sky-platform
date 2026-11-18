@@ -21,7 +21,12 @@ def rds_verifier():
         ("sg-12345678",),
         (("sky-managed", "true"), ("sky-pool-id", "personal")),
     )
-    rds = Mock(meta=SimpleNamespace(region_name="ap-northeast-2"))
+    rds = Mock(
+        meta=SimpleNamespace(
+            region_name="ap-northeast-2",
+            endpoint_url="https://rds.ap-northeast-2.amazonaws.com",
+        )
+    )
     value = {
         "DBInstanceArn": "arn:aws:rds:ap-northeast-2:111111111111:db:source-rds",
         "DbiResourceId": "db-immutable",
@@ -36,7 +41,12 @@ def rds_verifier():
         "TagList": [{"Key": "sky-managed", "Value": "true"}, {"Key": "sky-pool-id", "Value": "personal"}],
     }
     rds.describe_db_instances.return_value = {"DBInstances": [value]}
-    sts = Mock()
+    sts = Mock(
+        meta=SimpleNamespace(
+            region_name="ap-northeast-2",
+            endpoint_url="https://sts.ap-northeast-2.amazonaws.com",
+        )
+    )
     sts.get_caller_identity.return_value = {"Account": "111111111111"}
     return RegisteredRdsInventoryVerifier(spec, sts=sts, rds=rds, clock=lambda: NOW), value
 
@@ -83,6 +93,20 @@ def test_foreign_account_region_and_placement_never_become_evidence():
     with pytest.raises(ValueError):
         verifier.verify(replace(verifier.registration.placement, application_id="other"))
     verifier.rds.describe_db_instances.assert_not_called()
+
+
+@pytest.mark.parametrize("client", ["sts", "rds"])
+def test_rds_verifier_rejects_custom_evidence_endpoint(client):
+    verifier, _ = rds_verifier()
+    verifier_client = getattr(verifier, client)
+    verifier_client.meta.endpoint_url = "https://localhost.invalid"
+    with pytest.raises(ValueError, match="Regional AWS RDS evidence authority"):
+        RegisteredRdsInventoryVerifier(
+            verifier.registration,
+            sts=verifier.sts,
+            rds=verifier.rds,
+            clock=lambda: NOW,
+        )
     verifier.sts.get_caller_identity.return_value = {"Account": "222222222222"}
     with pytest.raises(DatabaseInventoryUnavailable):
         verifier.verify(verifier.registration.placement)

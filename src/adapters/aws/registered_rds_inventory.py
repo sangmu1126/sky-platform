@@ -45,6 +45,16 @@ class RegisteredRdsInventoryVerifier:
     def __init__(self, registration, *, sts, rds, clock=lambda: datetime.now(UTC)):
         if not isinstance(registration, RegisteredRdsInventory):
             raise TypeError("Typed existing RDS registration required")
+        region = registration.placement.location.location
+        clients = ((sts, "sts", "get_caller_identity"), (rds, "rds", "describe_db_instances"))
+        if any(
+            not callable(getattr(client, operation, None))
+            or getattr(getattr(client, "meta", None), "region_name", None) != region
+            or getattr(getattr(client, "meta", None), "endpoint_url", None)
+            != f"https://{service}.{region}.amazonaws.com"
+            for client, service, operation in clients
+        ):
+            raise ValueError("Regional AWS RDS evidence authority required")
         self.registration, self.sts, self.rds, self.clock = registration, sts, rds, clock
 
     def verify(self, placement):

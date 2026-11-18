@@ -95,7 +95,10 @@ class _UnavailableSecrets:
 
 
 class _UnavailableRds:
-    meta = SimpleNamespace(region_name=REGION)
+    meta = SimpleNamespace(
+        region_name=REGION,
+        endpoint_url=f"https://rds.{REGION}.amazonaws.com",
+    )
 
     def describe_db_instances(self, **_kwargs):
         raise RuntimeError("Reference-only AWS client")
