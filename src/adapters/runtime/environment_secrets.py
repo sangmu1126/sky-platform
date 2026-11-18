@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import tempfile
 from contextlib import contextmanager, suppress
@@ -181,6 +180,42 @@ def pinned_private_file(path, expected_sha256=None):
         return bytes(content)
     finally:
         os.close(descriptor)
+
+
+def _cleanup_private_directory(directory, descriptor):
+    opened = os.fstat(descriptor)
+    failures = []
+    entries = []
+    try:
+        for name in os.listdir(descriptor):
+            info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            entries.append((name, stat.S_ISDIR(info.st_mode)))
+        for name, is_directory in sorted(entries, key=lambda value: value[1]):
+            try:
+                if is_directory:
+                    os.rmdir(name, dir_fd=descriptor)
+                else:
+                    os.unlink(name, dir_fd=descriptor)
+            except OSError as error:
+                failures.append(error)
+        os.fsync(descriptor)
+        try:
+            current = os.stat(directory, follow_symlinks=False)
+        except OSError:
+            current = None
+        same_path = current is not None and (current.st_dev, current.st_ino) == (
+            opened.st_dev,
+            opened.st_ino,
+        )
+    finally:
+        os.close(descriptor)
+    if failures:
+        raise OSError("Private router material cleanup failed") from None
+    if same_path:
+        try:
+            os.rmdir(directory)
+        except OSError:
+            raise OSError("Private router material cleanup failed") from None
 
 
 @dataclass(frozen=True)
@@ -385,11 +420,11 @@ class AwsAndPrivateEnvironmentSecretResolver:
                 target.known_hosts_sha256,
             )
         finally:
-            try:
-                if directory_descriptor is not None:
-                    os.close(directory_descriptor)
-            finally:
-                shutil.rmtree(directory)
+            if directory_descriptor is None:
+                with suppress(OSError):
+                    os.rmdir(directory)
+            else:
+                _cleanup_private_directory(directory, directory_descriptor)
 
     @contextmanager
     def open(self, secret_ref, version_ref, *, execution, purpose, guard):

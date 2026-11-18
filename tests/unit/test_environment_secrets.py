@@ -165,6 +165,31 @@ def test_router_materialization_uses_exact_modes_even_with_restrictive_umask(tmp
     assert not directory.exists()
 
 
+def test_router_cleanup_uses_open_directory_when_workspace_path_is_replaced(tmp_path):
+    execution, _targets, router, _sts, _secrets, resolver = fixture(tmp_path)
+    replacement = None
+    moved = None
+    with resolver.open(
+        router.secret_ref,
+        router.version_ref,
+        execution=execution,
+        purpose="router_transport",
+        guard=Mock(),
+    ) as material:
+        directory = material.private_key.parent
+        moved = directory.with_name(directory.name + "-moved")
+        directory.rename(moved)
+        directory.mkdir(mode=0o700)
+        replacement = directory / "replacement"
+        replacement.write_text("preserve")
+    assert replacement.read_text() == "preserve"
+    assert directory.is_dir()
+    assert moved.is_dir() and not tuple(moved.iterdir())
+    replacement.unlink()
+    directory.rmdir()
+    moved.rmdir()
+
+
 def stat_mode(path):
     return path.stat().st_mode & 0o777
 
