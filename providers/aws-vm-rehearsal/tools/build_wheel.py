@@ -63,16 +63,32 @@ def _descriptor_bytes(project):
     return canonical + b"\n"
 
 
-def _record_with_descriptor(record, descriptor_path, descriptor):
+def _record_with_descriptor(record, record_path, descriptor_path, descriptor, values):
     rows = list(csv.reader(io.StringIO(record.decode())))
-    record_rows = [value for value in rows if value and value[0].endswith(".dist-info/RECORD")]
-    if len(record_rows) != 1 or any(value and value[0] == descriptor_path for value in rows):
+    if any(len(row) != 3 for row in rows):
+        raise ValueError("Canonical provider wheel RECORD required")
+    recorded = {}
+    for row in rows:
+        name, digest, size = row
+        _canonical_info(name)
+        if name in recorded or name not in values:
+            raise ValueError("Canonical provider wheel RECORD required")
+        if name == record_path:
+            if digest or size:
+                raise ValueError("Canonical provider wheel RECORD required")
+        else:
+            content = values[name]
+            expected = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+            if digest != "sha256=" + expected or size != str(len(content)):
+                raise ValueError("Provider source wheel RECORD differs from archive contents")
+        recorded[name] = row
+    if set(recorded) != set(values) or descriptor_path in recorded:
         raise ValueError("Canonical provider wheel RECORD required")
     digest = base64.urlsafe_b64encode(hashlib.sha256(descriptor).digest()).rstrip(b"=").decode()
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\n")
     for row in rows:
-        if row is record_rows[0]:
+        if row[0] == record_path:
             writer.writerow([descriptor_path, "sha256=" + digest, str(len(descriptor))])
         writer.writerow(row)
     return output.getvalue().encode()
@@ -125,8 +141,10 @@ def finalize(source, destination, descriptor):
         values = {value.filename: wheel.read(value.filename) for value in infos}
     values[record_path] = _record_with_descriptor(
         values[record_path],
+        record_path,
         descriptor_path,
         descriptor,
+        values,
     )
     values[descriptor_path] = descriptor
     with ZipFile(destination, "x", compression=ZIP_DEFLATED) as wheel:

@@ -135,10 +135,14 @@ def test_wheel_finalizer_adds_descriptor_and_is_reproducible(tmp_path):
     module_path = "sky_aws_vm_rehearsal/provider.py"
     for index, source in enumerate(sources, start=1):
         with ZipFile(source, "w") as wheel:
-            for name, value in (
-                (module_path, b"provider"),
-                (record_path, f"{module_path},,\n{record_path},,\n".encode()),
-            ):
+            provider_source = b"provider"
+            provider_digest = (
+                base64.urlsafe_b64encode(hashlib.sha256(provider_source).digest()).rstrip(b"=").decode()
+            )
+            record = (
+                f"{module_path},sha256={provider_digest},{len(provider_source)}\n{record_path},,\n"
+            ).encode()
+            for name, value in ((module_path, provider_source), (record_path, record)):
                 info = ZipInfo(name, date_time=(2026, index, index, index, index, index * 2))
                 info.compress_type = ZIP_DEFLATED
                 info.external_attr = (0o100600 + index) << 16
@@ -197,8 +201,13 @@ def test_provider_build_uses_offline_isolated_pip_and_minimal_environment(tmp_pa
         record = "sky_aws_vm_rehearsal_provider-0.1.0.dist-info/RECORD"
         provider_path = "sky_aws_vm_rehearsal/provider.py"
         with ZipFile(destination, "w") as wheel:
-            wheel.writestr(provider_path, b"provider")
-            wheel.writestr(record, f"{provider_path},,\n{record},,\n".encode())
+            provider_source = b"provider"
+            digest = base64.urlsafe_b64encode(hashlib.sha256(provider_source).digest()).rstrip(b"=").decode()
+            wheel.writestr(provider_path, provider_source)
+            wheel.writestr(
+                record,
+                f"{provider_path},sha256={digest},{len(provider_source)}\n{record},,\n".encode(),
+            )
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(module.subprocess, "run", run)
@@ -238,6 +247,36 @@ def test_wheel_finalizer_rejects_unbounded_source_entries(tmp_path, monkeypatch)
         wheel.writestr(record, f"provider/module.py,,\n{record},,\n".encode())
     monkeypatch.setattr(module, "_MAX_ENTRY_BYTES", 4)
     with pytest.raises(ValueError, match="One unfinalized"):
+        module.finalize(source, destination, b"{}\n")
+
+
+@pytest.mark.parametrize("record", ["wrong-digest", "wrong-size", "unlisted-file"])
+def test_wheel_finalizer_rejects_source_record_drift(tmp_path, record):
+    spec = importlib.util.spec_from_file_location(
+        "rehearsal_build_wheel_record", PROJECT / "tools" / "build_wheel.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source, destination = tmp_path / "source.whl", tmp_path / "destination.whl"
+    provider_path = "provider/module.py"
+    record_path = "provider-0.1.0.dist-info/RECORD"
+    content = b"provider"
+    digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+    row = [provider_path, "sha256=" + digest, str(len(content))]
+    if record == "wrong-digest":
+        row[1] = "sha256=" + "A" * 43
+    elif record == "wrong-size":
+        row[2] = str(len(content) + 1)
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(row)
+    writer.writerow([record_path, "", ""])
+    with ZipFile(source, "w") as wheel:
+        wheel.writestr(provider_path, content)
+        if record == "unlisted-file":
+            wheel.writestr("provider/unlisted.py", b"unlisted")
+        wheel.writestr(record_path, output.getvalue().encode())
+    with pytest.raises(ValueError, match="RECORD"):
         module.finalize(source, destination, b"{}\n")
 
 
