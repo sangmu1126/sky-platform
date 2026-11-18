@@ -33,6 +33,13 @@ _VOLUME = (
     '{"name":{{json .Name}},"driver":{{json .Driver}},"scope":{{json .Scope}},'
     '"labels":{{json .Labels}},"options":{{if .Options}}true{{else}}false{{end}}}'
 )
+PINNED_DOCKER = (
+    "/usr/bin/sudo",
+    "-n",
+    "/usr/bin/docker",
+    "--host",
+    "unix:///var/run/docker.sock",
+)
 
 
 def _pinned_ed25519_known_host(content, address, port):
@@ -204,7 +211,7 @@ class PinnedVmInventoryCommand:
         code, output = bounded_command(
             [
                 *self.arguments,
-                shlex.join(["/usr/bin/sudo", "-n", "/usr/bin/docker", *arguments]),
+                shlex.join([*PINNED_DOCKER, *arguments]),
             ],
             timeout=15,
             output_limit=65536,

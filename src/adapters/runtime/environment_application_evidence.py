@@ -10,7 +10,7 @@ import shlex
 from dataclasses import asdict, dataclass
 
 from adapters.build.process import bounded_command
-from adapters.onprem.database_inventory import PinnedVmInventoryCommand
+from adapters.onprem.database_inventory import PINNED_DOCKER, PinnedVmInventoryCommand
 from adapters.runtime.strict_json import strict_external_json
 from domain.database_migration import DatabasePlacement
 from domain.database_transfer import RegisteredDatabaseTransfer
@@ -253,7 +253,7 @@ class PinnedVmApplicationCommand:
         code, output = bounded_command(
             [
                 *self.ssh.arguments,
-                shlex.join(["/usr/bin/sudo", "-n", "/usr/bin/docker", *arguments]),
+                shlex.join([*PINNED_DOCKER, *arguments]),
             ],
             timeout=15,
             output_limit=128 * 1024,

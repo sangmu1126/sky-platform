@@ -151,7 +151,9 @@ def test_transport_requires_private_pinned_host_key_and_rejects_mutations(tmp_pa
         assert "ControlPath=none" in arguments and "UpdateHostKeys=no" in arguments
         assert "HostKeyAlgorithms=ssh-ed25519" in arguments
         assert arguments[0] == "/usr/bin/ssh"
-        assert arguments[-1].startswith("/usr/bin/sudo -n /usr/bin/docker info")
+        assert arguments[-1].startswith(
+            "/usr/bin/sudo -n /usr/bin/docker --host unix:///var/run/docker.sock info"
+        )
         assert run.call_args.kwargs["output_limit"] == 65536
         assert dict(run.call_args.kwargs["env"]) == {
             "LANG": "C",

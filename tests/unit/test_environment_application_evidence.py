@@ -260,7 +260,9 @@ def test_pinned_vm_application_command_rejects_arbitrary_docker_access(tmp_path)
         return_value=(0, "[]"),
     ) as run:
         command(["inspect", factory.target.container_id])
-        assert run.call_args.args[0][-1].startswith("/usr/bin/sudo -n /usr/bin/docker inspect")
+        assert run.call_args.args[0][-1].startswith(
+            "/usr/bin/sudo -n /usr/bin/docker --host unix:///var/run/docker.sock inspect"
+        )
         assert run.call_args.kwargs["env"] == ssh.environment
         with pytest.raises(ValueError, match="fixed VM application"):
             command(["exec", factory.target.container_id, "env"])

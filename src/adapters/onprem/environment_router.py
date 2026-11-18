@@ -13,7 +13,7 @@ import time
 from dataclasses import asdict, dataclass
 
 from adapters.build.process import bounded_command
-from adapters.onprem.database_inventory import PinnedVmInventoryCommand
+from adapters.onprem.database_inventory import PINNED_DOCKER, PinnedVmInventoryCommand
 from adapters.runtime.pinned_https import pinned_dns_hostname
 from adapters.runtime.private_network import pinned_private_address
 from adapters.runtime.strict_json import strict_external_json
@@ -150,7 +150,7 @@ class PinnedEnvironmentRouterCommand:
         code, output = bounded_command(
             [
                 *self.ssh.arguments,
-                shlex.join(["/usr/bin/sudo", "-n", "/usr/bin/docker", *arguments]),
+                shlex.join([*PINNED_DOCKER, *arguments]),
             ],
             timeout=20,
             output_limit=65536,
