@@ -135,6 +135,8 @@ def _baseline(transfer, value, *, scopes):
             or not _DIGEST.fullmatch(item["sha256"])
             for item in tables
         )
+        or len({item["table"] for item in tables}) != len(tables)
+        or sum(item["rows"] for item in tables) > 100000
         or not isinstance(sequences, list)
         or len(sequences) > 100
         or any(
@@ -148,6 +150,8 @@ def _baseline(transfer, value, *, scopes):
             or not 1 <= item["next_value"] < 2**63
             for item in sequences
         )
+        or len({(item["table"], item["column"]) for item in sequences}) != len(sequences)
+        or any(item["table"] not in {table["table"] for table in tables} for item in sequences)
         or value.get("verified_scope") not in scopes
         or value.get("source_retained") is not True
         or value.get("routing_changed") is not False

@@ -173,7 +173,20 @@ def test_effect_rejects_noncanonical_or_extra_receipt_metadata(location):
         effect(execution, guard=Mock(), journal=Mock())
 
 
-@pytest.mark.parametrize("change", ["schema", "table", "sequence"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "schema",
+        "table",
+        "table-container",
+        "sequence",
+        "sequence-container",
+        "table-duplicate",
+        "total-rows",
+        "sequence-duplicate",
+        "sequence-orphan",
+    ],
+)
 def test_effect_requires_bounded_canonical_copy_evidence(change):
     execution, effect, transport, _flow, _result = effect_fixture()
     value = transport.copy.return_value
@@ -181,8 +194,27 @@ def test_effect_requires_bounded_canonical_copy_evidence(change):
         value["schema_sha256"] = "latest"
     elif change == "table":
         value["tables"][0]["detail"] = "must-not-persist"
-    else:
+    elif change == "table-container":
+        value["tables"] = [None]
+    elif change == "sequence":
         value["sequences"] = [{"table": "scores", "column": "id", "next_value": True}]
+    elif change == "sequence-container":
+        value["sequences"] = [None]
+    elif change == "table-duplicate":
+        value["tables"] = [
+            {"table": "scores", "rows": 0, "sha256": "b" * 64},
+            {"table": "scores", "rows": 0, "sha256": "c" * 64},
+        ]
+    elif change == "total-rows":
+        value["tables"] = [
+            {"table": "accounts", "rows": 60000, "sha256": "b" * 64},
+            {"table": "scores", "rows": 60000, "sha256": "c" * 64},
+        ]
+    elif change == "sequence-duplicate":
+        sequence = {"table": "scores", "column": "id", "next_value": 1}
+        value["sequences"] = [sequence, dict(sequence)]
+    else:
+        value["sequences"] = [{"table": "users", "column": "id", "next_value": 1}]
 
     with pytest.raises(ValueError, match="Exact registered"):
         effect(execution, guard=Mock(), journal=Mock())
