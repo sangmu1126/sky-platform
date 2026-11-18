@@ -147,6 +147,7 @@ class PinnedEnvironmentRouterCommand:
         )
         if not allowed:
             raise ValueError("Only fixed registered router commands permitted")
+        self.ssh.verify_transport()
         code, output = bounded_command(
             [
                 *self.ssh.arguments,

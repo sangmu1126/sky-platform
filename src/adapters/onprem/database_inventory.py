@@ -90,12 +90,13 @@ class PinnedVmInventoryCommand:
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValueError("Pinned SSH port required")
         private_key, known_hosts = Path(private_key), Path(known_hosts)
-        try:
-            pinned_private_file(private_key, private_key_sha256)
-            known_host = pinned_private_file(known_hosts, known_hosts_sha256)
-        except ValueError:
-            raise ValueError("Private key and pinned host-key file must be operator-private") from None
-        _pinned_ed25519_known_host(known_host, address, port)
+        self.private_key = private_key
+        self.known_hosts = known_hosts
+        self.private_key_sha256 = private_key_sha256
+        self.known_hosts_sha256 = known_hosts_sha256
+        self.address = address
+        self.port = port
+        self.verify_transport()
         self.environment = MappingProxyType(
             {
                 "LANG": "C",
@@ -189,6 +190,14 @@ class PinnedVmInventoryCommand:
             user + "@" + str(address),
         ]
 
+    def verify_transport(self):
+        try:
+            pinned_private_file(self.private_key, self.private_key_sha256)
+            known_host = pinned_private_file(self.known_hosts, self.known_hosts_sha256)
+        except ValueError:
+            raise ValueError("Private key and pinned host-key file must be operator-private") from None
+        _pinned_ed25519_known_host(known_host, self.address, self.port)
+
     def __call__(self, arguments):
         # A fixed metadata command set; no shell scripts or arbitrary Docker calls.
         valid = (
@@ -208,6 +217,7 @@ class PinnedVmInventoryCommand:
         )
         if not valid:
             raise ValueError("Only registered read-only inventory commands permitted")
+        self.verify_transport()
         code, output = bounded_command(
             [
                 *self.arguments,

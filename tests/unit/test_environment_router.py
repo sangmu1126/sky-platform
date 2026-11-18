@@ -194,6 +194,7 @@ def test_pinned_command_only_accepts_the_two_registered_configurations():
             "/usr/bin/sudo -n /usr/bin/docker --host unix:///var/run/docker.sock exec"
         )
         assert run.call_args.kwargs["env"] == ssh.environment
+        ssh.verify_transport.assert_called_once_with()
         with pytest.raises(ValueError):
             command([*prefix, base64.b64encode(b"arbitrary config").decode()])
         with pytest.raises(ValueError):

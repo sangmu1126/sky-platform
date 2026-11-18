@@ -216,10 +216,12 @@ def test_bound_runtime_evidence_verifies_exact_source_and_target_identities(tmp_
             (0, json.dumps([container])),
         ],
     ) as command:
-        verifier = factory.bind(ssh)
-        assert verifier.reference == factory.reference
-        assert verifier(factory.transfer.document()["source"]) is True
-        assert verifier(factory.transfer.document()["target"]) is True
+        with patch.object(ssh, "verify_transport", wraps=ssh.verify_transport) as verify_transport:
+            verifier = factory.bind(ssh)
+            assert verifier.reference == factory.reference
+            assert verifier(factory.transfer.document()["source"]) is True
+            assert verifier(factory.transfer.document()["target"]) is True
+        assert verify_transport.call_count == 2
     assert factory.reference.startswith("RVR-")
     assert command.call_count == 2
     factory.sts.get_caller_identity.assert_called_once_with()

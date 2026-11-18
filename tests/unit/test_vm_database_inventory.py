@@ -163,6 +163,10 @@ def test_transport_requires_private_pinned_host_key_and_rejects_mutations(tmp_pa
         with pytest.raises(ValueError):
             command(["exec", "container", "sh"])
         assert run.call_count == 1
+        key.write_text("changed-after-construction")
+        with pytest.raises(ValueError, match="operator-private"):
+            command(["info", "--format", "{{json .ID}}"])
+        assert run.call_count == 1
     hosts.chmod(0o644)
     with pytest.raises(ValueError):
         PinnedVmInventoryCommand(

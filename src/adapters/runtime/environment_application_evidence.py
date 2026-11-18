@@ -259,6 +259,7 @@ class PinnedVmApplicationCommand:
         ]
         if not allowed:
             raise ValueError("Only fixed VM application inventory commands permitted")
+        self.ssh.verify_transport()
         code, output = bounded_command(
             [
                 *self.ssh.arguments,
