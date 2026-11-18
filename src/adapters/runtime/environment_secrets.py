@@ -339,14 +339,25 @@ class AwsAndPrivateEnvironmentSecretResolver:
         )
 
     def _aws_material(self, target):
-        if self.sts.get_caller_identity().get("Account") != self.account_id:
+        identity = self.sts.get_caller_identity()
+        if not isinstance(identity, dict) or identity.get("Account") != self.account_id:
             raise ValueError("AWS secret authority changed")
         metadata = self.secretsmanager.describe_secret(SecretId=target.secret_arn)
+        if not isinstance(metadata, dict):
+            raise TypeError("AWS secret ownership response required")
         raw_tags = metadata.get("Tags")
         if (
             not isinstance(raw_tags, list)
             or not 1 <= len(raw_tags) <= 50
-            or any(not isinstance(value, dict) or set(value) != {"Key", "Value"} for value in raw_tags)
+            or any(
+                not isinstance(value, dict)
+                or set(value) != {"Key", "Value"}
+                or not isinstance(value["Key"], str)
+                or not isinstance(value["Value"], str)
+                or not 1 <= len(value["Key"]) <= 128
+                or len(value["Value"]) > 256
+                for value in raw_tags
+            )
         ):
             raise ValueError("AWS secret ownership changed")
         tags = {value["Key"]: value["Value"] for value in raw_tags}
@@ -362,7 +373,8 @@ class AwsAndPrivateEnvironmentSecretResolver:
             VersionId=target.version_ref,
         )
         if (
-            response.get("ARN") != target.secret_arn
+            not isinstance(response, dict)
+            or response.get("ARN") != target.secret_arn
             or response.get("VersionId") != target.version_ref
             or "SecretString" not in response
             or "SecretBinary" in response

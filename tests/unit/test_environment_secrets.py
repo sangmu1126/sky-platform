@@ -195,16 +195,34 @@ def stat_mode(path):
 
 
 @pytest.mark.parametrize(
-    "change", ["account", "metadata", "duplicate-tags", "version", "schema", "binary", "exception"]
+    "change",
+    [
+        "account",
+        "identity-shape",
+        "metadata",
+        "metadata-shape",
+        "duplicate-tags",
+        "malformed-tags",
+        "version",
+        "version-shape",
+        "schema",
+        "binary",
+        "exception",
+    ],
 )
 def test_aws_identity_version_schema_or_provider_failure_is_sanitized(tmp_path, change):
     execution, targets, _router, sts, secrets, resolver = fixture(tmp_path)
     target = targets[0]
     if change == "account":
         sts.get_caller_identity.return_value = {"Account": "222222222222"}
+    elif change == "identity-shape":
+        sts.get_caller_identity.return_value = [ACCOUNT]
     elif change == "metadata":
         secrets.describe_secret.side_effect = None
         secrets.describe_secret.return_value = {"ARN": target.secret_arn, "Tags": []}
+    elif change == "metadata-shape":
+        secrets.describe_secret.side_effect = None
+        secrets.describe_secret.return_value = [target.secret_arn]
     elif change == "duplicate-tags":
         secrets.describe_secret.side_effect = None
         secrets.describe_secret.return_value = {
@@ -215,6 +233,12 @@ def test_aws_identity_version_schema_or_provider_failure_is_sanitized(tmp_path, 
                 {"Key": "sky-application-id", "Value": "app"},
             ],
         }
+    elif change == "malformed-tags":
+        secrets.describe_secret.side_effect = None
+        secrets.describe_secret.return_value = {
+            "ARN": target.secret_arn,
+            "Tags": [{"Key": ["sky-managed"], "Value": "true"}],
+        }
     elif change == "version":
         secrets.get_secret_value.side_effect = None
         secrets.get_secret_value.return_value = {
@@ -222,6 +246,9 @@ def test_aws_identity_version_schema_or_provider_failure_is_sanitized(tmp_path, 
             "VersionId": "f" * 32,
             "SecretString": '{"token":"private"}',
         }
+    elif change == "version-shape":
+        secrets.get_secret_value.side_effect = None
+        secrets.get_secret_value.return_value = [target.secret_arn, target.version_ref]
     elif change == "schema":
         secrets.get_secret_value.side_effect = None
         secrets.get_secret_value.return_value = {
