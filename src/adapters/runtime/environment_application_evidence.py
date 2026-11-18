@@ -251,7 +251,10 @@ class PinnedVmApplicationCommand:
         if not allowed:
             raise ValueError("Only fixed VM application inventory commands permitted")
         code, output = bounded_command(
-            [*self.ssh.arguments, shlex.join(["sudo", "-n", "docker", *arguments])],
+            [
+                *self.ssh.arguments,
+                shlex.join(["/usr/bin/sudo", "-n", "/usr/bin/docker", *arguments]),
+            ],
             timeout=15,
             output_limit=128 * 1024,
         )

@@ -89,7 +89,7 @@ class PinnedVmInventoryCommand:
             raise ValueError("Private key and pinned host-key file must be operator-private") from None
         _pinned_ed25519_known_host(known_host, address, port)
         self.arguments = [
-            "ssh",
+            "/usr/bin/ssh",
             "-F",
             "/dev/null",
             "-p",
@@ -161,7 +161,10 @@ class PinnedVmInventoryCommand:
         if not valid:
             raise ValueError("Only registered read-only inventory commands permitted")
         code, output = bounded_command(
-            [*self.arguments, shlex.join(["sudo", "-n", "docker", *arguments])],
+            [
+                *self.arguments,
+                shlex.join(["/usr/bin/sudo", "-n", "/usr/bin/docker", *arguments]),
+            ],
             timeout=15,
             output_limit=65536,
         )

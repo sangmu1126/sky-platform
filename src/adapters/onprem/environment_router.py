@@ -148,7 +148,10 @@ class PinnedEnvironmentRouterCommand:
         if not allowed:
             raise ValueError("Only fixed registered router commands permitted")
         code, output = bounded_command(
-            [*self.ssh.arguments, shlex.join(["sudo", "-n", "docker", *arguments])],
+            [
+                *self.ssh.arguments,
+                shlex.join(["/usr/bin/sudo", "-n", "/usr/bin/docker", *arguments]),
+            ],
             timeout=20,
             output_limit=65536,
         )

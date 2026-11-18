@@ -183,12 +183,13 @@ def test_private_ipv6_upstream_is_bracketed_in_nginx_authority():
 def test_pinned_command_only_accepts_the_two_registered_configurations():
     r = registration()
     ssh = Mock(spec=PinnedVmInventoryCommand)
-    ssh.arguments = ["ssh", "pinned"]
+    ssh.arguments = ["/usr/bin/ssh", "pinned"]
     command = PinnedEnvironmentRouterCommand(ssh, r)
     prefix = ["exec", r.container_id, "sh", "-ceu", SWITCH_SCRIPT, "sky-environment-route"]
     with patch("adapters.onprem.environment_router.bounded_command", return_value=(0, "")) as run:
         command([*prefix, base64.b64encode(r.configuration(asdict(r.transfer.target)).encode()).decode()])
         assert run.call_count == 1
+        assert run.call_args.args[0][-1].startswith("/usr/bin/sudo -n /usr/bin/docker exec")
         with pytest.raises(ValueError):
             command([*prefix, base64.b64encode(b"arbitrary config").decode()])
         with pytest.raises(ValueError):
