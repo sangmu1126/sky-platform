@@ -202,17 +202,17 @@ def _wheel_startup_hook(name):
     )
 
 
-def _wheel_path_ancestors(names):
-    return {
-        "/".join(parts[:index])
-        for name in names
-        for parts in (name.split("/"),)
-        for index in range(1, len(parts))
-    }
+def _wheel_path_has_ancestor(name, candidates):
+    parts = name.split("/")
+    return any("/".join(parts[:index]) in candidates for index in range(1, len(parts)))
 
 
 def _wheel_path_sets_overlap(left, right):
-    return bool(left & right or left & _wheel_path_ancestors(right) or right & _wheel_path_ancestors(left))
+    return bool(
+        left & right
+        or any(_wheel_path_has_ancestor(name, left) for name in right)
+        or any(_wheel_path_has_ancestor(name, right) for name in left)
+    )
 
 
 def _verify_wheel_archive(data):
@@ -227,7 +227,7 @@ def _verify_wheel_archive(data):
                 not 1 <= len(infos) <= _MAX_WHEEL_ENTRIES
                 or len(names) != len(set(names))
                 or len(portable_names) != len(portable_name_set)
-                or portable_name_set & _wheel_path_ancestors(portable_name_set)
+                or any(_wheel_path_has_ancestor(name, portable_name_set) for name in portable_name_set)
                 or len(records) != 1
                 or any(_wheel_startup_hook(name) for name in names)
                 or any(
