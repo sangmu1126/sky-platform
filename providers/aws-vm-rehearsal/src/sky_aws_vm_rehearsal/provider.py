@@ -29,6 +29,7 @@ from adapters.runtime.environment_secrets import (
     RegisteredAwsEnvironmentSecret,
     RegisteredPrivateRouterTransportSecret,
 )
+from adapters.runtime.pinned_ca import pinned_ca_bundle
 from application.environment_admission import RegisteredEnvironmentExecution
 from application.environment_execution_composition import RegisteredEnvironmentExecutionComposition
 from application.environment_execution_effect import (
@@ -223,7 +224,7 @@ def _aws_secrets():
 def _registrations(execution):
     transfer = execution.job.transfer
     ca = Path(__file__).with_name("ca.pem").resolve()
-    ca_sha256 = hashlib.sha256(ca.read_bytes()).hexdigest()
+    _ca_content, ca_sha256 = pinned_ca_bundle(ca)
     source_role = "sky_transfer_" + "1" * 16
     target_role = "sky_transfer_" + "2" * 16
     source_endpoint = RegisteredTransferEndpoint(

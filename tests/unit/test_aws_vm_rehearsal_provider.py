@@ -105,6 +105,21 @@ def test_public_ca_is_valid_and_private_fixture_digests_are_explicit(provider):
     )
 
 
+def test_provider_registration_reads_packaged_ca_through_stable_descriptor(provider, monkeypatch):
+    observed = []
+    original = provider.pinned_ca_bundle
+
+    def read(path, expected_sha256=None):
+        observed.append((path, expected_sha256))
+        return original(path, expected_sha256)
+
+    monkeypatch.setattr(provider, "pinned_ca_bundle", read)
+    provider.provider_pins()
+    assert len(observed) == 1
+    assert observed[0][0] == Path(provider.__file__).with_name("ca.pem").resolve()
+    assert observed[0][1] is None
+
+
 def test_production_entrypoint_uses_ambient_clients_without_aws_calls(provider, monkeypatch):
     session = SimpleNamespace(client=lambda name, region_name: name + "-client")
     fake_boto3 = SimpleNamespace(Session=lambda region_name: session)
