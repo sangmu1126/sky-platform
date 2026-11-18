@@ -5,6 +5,8 @@ Docker administration is not a sandbox. No application source constructs these
 registrations, transport arguments, labels, volume names or connection endpoints.
 """
 
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -31,6 +33,33 @@ _VOLUME = (
 )
 
 
+def _pinned_ed25519_known_host(content, address, port):
+    try:
+        text = content.decode("ascii")
+        if "\r" in text or not text.endswith("\n") or text.count("\n") != 1:
+            raise ValueError
+        host, algorithm, encoded = text[:-1].split(" ")
+        expected_host = str(address) if port == 22 else f"[{address}]:{port}"
+        if host != expected_host or algorithm != "ssh-ed25519":
+            raise ValueError
+        blob = base64.b64decode(encoded, validate=True)
+        offset = 0
+        fields = []
+        for maximum in (64, 32):
+            if offset + 4 > len(blob):
+                raise ValueError
+            size = int.from_bytes(blob[offset : offset + 4], "big")
+            offset += 4
+            if not 1 <= size <= maximum or offset + size > len(blob):
+                raise ValueError
+            fields.append(blob[offset : offset + size])
+            offset += size
+        if offset != len(blob) or fields[0] != b"ssh-ed25519" or len(fields[1]) != 32 or not any(fields[1]):
+            raise ValueError
+    except (UnicodeDecodeError, binascii.Error, ValueError):
+        raise ValueError("Exact pinned Ed25519 SSH host key required") from None
+
+
 class PinnedVmInventoryCommand:
     def __init__(
         self,
@@ -54,9 +83,10 @@ class PinnedVmInventoryCommand:
         private_key, known_hosts = Path(private_key), Path(known_hosts)
         try:
             pinned_private_file(private_key, private_key_sha256)
-            pinned_private_file(known_hosts, known_hosts_sha256)
+            known_host = pinned_private_file(known_hosts, known_hosts_sha256)
         except ValueError:
             raise ValueError("Private key and pinned host-key file must be operator-private") from None
+        _pinned_ed25519_known_host(known_host, address, port)
         self.arguments = [
             "ssh",
             "-F",
@@ -79,6 +109,8 @@ class PinnedVmInventoryCommand:
             "KbdInteractiveAuthentication=no",
             "-o",
             "StrictHostKeyChecking=yes",
+            "-o",
+            "HostKeyAlgorithms=ssh-ed25519",
             "-o",
             "UserKnownHostsFile=" + str(known_hosts),
             "-o",

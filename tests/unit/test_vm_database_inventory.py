@@ -16,6 +16,10 @@ from adapters.onprem.database_inventory import (
 from domain.database_inventory import DatabaseInventoryUnavailable
 from domain.database_migration import DatabaseLocation, DatabasePlacement
 
+KNOWN_HOST = (
+    "[127.0.0.1]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8g\n"
+)
+
 
 @pytest.fixture
 def registered():
@@ -106,9 +110,10 @@ def test_foreign_placement_does_not_trigger_remote_commands(registered):
 
 def test_transport_requires_private_pinned_host_key_and_rejects_mutations(tmp_path):
     key, hosts = tmp_path / "key", tmp_path / "known_hosts"
-    for path in (key, hosts):
-        path.write_text("unit-test-placeholder")
-        path.chmod(0o600)
+    key.write_text("unit-test-placeholder")
+    hosts.write_text(KNOWN_HOST)
+    key.chmod(0o600)
+    hosts.chmod(0o600)
     command = PinnedVmInventoryCommand(
         host="127.0.0.1",
         user="operator",
@@ -126,6 +131,7 @@ def test_transport_requires_private_pinned_host_key_and_rejects_mutations(tmp_pa
         assert "PasswordAuthentication=no" in arguments and "KbdInteractiveAuthentication=no" in arguments
         assert "ProxyCommand=none" in arguments and "ControlMaster=no" in arguments
         assert "ControlPath=none" in arguments and "UpdateHostKeys=no" in arguments
+        assert "HostKeyAlgorithms=ssh-ed25519" in arguments
         assert run.call_args.kwargs["output_limit"] == 65536
         with pytest.raises(ValueError):
             command(["exec", "container", "sh"])
@@ -146,9 +152,10 @@ def test_transport_requires_private_pinned_host_key_and_rejects_mutations(tmp_pa
 @pytest.mark.parametrize("host", ["8.8.8.8", "169.254.169.254", "vm.example", "127.0.0.01"])
 def test_transport_rejects_public_metadata_dns_or_noncanonical_addresses(tmp_path, host):
     key, hosts = tmp_path / "key", tmp_path / "known_hosts"
-    for path in (key, hosts):
-        path.write_text("unit-test-placeholder")
-        path.chmod(0o600)
+    key.write_text("unit-test-placeholder")
+    hosts.write_text(KNOWN_HOST)
+    key.chmod(0o600)
+    hosts.chmod(0o600)
     with pytest.raises(ValueError, match="private SSH address"):
         PinnedVmInventoryCommand(
             host=host,
@@ -163,9 +170,10 @@ def test_transport_rejects_public_metadata_dns_or_noncanonical_addresses(tmp_pat
 
 def test_transport_rejects_private_file_digest_drift(tmp_path):
     key, hosts = tmp_path / "key", tmp_path / "known_hosts"
-    for path in (key, hosts):
-        path.write_text("unit-test-placeholder")
-        path.chmod(0o600)
+    key.write_text("unit-test-placeholder")
+    hosts.write_text(KNOWN_HOST)
+    key.chmod(0o600)
+    hosts.chmod(0o600)
     with pytest.raises(ValueError, match="operator-private"):
         PinnedVmInventoryCommand(
             host="127.0.0.1",
@@ -174,5 +182,34 @@ def test_transport_rejects_private_file_digest_drift(tmp_path):
             private_key=key,
             known_hosts=hosts,
             private_key_sha256="0" * 64,
+            known_hosts_sha256=hashlib.sha256(hosts.read_bytes()).hexdigest(),
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "127.0.0.1 ssh-ed25519 AAAA\n",
+        "[127.0.0.1]:22 ssh-ed25519 AAAA\n",
+        KNOWN_HOST.rstrip("\n"),
+        KNOWN_HOST + KNOWN_HOST,
+        KNOWN_HOST.replace("ssh-ed25519", "ssh-rsa"),
+        "[127.0.0.1]:2222 ssh-ed25519 AAAA\n",
+    ],
+)
+def test_transport_rejects_known_host_not_bound_to_exact_target(tmp_path, value):
+    key, hosts = tmp_path / "key", tmp_path / "known_hosts"
+    key.write_text("unit-test-placeholder")
+    hosts.write_text(value)
+    key.chmod(0o600)
+    hosts.chmod(0o600)
+    with pytest.raises(ValueError, match="Exact pinned Ed25519"):
+        PinnedVmInventoryCommand(
+            host="127.0.0.1",
+            user="operator",
+            port=2222,
+            private_key=key,
+            known_hosts=hosts,
+            private_key_sha256=hashlib.sha256(key.read_bytes()).hexdigest(),
             known_hosts_sha256=hashlib.sha256(hosts.read_bytes()).hexdigest(),
         )

@@ -95,7 +95,10 @@ def test_public_ca_is_valid_and_private_fixture_digests_are_explicit(provider):
     assert provider.KEY_SHA256 == hashlib.sha256(b"sky-rehearsal-key-placeholder\n").hexdigest()
     assert (
         provider.KNOWN_HOSTS_SHA256
-        == hashlib.sha256(b"[127.0.0.1]:2222 ssh-ed25519 AAAAREHEARSAL\n").hexdigest()
+        == hashlib.sha256(
+            b"[127.0.0.1]:2222 ssh-ed25519 "
+            b"AAAAC3NzaC1lZDI1NTE5AAAAIAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8g\n"
+        ).hexdigest()
     )
 
 

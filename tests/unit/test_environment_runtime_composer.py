@@ -129,7 +129,9 @@ def fixture(tmp_path):
     )
     key, hosts = tmp_path / "key", tmp_path / "known_hosts"
     key.write_text("private-key")
-    hosts.write_text("[127.0.0.1]:2222 ssh-ed25519 AAAA")
+    hosts.write_text(
+        "[127.0.0.1]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8g\n"
+    )
     key.chmod(0o600)
     hosts.chmod(0o600)
     materials = {

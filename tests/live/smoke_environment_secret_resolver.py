@@ -99,7 +99,9 @@ def main(argv=None):
     key = private_root / "router-private-key"
     known_hosts = private_root / "router-known-hosts"
     key.write_text("sky-live-resolver-placeholder\n")
-    known_hosts.write_text("[127.0.0.1]:2222 ssh-ed25519 AAAALIVERESOLVER\n")
+    known_hosts.write_text(
+        "[127.0.0.1]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8g\n"
+    )
     key.chmod(0o600)
     known_hosts.chmod(0o600)
     try:
