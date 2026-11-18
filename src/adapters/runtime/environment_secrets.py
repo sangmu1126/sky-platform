@@ -352,14 +352,32 @@ class AwsAndPrivateEnvironmentSecretResolver:
         directory = Path(tempfile.mkdtemp(prefix="sky-environment-router-"))
         directory.chmod(0o700)
         private_key, known_hosts = directory / "identity", directory / "known_hosts"
+        directory_descriptor = None
         try:
-            for path, content in ((private_key, key), (known_hosts, hosts)):
-                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            directory_descriptor = os.open(
+                directory,
+                os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            info = os.fstat(directory_descriptor)
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o700
+            ):
+                raise ValueError("Private router material directory required")
+            for name, content in ((private_key.name, key), (known_hosts.name, hosts)):
+                descriptor = os.open(
+                    name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                    0o600,
+                    dir_fd=directory_descriptor,
+                )
                 with os.fdopen(descriptor, "wb") as output:
                     os.fchmod(output.fileno(), 0o600)
                     output.write(content)
                     output.flush()
                     os.fsync(output.fileno())
+            os.fsync(directory_descriptor)
             yield RouterTransportSecretMaterial(
                 private_key,
                 known_hosts,
@@ -367,7 +385,11 @@ class AwsAndPrivateEnvironmentSecretResolver:
                 target.known_hosts_sha256,
             )
         finally:
-            shutil.rmtree(directory)
+            try:
+                if directory_descriptor is not None:
+                    os.close(directory_descriptor)
+            finally:
+                shutil.rmtree(directory)
 
     @contextmanager
     def open(self, secret_ref, version_ref, *, execution, purpose, guard):
