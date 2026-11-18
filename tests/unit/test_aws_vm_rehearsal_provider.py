@@ -330,7 +330,9 @@ def test_provider_build_uses_offline_isolated_pip_and_minimal_environment(tmp_pa
         "--no-deps",
         "--no-build-isolation",
     } <= set(arguments)
-    assert observed["capture_output"] and observed["text"]
+    assert observed["stdout"] == module.subprocess.DEVNULL
+    assert observed["stderr"] == module.subprocess.DEVNULL
+    assert observed["timeout"] == 120
     assert Path(observed["cwd"]).name.startswith("sky-aws-vm-provider-")
     assert not set(observed["env"]) & {
         "PYTHONPATH",

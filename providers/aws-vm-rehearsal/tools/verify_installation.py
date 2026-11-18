@@ -17,6 +17,8 @@ PROVIDER = "sky-aws-vm-rehearsal"
 WORKSPACE = "isolated-rehearsal"
 _ENVIRONMENT_KEYS = ("LANG", "LC_ALL", "PATH", "SYSTEMROOT")
 _MAX_WHEEL_BYTES = 256 * 1024 * 1024
+_MAX_SUBPROCESS_OUTPUT = 2 * 1024 * 1024
+_SUBPROCESS_TIMEOUT = 60
 _CHECK_CONFIG_OUTPUT = (
     "Reviewed environment worker configuration valid; provider code, AWS and DB were not called"
 )
@@ -57,14 +59,25 @@ def _strict_json(value, *, maximum):
 
 
 def _run(arguments, *, env, cwd):
-    return subprocess.run(
-        arguments,
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=cwd,
-    ).stdout.strip()
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        subprocess.run(
+            arguments,
+            check=True,
+            stdout=output,
+            stderr=errors,
+            env=env,
+            cwd=cwd,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        output.seek(0, os.SEEK_END)
+        errors.seek(0, os.SEEK_END)
+        if output.tell() > _MAX_SUBPROCESS_OUTPUT or errors.tell() > _MAX_SUBPROCESS_OUTPUT:
+            raise ValueError("Bounded provider verification subprocess output required")
+        output.seek(0)
+        try:
+            return output.read().decode("utf-8").strip()
+        except UnicodeDecodeError:
+            raise ValueError("UTF-8 provider verification subprocess output required") from None
 
 
 def _environment(**overrides):

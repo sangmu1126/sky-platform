@@ -315,10 +315,11 @@ def build(project, output, *, python=sys.executable):
                 str(project),
             ],
             check=True,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             env=_environment(),
             cwd=temporary,
+            timeout=120,
         )
         wheels = list(Path(temporary).glob("*.whl"))
         if len(wheels) != 1:

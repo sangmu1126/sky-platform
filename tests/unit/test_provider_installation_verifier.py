@@ -157,6 +157,39 @@ def test_verifier_rejects_writable_private_file_parent(verifier, tmp_path):
         verifier._private_text_file(tmp_path / "manifest.json", "{}", maximum=1024)
 
 
+def test_verifier_subprocess_has_timeout_bounded_file_capture_and_utf8(verifier, tmp_path, monkeypatch):
+    observed = {}
+
+    def run(arguments, **kwargs):
+        observed.update(arguments=arguments, **kwargs)
+        kwargs["stdout"].write(b"verified\n")
+        kwargs["stderr"].write(b"diagnostic")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(verifier.subprocess, "run", run)
+    assert verifier._run(["provider-check"], env={}, cwd=tmp_path) == "verified"
+    assert observed["check"] is True and observed["timeout"] == verifier._SUBPROCESS_TIMEOUT
+    assert "capture_output" not in observed and "text" not in observed
+
+
+def test_verifier_subprocess_rejects_oversized_or_non_utf8_stdout(verifier, tmp_path, monkeypatch):
+    def oversized(_arguments, **kwargs):
+        kwargs["stdout"].write(b"x" * (verifier._MAX_SUBPROCESS_OUTPUT + 1))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(verifier.subprocess, "run", oversized)
+    with pytest.raises(ValueError, match="Bounded"):
+        verifier._run(["provider-check"], env={}, cwd=tmp_path)
+
+    def non_utf8(_arguments, **kwargs):
+        kwargs["stdout"].write(b"\xff")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(verifier.subprocess, "run", non_utf8)
+    with pytest.raises(ValueError, match="UTF-8"):
+        verifier._run(["provider-check"], env={}, cwd=tmp_path)
+
+
 def test_verifier_pinned_wheel_copy_has_exact_mode_under_restrictive_umask(verifier, tmp_path):
     source = tmp_path / "sky_platform-0.1.0-py3-none-any.whl"
     source.write_bytes(b"wheel")
