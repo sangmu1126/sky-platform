@@ -272,7 +272,7 @@ def test_verifier_pinned_wheel_copy_has_exact_mode_under_restrictive_umask(verif
     copies.mkdir()
     previous = os.umask(0o777)
     try:
-        destination, _digest = verifier._private_wheel(copies, source)
+        destination, _digest, _names = verifier._private_wheel(copies, source)
     finally:
         os.umask(previous)
     assert stat.S_IMODE(destination.stat().st_mode) == 0o400
@@ -322,6 +322,24 @@ def test_verifier_rejects_portable_wheel_path_collisions(verifier):
 
     with pytest.raises(ValueError, match="canonical"):
         verifier._verify_wheel_archive(content)
+
+
+@pytest.mark.parametrize("path", ["sky_platform/__init__.py", "SKY_PLATFORM/__init__.py"])
+def test_verifier_rejects_portable_path_collisions_across_wheels_before_pip(
+    verifier, tmp_path, monkeypatch, path
+):
+    base = tmp_path / "sky_platform-0.1.0-py3-none-any.whl"
+    provider = tmp_path / "sky_aws_vm_rehearsal_provider-0.1.0-py3-none-any.whl"
+    base.write_bytes(wheel_archive("sky_platform"))
+    provider.write_bytes(wheel_archive("sky_aws_vm_rehearsal_provider", recorded_extra=path))
+    monkeypatch.setattr(
+        verifier,
+        "_run",
+        lambda *_arguments, **_kwargs: pytest.fail("pip must not run for overlapping wheels"),
+    )
+
+    with pytest.raises(ValueError, match="paths overlap"):
+        verifier.verify(base, provider, python=sys.executable)
 
 
 def test_verifier_rejects_symlink_or_writable_wheel_before_pip(verifier, tmp_path):

@@ -253,11 +253,12 @@ def _verify_wheel_archive(data):
         recorded[name] = (digest, size)
     if set(recorded) != set(values):
         raise ValueError("Provider installation wheel RECORD differs from archive")
+    return frozenset(portable_names)
 
 
 def _private_wheel(root, source):
     data, digest = _wheel_bytes(source)
-    _verify_wheel_archive(data)
+    portable_names = _verify_wheel_archive(data)
     destination = root / source.name
     descriptor = os.open(
         destination,
@@ -272,7 +273,7 @@ def _private_wheel(root, source):
             os.fsync(output.fileno())
     finally:
         os.close(descriptor)
-    return destination, digest
+    return destination, digest, portable_names
 
 
 def _private_text_file(path, content, *, maximum):
@@ -491,6 +492,8 @@ def verify(base_wheel, provider_wheel, *, python=sys.executable):
         root = Path(temporary)
         root.chmod(0o700)
         pinned = tuple(_private_wheel(root, value) for value in sources)
+        if pinned[0][2] & pinned[1][2]:
+            raise ValueError("Provider installation wheel paths overlap")
         wheels = tuple(value[0] for value in pinned)
         wheel_digests = tuple(value[1] for value in pinned)
         for name in ("one", "two"):
