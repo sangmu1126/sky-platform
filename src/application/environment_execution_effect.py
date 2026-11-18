@@ -11,6 +11,30 @@ from application.environment_admission import RegisteredEnvironmentExecution
 _CHECK_REF = re.compile(r"ERC-[a-f0-9]{64}\Z")
 _RUNTIME_REF = re.compile(r"ETR-[a-f0-9]{64}\Z")
 _EVIDENCE_REF = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,127}\Z")
+_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
+_BASELINE_FIELDS = {
+    "plan_id",
+    "source",
+    "target",
+    "schema_sha256",
+    "tables",
+    "verified_scope",
+    "source_retained",
+    "routing_changed",
+    "ready_to_cutover",
+    "requires_final_write_freeze",
+}
+_RECEIPT_FIELDS = {
+    "plan_id",
+    "binding",
+    "baseline",
+    "single_writer",
+    "source_retained",
+    "availability_mode",
+    "continuous_sync",
+    "operation_elapsed_seconds",
+    "write_pause_budget_seconds",
+}
 
 
 def _digest(prefix, value):
@@ -89,9 +113,41 @@ class RegisteredEnvironmentTransferResources:
 
 def _baseline(transfer, value, *, scopes):
     plan = transfer.document()
+    fields = set(value) if isinstance(value, dict) else set()
+    tables = value.get("tables") if isinstance(value, dict) else None
+    sequences = value.get("sequences", []) if isinstance(value, dict) else None
     if (
         not isinstance(value, dict)
+        or fields not in (_BASELINE_FIELDS, _BASELINE_FIELDS | {"sequences"})
         or any(value.get(key) != plan[key] for key in ("plan_id", "source", "target"))
+        or not isinstance(value.get("schema_sha256"), str)
+        or not _DIGEST.fullmatch(value["schema_sha256"])
+        or not isinstance(tables, list)
+        or not 1 <= len(tables) <= 100
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"table", "rows", "sha256"}
+            or not isinstance(item["table"], str)
+            or not 1 <= len(item["table"].encode()) <= 63
+            or type(item["rows"]) is not int
+            or not 0 <= item["rows"] <= 100000
+            or not isinstance(item["sha256"], str)
+            or not _DIGEST.fullmatch(item["sha256"])
+            for item in tables
+        )
+        or not isinstance(sequences, list)
+        or len(sequences) > 100
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"table", "column", "next_value"}
+            or any(
+                not isinstance(item[name], str) or not 1 <= len(item[name].encode()) <= 63
+                for name in ("table", "column")
+            )
+            or type(item["next_value"]) is not int
+            or not 1 <= item["next_value"] < 2**63
+            for item in sequences
+        )
         or value.get("verified_scope") not in scopes
         or value.get("source_retained") is not True
         or value.get("routing_changed") is not False
@@ -173,7 +229,8 @@ class RegisteredEnvironmentTransferEffect:
             )
             elapsed = result.get("operation_elapsed_seconds")
             if (
-                result.get("plan_id") != transfer.document()["plan_id"]
+                set(result) != _RECEIPT_FIELDS
+                or result.get("plan_id") != transfer.document()["plan_id"]
                 or result.get("binding") != transfer.document()["target"]
                 or final is not result["baseline"]
                 or result.get("single_writer") is not True

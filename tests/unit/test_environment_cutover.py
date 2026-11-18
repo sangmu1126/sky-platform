@@ -42,7 +42,11 @@ def fixture():
         clock=lambda: now[0],
     )
     baseline = {
-        **spec.document(),
+        "plan_id": spec.document()["plan_id"],
+        "source": spec.document()["source"],
+        "target": spec.document()["target"],
+        "schema_sha256": "a" * 64,
+        "tables": [{"table": "scores", "rows": 0, "sha256": "b" * 64}],
         "verified_scope": "locked_table_snapshot_copy",
         "source_retained": True,
         "routing_changed": False,

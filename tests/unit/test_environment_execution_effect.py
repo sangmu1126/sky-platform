@@ -30,7 +30,11 @@ def resource_check(index, *, evidence=None):
 
 def baseline(execution, scope):
     return {
-        **execution.job.transfer.document(),
+        "plan_id": execution.job.transfer.document()["plan_id"],
+        "source": execution.job.transfer.document()["source"],
+        "target": execution.job.transfer.document()["target"],
+        "schema_sha256": "a" * 64,
+        "tables": [{"table": "scores", "rows": 0, "sha256": "b" * 64}],
         "verified_scope": scope,
         "source_retained": True,
         "routing_changed": False,
@@ -152,6 +156,35 @@ def test_effect_requires_finite_elapsed_time_within_write_pause_budget(elapsed):
     flow.promote.return_value["operation_elapsed_seconds"] = elapsed
 
     with pytest.raises(ValueError, match="Exact bounded"):
+        effect(execution, guard=Mock(), journal=Mock())
+
+
+@pytest.mark.parametrize("location", ["initial", "final", "receipt"])
+def test_effect_rejects_noncanonical_or_extra_receipt_metadata(location):
+    execution, effect, transport, flow, _result = effect_fixture()
+    if location == "initial":
+        transport.copy.return_value["private_detail"] = "must-not-persist"
+    elif location == "final":
+        flow.promote.return_value["baseline"]["private_detail"] = "must-not-persist"
+    else:
+        flow.promote.return_value["private_detail"] = "must-not-persist"
+
+    with pytest.raises(ValueError, match="Exact"):
+        effect(execution, guard=Mock(), journal=Mock())
+
+
+@pytest.mark.parametrize("change", ["schema", "table", "sequence"])
+def test_effect_requires_bounded_canonical_copy_evidence(change):
+    execution, effect, transport, _flow, _result = effect_fixture()
+    value = transport.copy.return_value
+    if change == "schema":
+        value["schema_sha256"] = "latest"
+    elif change == "table":
+        value["tables"][0]["detail"] = "must-not-persist"
+    else:
+        value["sequences"] = [{"table": "scores", "column": "id", "next_value": True}]
+
+    with pytest.raises(ValueError, match="Exact registered"):
         effect(execution, guard=Mock(), journal=Mock())
 
 
