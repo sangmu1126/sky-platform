@@ -373,6 +373,23 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
         self.reference = registration.document()["composition_ref"]
 
     @staticmethod
+    def _adapter_is_current(value, reference):
+        return (callable(value) or callable(getattr(value, "bind", None))) and getattr(
+            value, "reference", None
+        ) == reference
+
+    def _registration_is_current(self, execution):
+        r = self.registration
+        return (
+            isinstance(r, RegisteredEnvironmentRuntimeComposition)
+            and r.execution_revision == execution.revision
+            and r.router.transfer == execution.job.transfer
+            and self.reference == r.document()["composition_ref"]
+            and self._adapter_is_current(self.runtime_verifier, r.runtime_verifier_ref)
+            and self._adapter_is_current(self.entrypoint_probe, r.entrypoint_probe_ref)
+        )
+
+    @staticmethod
     def _connect(endpoint, material):
         def connect():
             import psycopg
@@ -395,7 +412,12 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
         return connect
 
     def __call__(self, execution, materials, *, guard, journal):
-        if execution != self.execution or not callable(guard) or not callable(journal):
+        if (
+            execution != self.execution
+            or not self._registration_is_current(execution)
+            or not callable(guard)
+            or not callable(journal)
+        ):
             raise ValueError("Exact guarded environment runtime execution required")
         if (
             not isinstance(materials, dict)

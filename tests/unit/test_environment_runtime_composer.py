@@ -385,6 +385,26 @@ def test_composer_binds_entrypoint_factory_to_its_separate_short_lived_token(tmp
     assert flow.traffic.router.probe_entrypoint() == {"binding_hash": "a" * 64}
 
 
+@pytest.mark.parametrize("implementation", ["runtime", "entrypoint", "registration", "composer"])
+def test_composer_rechecks_attested_adapter_pins_before_runtime_construction(tmp_path, implementation):
+    execution, registration, composer, materials = fixture(tmp_path)
+    if implementation == "runtime":
+        composer.runtime_verifier.reference = "RVR-" + "f" * 64
+    elif implementation == "entrypoint":
+        composer.entrypoint_probe.reference = "EPR-" + "f" * 64
+    elif implementation == "registration":
+        composer.registration = replace(registration, runtime_verifier_ref="RVR-" + "f" * 64)
+    else:
+        composer.reference = "RTC-" + "f" * 64
+
+    with pytest.raises(ValueError, match="Exact guarded"):
+        composer(execution, materials, guard=Mock(), journal=Mock())
+    assert composer.runtime_verifier.calls == []
+    assert composer.entrypoint_probe.calls == []
+    composer.sts.get_caller_identity.assert_not_called()
+    composer.rds.describe_db_instances.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "change",
     ["execution", "resource", "adapter", "secret-role", "ca", "ca-mode", "workspace", "router-hash"],
