@@ -14,6 +14,7 @@ import shlex
 from dataclasses import asdict, dataclass
 from datetime import UTC
 from pathlib import Path
+from types import MappingProxyType
 
 from adapters.build.process import bounded_command
 from adapters.runtime.environment_secrets import pinned_private_file
@@ -88,6 +89,13 @@ class PinnedVmInventoryCommand:
         except ValueError:
             raise ValueError("Private key and pinned host-key file must be operator-private") from None
         _pinned_ed25519_known_host(known_host, address, port)
+        self.environment = MappingProxyType(
+            {
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PATH": "/usr/bin:/bin",
+            }
+        )
         self.arguments = [
             "/usr/bin/ssh",
             "-F",
@@ -200,6 +208,7 @@ class PinnedVmInventoryCommand:
             ],
             timeout=15,
             output_limit=65536,
+            env=self.environment,
         )
         if code:
             raise DatabaseInventoryUnavailable("Pinned VM inventory transport unavailable")

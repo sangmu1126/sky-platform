@@ -154,6 +154,7 @@ class PinnedEnvironmentRouterCommand:
             ],
             timeout=20,
             output_limit=65536,
+            env=self.ssh.environment,
         )
         if code:
             raise RuntimeError("Registered router command outcome requires reconciliation")

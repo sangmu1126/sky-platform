@@ -257,6 +257,7 @@ class PinnedVmApplicationCommand:
             ],
             timeout=15,
             output_limit=128 * 1024,
+            env=self.ssh.environment,
         )
         if code:
             raise RuntimeError("Pinned VM application inventory unavailable")
