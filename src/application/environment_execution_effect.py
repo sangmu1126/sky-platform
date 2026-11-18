@@ -211,11 +211,12 @@ class RegisteredEnvironmentTransferEffect:
             verification = transport.verify_registration(transfer, guard=guard)
             if (
                 not isinstance(verification, dict)
+                or set(verification) != {"plan_id", "registration_verified", "mutation"}
                 or verification.get("plan_id") != transfer.document()["plan_id"]
                 or verification.get("registration_verified") is not True
                 or verification.get("mutation") is not False
             ):
-                raise ValueError("Current transfer registration verification required")
+                raise ValueError("Exact current transfer registration verification required")
             guard()
             journal({"stage": "initial_copy", "status": "intent"})
             baseline = _baseline(

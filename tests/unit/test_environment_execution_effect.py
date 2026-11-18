@@ -159,10 +159,12 @@ def test_effect_requires_finite_elapsed_time_within_write_pause_budget(elapsed):
         effect(execution, guard=Mock(), journal=Mock())
 
 
-@pytest.mark.parametrize("location", ["initial", "final", "receipt"])
+@pytest.mark.parametrize("location", ["verification", "initial", "final", "receipt"])
 def test_effect_rejects_noncanonical_or_extra_receipt_metadata(location):
     execution, effect, transport, flow, _result = effect_fixture()
-    if location == "initial":
+    if location == "verification":
+        transport.verify_registration.return_value["private_detail"] = "must-not-persist"
+    elif location == "initial":
         transport.copy.return_value["private_detail"] = "must-not-persist"
     elif location == "final":
         flow.promote.return_value["baseline"]["private_detail"] = "must-not-persist"
