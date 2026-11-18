@@ -68,6 +68,7 @@ def test_worker_does_not_silently_start_legacy_web_or_claim_deployments():
         ("operating-review", "interfaces.operating_review_worker.run_operating_review"),
         ("preparation-outbox", "interfaces.b_sqlite_runtime.run_sqlite_worker"),
         ("prepare-sqlite", "interfaces.b_sqlite_runtime.run_sqlite_worker"),
+        ("environment-execution", "interfaces.environment_execution_worker.run_environment_execution_worker"),
     ],
 )
 def test_integrated_worker_modes_keep_their_execution_boundary(mode, runner):

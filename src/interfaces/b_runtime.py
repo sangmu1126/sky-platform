@@ -136,6 +136,7 @@ def main(argv):
             "dedicated-database-recover",
             "dedicated-database-recovery-status",
             "operating-review",
+            "environment-execution",
         ),
         required=True,
         help="Select outbox publisher or build consumer; ECS deployment requires --deploy-built-image",
@@ -173,6 +174,10 @@ def main(argv):
         "--promotion-organization-id", help="Requester organization for preparation admission"
     )
     worker.add_argument("--operating-review-policy-config")
+    worker.add_argument(
+        "--environment-execution-config",
+        help="Operator manifest pinning installed reviewed environment compositions",
+    )
     worker.add_argument(
         "--initialize-pool",
         action="store_true",
@@ -580,10 +585,17 @@ def main(argv):
         parser.error("Recovery options require dedicated-database-recover mode")
     if args.recovery_config is not None and args.worker_mode != "dedicated-database-recover":
         parser.error("Recovery registration is used only for dedicated-database-recover")
+    if args.environment_execution_config and args.worker_mode != "environment-execution":
+        parser.error("Environment execution manifest requires environment-execution mode")
     if args.worker_mode == "operating-review":
         from interfaces.operating_review_worker import run_operating_review
 
         run_operating_review(args, parser)
+        return
+    if args.worker_mode == "environment-execution":
+        from interfaces.environment_execution_worker import run_environment_execution_worker
+
+        run_environment_execution_worker(args, parser)
         return
     if args.collect_capacity_metrics:
         parser.error("Capacity collection requires operating review mode")
