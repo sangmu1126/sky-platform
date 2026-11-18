@@ -8,9 +8,9 @@ This collector is read-only and never adopts or allocates an application DB.
 import hashlib
 import re
 from datetime import UTC, datetime
-from pathlib import Path
 
 from adapters.database.environment_transfer import PostgresEnvironmentTransfer, RegisteredTransferEndpoint
+from adapters.runtime.pinned_ca import pinned_ca_bundle
 from domain.database_inventory import DatabaseInventoryUnavailable, DatabaseResourceEvidence
 
 
@@ -41,10 +41,9 @@ class PostgresTransferOwnershipVerifier:
                 or proof.placement != placement
                 or (proof.server_hostname, proof.server_port) != (registration.hostname, registration.port)
                 or not 0 <= (now - proof.observed_at).total_seconds() < 60
-                or hashlib.sha256(Path(registration.sslrootcert).read_bytes()).hexdigest()
-                != registration.ca_sha256
             ):
                 raise ValueError("Current provider and CA proof required")
+            pinned_ca_bundle(registration.sslrootcert, registration.ca_sha256)
             with self.connect() as db:
                 db.read_only = True
                 PostgresEnvironmentTransfer._verify_connection(db, self.endpoint)

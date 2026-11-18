@@ -2,17 +2,16 @@
 
 import hashlib
 import json
-import os
 import re
 import socket
 import ssl
-import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
+from adapters.runtime.pinned_ca import pinned_ca_bundle
 from adapters.runtime.provider_identity import (
     ObservedProviderResourceIdentity,
     RegisteredProviderResourceIdentity,
@@ -21,27 +20,10 @@ from domain.environment_transition import _digest, _ref
 
 
 def _ca_bundle(path):
-    value = Path(path)
-    if not value.is_absolute() or value.is_symlink():
-        raise ValueError("Absolute plain CA bundle required")
-    descriptor = os.open(value, os.O_RDONLY | os.O_NOFOLLOW)
     try:
-        metadata = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_mode & 0o022
-            or not 1 <= metadata.st_size <= 1024 * 1024
-        ):
-            raise ValueError("Immutable bounded CA bundle required")
-        data = os.read(descriptor, metadata.st_size + 1)
-        if len(data) != metadata.st_size:
-            raise ValueError("CA bundle changed while reading")
-        text = data.decode()
-        if "-----BEGIN CERTIFICATE-----" not in text:
-            raise ValueError("PEM CA bundle required")
-        return data, hashlib.sha256(data).hexdigest()
-    finally:
-        os.close(descriptor)
+        return pinned_ca_bundle(path)
+    except ValueError:
+        raise ValueError("Immutable bounded CA bundle required") from None
 
 
 def https_provider_identity_authority_ref(ca_bundle, trust_profile_ref):

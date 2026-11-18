@@ -5,60 +5,27 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
-import os
 import re
 import socket
 import ssl
-import stat
 from dataclasses import dataclass
-from pathlib import Path
 
 from adapters.runtime.environment_secrets import ControlRuntimeSecretMaterial
+from adapters.runtime.pinned_ca import pinned_ca_bundle
 from adapters.runtime.pinned_https import pinned_https_endpoint
 from adapters.runtime.private_network import pinned_private_address
 from domain.database_transfer import RegisteredDatabaseTransfer
 
 
 def _ca_bundle(path, expected):
-    value = Path(path)
-    if (
-        not isinstance(expected, str)
-        or not re.fullmatch(r"[a-f0-9]{64}", expected)
-        or not value.is_absolute()
-    ):
-        raise ValueError("Pinned entrypoint CA bundle required")
-    descriptor = os.open(value, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
     try:
-        before = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-            or not 1 <= before.st_size <= 1024 * 1024
-        ):
-            raise ValueError("Pinned entrypoint CA bundle required")
-        content = bytearray()
-        while len(content) <= 1024 * 1024:
-            chunk = os.read(descriptor, min(65536, 1024 * 1024 + 1 - len(content)))
-            if not chunk:
-                break
-            content.extend(chunk)
-        after = os.fstat(descriptor)
-        if (
-            len(content) != before.st_size
-            or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-            or hashlib.sha256(content).hexdigest() != expected
-        ):
-            raise ValueError("Pinned entrypoint CA bundle required")
-        try:
-            text = bytes(content).decode()
-        except UnicodeError:
-            raise ValueError("Pinned entrypoint CA bundle required") from None
-        if "-----BEGIN CERTIFICATE-----" not in text:
-            raise ValueError("Pinned entrypoint CA bundle required")
-        return text
-    finally:
-        os.close(descriptor)
+        content, _digest = pinned_ca_bundle(path, expected)
+    except ValueError:
+        raise ValueError("Pinned entrypoint CA bundle required")
+    try:
+        return content.decode()
+    except UnicodeError:  # pragma: no cover -- the shared reader already proves UTF-8
+        raise ValueError("Pinned entrypoint CA bundle required") from None
 
 
 def _unique(pairs):

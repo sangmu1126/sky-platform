@@ -13,12 +13,13 @@ from domain.database_inventory import DatabaseInventoryUnavailable, DatabaseReso
 from domain.database_migration import DatabaseLocation, DatabasePlacement
 
 NOW = datetime(2026, 10, 30, 12, tzinfo=UTC)
+CA = b"-----BEGIN CERTIFICATE-----\npinned-test-ca\n-----END CERTIFICATE-----\n"
 
 
 @pytest.fixture
 def reader(tmp_path):
     ca = tmp_path / "ca.pem"
-    ca.write_bytes(b"pinned test CA bytes")
+    ca.write_bytes(CA)
     placement = DatabasePlacement(
         "org",
         "app",
@@ -138,9 +139,24 @@ def test_encryption_is_checked_in_addition_to_verify_full_configuration(reader):
     db.execute.assert_not_called()
 
 
-def test_changed_ca_fails_before_connect(reader):
+@pytest.mark.parametrize("change", ["digest", "mode", "symlink", "non-pem"])
+def test_untrusted_ca_file_fails_before_connect(reader, tmp_path, change):
     value, _, _, ca = reader
-    ca.write_bytes(b"replaced CA")
+    if change == "digest":
+        ca.write_bytes(CA.replace(b"pinned", b"changed"))
+    elif change == "mode":
+        ca.chmod(0o666)
+    elif change == "symlink":
+        replacement = tmp_path / "replacement.pem"
+        replacement.write_bytes(CA)
+        ca.unlink()
+        ca.symlink_to(replacement)
+    else:
+        ca.write_bytes(b"not-a-pem-ca")
+        value.registration = replace(
+            value.registration,
+            ca_sha256=hashlib.sha256(ca.read_bytes()).hexdigest(),
+        )
     with pytest.raises(DatabaseInventoryUnavailable):
         collect(value)
     value.connect.assert_not_called()

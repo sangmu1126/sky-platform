@@ -13,6 +13,7 @@ from datetime import UTC
 from pathlib import Path
 
 from adapters.database.promotion_copy import _inventory
+from adapters.runtime.pinned_ca import pinned_ca_bundle
 from domain.database_inventory import (
     DatabaseInventory,
     DatabaseInventoryUnavailable,
@@ -91,7 +92,9 @@ class PostgresMigrationInventory:
             resource.server_port,
         ) != (placement, registration.hostname, registration.port):
             raise ValueError("Verified resource differs from inventory registration")
-        if hashlib.sha256(Path(registration.sslrootcert).read_bytes()).hexdigest() != registration.ca_sha256:
+        try:
+            pinned_ca_bundle(registration.sslrootcert, registration.ca_sha256)
+        except ValueError:
             raise ValueError("Inventory CA certificate changed")
         with self.connect() as db:
             guard()

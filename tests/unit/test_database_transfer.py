@@ -14,6 +14,7 @@ from domain.database_migration import DatabaseLocation, DatabasePlacement, Migra
 from domain.database_transfer import RegisteredDatabaseTransfer
 
 NOW = datetime(2026, 10, 30, 14, tzinfo=UTC)
+CA = "-----BEGIN CERTIFICATE-----\ntest-ca\n-----END CERTIFICATE-----\n"
 
 
 def transfer():
@@ -42,7 +43,7 @@ def transfer():
 def adapter(tmp_path):
     spec = transfer()
     ca = tmp_path / "ca.pem"
-    ca.write_text("test-ca-bytes")
+    ca.write_text(CA)
     digest = hashlib.sha256(ca.read_bytes()).hexdigest()
     endpoints = tuple(
         RegisteredTransferEndpoint(

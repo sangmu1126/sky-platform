@@ -122,6 +122,7 @@ jobs:
               'adapters/runtime/environment_application_evidence.py',
               'adapters/runtime/private_network.py',
               'adapters/runtime/pinned_https.py',
+              'adapters/runtime/pinned_ca.py',
               'adapters/onprem/runtime_inventory.py',
               'adapters/onprem/runtime_inventory_install.py',
               'adapters/aws/provider_identity.py',

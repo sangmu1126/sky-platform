@@ -6,14 +6,13 @@ from the actual resource port; its certificate must still verify the real host.
 This is a write-pause transport, not CDC or a zero-downtime implementation.
 """
 
-import hashlib
 import ipaddress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 
 from adapters.database.migration_inventory import PostgresInventoryRegistration
 from adapters.database.promotion_sync import PostgresPromotionSynchronizer
+from adapters.runtime.pinned_ca import pinned_ca_bundle
 from domain.database_inventory import DatabaseResourceEvidence
 from domain.database_transfer import RegisteredDatabaseTransfer
 
@@ -85,10 +84,9 @@ class PostgresEnvironmentTransfer(PostgresPromotionSynchronizer):
                 or not 0 <= (now - resource.observed_at).total_seconds() < 60
             ):
                 raise ValueError("Current registered resource verification required")
-            if (
-                hashlib.sha256(Path(registration.sslrootcert).read_bytes()).hexdigest()
-                != registration.ca_sha256
-            ):
+            try:
+                pinned_ca_bundle(registration.sslrootcert, registration.ca_sha256)
+            except ValueError:
                 raise ValueError("Transfer CA certificate changed")
             guard()
 
