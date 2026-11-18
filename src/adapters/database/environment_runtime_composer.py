@@ -120,8 +120,22 @@ def _runtime_workspace(material):
                 after = os.fstat(source)
                 if (
                     len(content) != before.st_size
-                    or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                    or (
+                        before.st_dev,
+                        before.st_ino,
+                        before.st_mode,
+                        before.st_uid,
+                        before.st_size,
+                        before.st_mtime_ns,
+                    )
+                    != (
+                        after.st_dev,
+                        after.st_ino,
+                        after.st_mode,
+                        after.st_uid,
+                        after.st_size,
+                        after.st_mtime_ns,
+                    )
                     or hashlib.sha256(content).hexdigest() != expected
                 ):
                     raise ValueError("Private runtime transport material changed")
@@ -136,6 +150,13 @@ def _runtime_workspace(material):
 def _materialize_ca(directory, directory_descriptor, name, content):
     if not re.fullmatch(r"[a-z-]{1,32}\.pem", name):
         raise ValueError("Canonical runtime CA filename required")
+    workspace = os.fstat(directory_descriptor)
+    if (
+        not stat.S_ISDIR(workspace.st_mode)
+        or workspace.st_uid != os.getuid()
+        or stat.S_IMODE(workspace.st_mode) != 0o700
+    ):
+        raise ValueError("Private runtime material workspace required")
     path = directory / name
     descriptor = os.open(
         name,
@@ -145,6 +166,7 @@ def _materialize_ca(directory, directory_descriptor, name, content):
     )
     try:
         with os.fdopen(descriptor, "wb", closefd=False) as output:
+            os.fchmod(output.fileno(), 0o400)
             output.write(content)
             output.flush()
             os.fsync(output.fileno())
@@ -414,6 +436,7 @@ class RegisteredAwsVmEnvironmentRuntimeComposer:
                     ),
                 ),
             )
+            os.fsync(workspace_descriptor)
         finally:
             os.close(workspace_descriptor)
         ssh = PinnedVmInventoryCommand(

@@ -1,6 +1,7 @@
 """The AWS/VM composer binds public registrations and short-lived materials."""
 
 import hashlib
+import os
 import ssl
 from dataclasses import replace
 from pathlib import Path
@@ -14,6 +15,8 @@ from adapters.database.environment_control import EnvironmentApplicationControl
 from adapters.database.environment_runtime_composer import (
     RegisteredAwsVmEnvironmentRuntimeComposer,
     RegisteredEnvironmentRuntimeComposition,
+    _materialize_ca,
+    _runtime_workspace,
 )
 from adapters.database.environment_transfer import RegisteredTransferEndpoint
 from adapters.database.migration_inventory import PostgresInventoryRegistration
@@ -279,6 +282,40 @@ def test_composer_binds_runtime_evidence_factory_to_short_lived_router_transport
         materials["router_transport"].private_key
     )
     assert flow.traffic.router.verify_runtime(flow.traffic.router.bindings[0]) is True
+
+
+def test_runtime_ca_materialization_uses_private_directory_fd_and_exact_mode(tmp_path):
+    workspace = tmp_path / "runtime"
+    workspace.mkdir(mode=0o700)
+    descriptor = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
+    previous = os.umask(0o777)
+    try:
+        path = _materialize_ca(workspace, descriptor, "source-ca.pem", b"registered-ca")
+    finally:
+        os.umask(previous)
+        os.close(descriptor)
+    assert path.read_bytes() == b"registered-ca"
+    assert path.stat().st_mode & 0o777 == 0o400
+
+
+def test_runtime_workspace_detects_transport_mode_change_during_read(tmp_path):
+    _execution, _registration, _composer, materials = fixture(tmp_path)
+    original = os.read
+    changed = False
+
+    def mutate_mode(descriptor, size):
+        nonlocal changed
+        content = original(descriptor, size)
+        if not changed:
+            os.fchmod(descriptor, 0o400)
+            changed = True
+        return content
+
+    with (
+        patch("adapters.database.environment_runtime_composer.os.read", side_effect=mutate_mode),
+        pytest.raises(ValueError, match="transport material changed"),
+    ):
+        _runtime_workspace(materials["router_transport"])
 
 
 def test_composer_binds_entrypoint_factory_to_its_separate_short_lived_token(tmp_path):
