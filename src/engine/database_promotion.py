@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 
 from domain.database import DatabaseBinding
+from domain.database_migration import validate_legacy_promotion_route
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _TRIGGERS = {"scheduled_review", "capacity_review", "isolation_review"}
@@ -67,14 +68,7 @@ def plan_database_promotion(
         raise TypeError("Database promotion requires typed source and target bindings")
     if not isinstance(trigger, PromotionTrigger):
         raise TypeError("Database promotion requires a recorded trigger")
-    if source.role != "shared_workload" or target.role != "dedicated_workload":
-        raise ValueError("Only workload shared-to-dedicated promotion can be planned")
-    if (source.organization_id, source.application_id) != (target.organization_id, target.application_id):
-        raise ValueError("Promotion cannot cross organization or application ownership")
-    if (source.account_id, source.region) != (target.account_id, target.region):
-        raise ValueError("Cross-account or cross-region migration is not implemented")
-    if source.instance_id == target.instance_id:
-        raise ValueError("Dedicated RDS must be a different instance")
+    validate_legacy_promotion_route(source, target)
     if not isinstance(source_revision, str) or not re.fullmatch(r"[a-f0-9]{64}", source_revision):
         raise ValueError("Promotion requires a source revision digest")
     if type(websocket_sessions) is not bool:

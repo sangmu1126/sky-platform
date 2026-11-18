@@ -6,6 +6,7 @@ import json
 from psycopg import sql
 
 from adapters.database.promotion_copy import (
+    _copy_checkpoint,
     PostgresPromotionCopy,
     _digest,
     _inventory,
@@ -30,6 +31,13 @@ class PostgresPromotionSynchronizer(PostgresPromotionCopy):
             or expected_destination.get("target") != plan["target"]
         ):
             raise ValueError("Exact promotion binding and baseline required")
+        return self._refresh_registered_snapshot(
+            plan, source, target, expected_destination=expected_destination, guard=guard, reverse=reverse
+        )
+
+    def _refresh_registered_snapshot(
+        self, plan, source, target, *, expected_destination, guard, reverse=False, verify_connections=None
+    ):
         read, write = (
             (self.target_connect, self.source_connect)
             if reverse
@@ -38,6 +46,8 @@ class PostgresPromotionSynchronizer(PostgresPromotionCopy):
         read_binding, write_binding = (target, source) if reverse else (source, target)
         guard()
         with read() as src, write() as dst:
+            if verify_connections is not None:
+                verify_connections(dst, src) if reverse else verify_connections(src, dst)
             for connection, binding in ((src, read_binding), (dst, write_binding)):
                 if connection.execute("SELECT current_database()").fetchone() != (binding.database_name,):
                     raise ValueError("Connected database differs from approved binding")
@@ -98,7 +108,7 @@ class PostgresPromotionSynchronizer(PostgresPromotionCopy):
                     ) as outgoing,
                 ):
                     for chunk in incoming:
-                        guard()
+                        _copy_checkpoint(guard)
                         outgoing.write(chunk)
                 if _digest(dst, name, self.max_rows, self.max_bytes) != before:
                     raise ValueError("Refresh integrity mismatch")

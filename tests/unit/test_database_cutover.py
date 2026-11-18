@@ -115,6 +115,58 @@ def test_foreign_baseline_rejected_before_fencing_or_quiesce():
     assert source.enabled and target.enabled and not traffic.closed
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"account_id": "222222222222"},
+        {"region": "ap-northeast-1"},
+        {"application_id": "foreign"},
+        {"organization_id": "foreign"},
+        {"role": "sky_state"},
+        {"instance_id": "pool"},
+    ],
+)
+def test_unsupported_route_rejected_before_any_external_effect(change):
+    from dataclasses import replace
+
+    flow, source, target, traffic, events = fixture()
+    target.binding = replace(target.binding, **change)
+    plan = {"plan_id": "test", "source": asdict(source.binding), "target": asdict(target.binding)}
+    with pytest.raises(ValueError, match="registered cutover"):
+        flow.promote(plan, plan)
+    assert source.enabled and target.enabled and not traffic.closed
+    assert events == []
+
+
+def test_provider_neutral_review_plan_cannot_be_submitted_to_legacy_executor():
+    from domain.database_migration import DatabaseLocation, DatabasePlacement, MigrationSafetyPolicy
+    from engine.database_migration import plan_database_migration
+
+    flow, source, target, traffic, events = fixture()
+    placement = DatabasePlacement(
+        "org",
+        "app",
+        "shared_workload",
+        DatabaseLocation("aws", "rds_postgresql", "111111111111", "ap-northeast-2"),
+        "pool",
+        "app_db",
+        "owner",
+        16,
+    )
+    from dataclasses import replace
+
+    review = plan_database_migration(
+        placement,
+        replace(placement, role="dedicated_workload", instance_id="dedicated"),
+        MigrationSafetyPolicy(120, 600, 86400),
+        source_revision="a" * 64,
+    )
+    with pytest.raises(TypeError):
+        flow.promote(review, review)
+    assert source.enabled and target.enabled and not traffic.closed
+    assert events == []
+
+
 def test_read_preserving_mode_requires_two_explicit_write_fences():
     flow, source, target, traffic, _ = fixture()
     with pytest.raises(TypeError, match="Both registered"):

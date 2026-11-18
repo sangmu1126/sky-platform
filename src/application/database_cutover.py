@@ -8,6 +8,7 @@ requires reconciliation rather than automatic replay. No schema changes or CDC.
 from dataclasses import asdict
 
 from domain.database import DatabaseBinding
+from domain.database_migration import validate_legacy_promotion_route
 from ports.database_promotion import ReadPreservingWriteFence
 
 
@@ -39,13 +40,12 @@ class DatabaseCutover:
 
     def _validate(self, plan, baseline):
         source, target = DatabaseBinding(**plan["source"]), DatabaseBinding(**plan["target"])
+        try:
+            validate_legacy_promotion_route(source, target)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Exact registered cutover bindings and baseline required") from exc
         if (
-            source.role != "shared_workload"
-            or target.role != "dedicated_workload"
-            or source.instance_id == target.instance_id
-            or (source.organization_id, source.application_id, source.account_id, source.region)
-            != (target.organization_id, target.application_id, target.account_id, target.region)
-            or asdict(self.source.binding) != plan["source"]
+            asdict(self.source.binding) != plan["source"]
             or asdict(self.target.binding) != plan["target"]
             or baseline.get("plan_id") != plan["plan_id"]
             or baseline.get("source") != plan["source"]
@@ -124,8 +124,11 @@ class OperationCutoverJournal:
     adapter never claims that a DB lease can revoke a remote AWS request.
     """
 
-    def __init__(self, store, lease):
+    def __init__(self, store, lease, *, effect_kind=None):
+        if effect_kind not in {None, "environment_copy", "environment_transfer", "environment_recover"}:
+            raise ValueError("Registered environment effect kind required")
         self.store, self.lease = store, lease
+        self.effect_kind = effect_kind
         self.events = []
 
     def guard(self):
@@ -137,7 +140,10 @@ class OperationCutoverJournal:
         operation = self.store.get(self.lease.operation_id)
         if operation.external_pending or operation.external_intent is not None:
             raise ValueError("Existing external intent requires reconciliation")
-        if not self.store.begin_external(self.lease, {"action": "database_cutover", "plan": plan}):
+        intent = {"action": self.effect_kind or "database_cutover", "plan": plan}
+        if self.effect_kind is not None:
+            intent["kind"] = self.effect_kind
+        if not self.store.begin_external(self.lease, intent):
             raise RuntimeError("Cutover intent could not be persisted")
 
     def __call__(self, event):

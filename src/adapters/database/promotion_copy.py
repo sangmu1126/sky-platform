@@ -31,6 +31,16 @@ _TYPES = {
 }
 
 
+def _copy_checkpoint(guard):
+    """Only uncommitted COPY chunks may use an explicitly supplied local check.
+
+    Ordinary guards retain their existing behavior. All adapters perform a full
+    guard before COMMIT; this hook never authorizes a standalone external effect.
+    """
+    checkpoint = getattr(guard, "uncommitted_copy_checkpoint", guard)
+    checkpoint()
+
+
 def _identities(connection):
     values = connection.execute("""SELECT t.relname,a.attname,a.attidentity,a.atttypid,s.relname,n.nspname,
         q.seqtypid,q.seqstart,q.seqincrement,q.seqmax,q.seqmin,q.seqcache,q.seqcycle
@@ -110,12 +120,15 @@ def _restart_sequences(connection, positions, *, guard):
         raise ValueError("Copied identity sequence state differs from source")
 
 
-def _inventory(connection):
+def _inventory(connection, *, guard=None):
     # Views, unowned/custom sequences, generated/default expressions, functions, triggers,
     # foreign keys and non-primary indexes need a richer schema migration path.
+    check = guard if guard is not None else lambda: None
+    check()
     objects = connection.execute("""SELECT c.relname,c.relkind,c.relpersistence,c.relrowsecurity
         FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
         WHERE n.nspname='public' AND c.relkind NOT IN ('i') ORDER BY c.relname""").fetchall()
+    check()
     identities = _identities(connection)
     owned = {sequence for sequence, _ in identities.values()}
     if any(
@@ -124,6 +137,7 @@ def _inventory(connection):
     ):
         raise ValueError("Unsupported relation, persistence or row security")
     objects = [item for item in objects if item[1] == "r"]
+    check()
     if connection.execute("""SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT IN
         ('public','information_schema') AND nspname NOT LIKE 'pg_%') OR
         EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public') OR
@@ -135,6 +149,7 @@ def _inventory(connection):
         raise ValueError("Unsupported schema, routine, trigger or extension")
     tables = []
     for name, *_ in objects:
+        check()
         columns = connection.execute(
             """SELECT a.attname,a.atttypid,a.atttypmod,a.attnotnull,
             a.atthasdef,a.attidentity,a.attgenerated,a.attcollation=t.typcollation
@@ -152,6 +167,7 @@ def _inventory(connection):
             for column, oid, mod, _, default, identity, generated, collation in columns
         ):
             raise ValueError("Unsupported column type, precision, collation or default")
+        check()
         constraints = connection.execute(
             """SELECT contype,conkey,condeferrable,condeferred FROM pg_constraint
             WHERE conrelid=%s::regclass""",
@@ -159,6 +175,7 @@ def _inventory(connection):
         ).fetchall()
         if any(kind != "p" or deferred or deferrable for kind, _, deferrable, deferred in constraints):
             raise ValueError("Unsupported table constraint")
+        check()
         indexes = connection.execute(
             """SELECT indisprimary FROM pg_index
             WHERE indrelid=%s::regclass""",
@@ -167,6 +184,7 @@ def _inventory(connection):
         if any(not primary for (primary,) in indexes):
             raise ValueError("Unsupported secondary index")
         # conkey uses physical attnums; refuse dropped columns instead of guessing.
+        check()
         dropped = connection.execute(
             "SELECT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=%s::regclass AND attisdropped)",
             (sql.Identifier("public", name).as_string(connection),),
@@ -298,8 +316,18 @@ class PostgresPromotionCopy:
             or target.database_name.startswith("sky_pool_")
         ):
             raise ValueError("Copy must bind one workload to a distinct owned instance")
+        return self._copy_registered_snapshot(plan, source, target, guard=guard)
+
+    def _copy_registered_snapshot(self, plan, source, target, *, guard, verify_connections=None):
+        """Transport core; callers must validate their own typed route contract.
+
+        The legacy entrypoint above intentionally retains its original limits.
+        Provider-neutral transfers use a separate registered public adapter.
+        """
         guard()
         with self.source_connect() as src, self.target_connect() as dst:
+            if verify_connections is not None:
+                verify_connections(src, dst)
             for connection, binding in [(src, source), (dst, target)]:
                 if connection.execute("SELECT current_database()").fetchone() != (binding.database_name,):
                     raise ValueError("Connected database differs from approved binding")
@@ -351,7 +379,7 @@ class PostgresPromotionCopy:
                     ) as write,
                 ):
                     for chunk in read:
-                        guard()
+                        _copy_checkpoint(guard)
                         write.write(chunk)
                 after = _digest(dst, name, self.max_rows, self.max_bytes)
                 if before != after:

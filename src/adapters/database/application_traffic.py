@@ -25,6 +25,28 @@ class RegisteredApplicationTraffic:
     def __init__(
         self, endpoint, token, *, controller_id, source, target, guard, transport=None, ssl_context=None
     ):
+        left, right = DatabaseBinding(**source), DatabaseBinding(**target)
+        if (
+            left.role != "shared_workload"
+            or right.role != "dedicated_workload"
+            or left.instance_id == right.instance_id
+            or (left.organization_id, left.application_id, left.account_id, left.region)
+            != (right.organization_id, right.application_id, right.account_id, right.region)
+        ):
+            raise ValueError("Same-application promotion bindings required")
+        self._initialize_registered(
+            endpoint,
+            token,
+            controller_id=controller_id,
+            bindings=[asdict(left), asdict(right)],
+            guard=guard,
+            transport=transport,
+            ssl_context=ssl_context,
+        )
+
+    def _initialize_registered(
+        self, endpoint, token, *, controller_id, bindings, guard, transport=None, ssl_context=None
+    ):
         url = urlsplit(endpoint)
         if (
             url.scheme != "https"
@@ -41,20 +63,11 @@ class RegisteredApplicationTraffic:
             or not controller_id
         ):
             raise ValueError("Pinned HTTPS control endpoint and credentials required")
-        left, right = DatabaseBinding(**source), DatabaseBinding(**target)
-        if (
-            left.role != "shared_workload"
-            or right.role != "dedicated_workload"
-            or left.instance_id == right.instance_id
-            or (left.organization_id, left.application_id, left.account_id, left.region)
-            != (right.organization_id, right.application_id, right.account_id, right.region)
-        ):
-            raise ValueError("Same-application promotion bindings required")
         self.endpoint, self._token, self.controller_id = endpoint, token, controller_id
         self.ssl_context = ssl_context or ssl.create_default_context()
         if self.ssl_context.verify_mode != ssl.CERT_REQUIRED or not self.ssl_context.check_hostname:
             raise ValueError("Control TLS must verify certificate and hostname")
-        self.bindings = [asdict(left), asdict(right)]
+        self.bindings = bindings
         self.guard, self.transport = guard, transport or self._post
         self.binding, self.generation, self.probed = None, None, False
         self.uncertain = False

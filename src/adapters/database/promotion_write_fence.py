@@ -20,6 +20,10 @@ class PostgresPromotionWriteFence(PostgresApplicationFence, ReadPreservingWriteF
             raise ValueError("Explicit workload-local write fence required")
         if self.binding.role not in {"shared_workload", "dedicated_workload"}:
             raise ValueError("Only workload writes may be fenced")
+        return self._set_registered_writes(enabled, guard=guard)
+
+    def _set_registered_writes(self, enabled, *, guard):
+        """ACL core shared with explicitly registered environment transfers."""
         guard()
         with self.connect() as db:
             db.execute("SET LOCAL lock_timeout='5s'")

@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 
 class PinnedHTTPSControlTransport:
-    def __init__(self, endpoint, token, *, address, ssl_context, guard):
+    def __init__(self, endpoint, token, *, address, ssl_context, guard, response_timeout=30):
         url = urlsplit(endpoint)
         ip = ipaddress.ip_address(address)
         if (
@@ -33,18 +33,24 @@ class PinnedHTTPSControlTransport:
             or "\n" in token
             or ssl_context.verify_mode != ssl.CERT_REQUIRED
             or not ssl_context.check_hostname
+            or type(response_timeout) is not int
+            or not 1 <= response_timeout <= 60
         ):
             raise ValueError("Registered private address, TLS identity and control credential required")
         self.url, self.address, self._token = url, str(ip), token
         self.context, self.guard = ssl_context, guard
+        self.response_timeout = response_timeout
 
     def __call__(self, command):
         self.guard()
-        connection = http.client.HTTPSConnection(self.url.hostname, self.url.port or 443, timeout=30)
+        connection = http.client.HTTPSConnection(
+            self.url.hostname, self.url.port or 443, timeout=self.response_timeout
+        )
         try:
             raw = socket.create_connection((self.address, self.url.port or 443), timeout=30)
             try:
                 connection.sock = self.context.wrap_socket(raw, server_hostname=self.url.hostname)
+                connection.sock.settimeout(self.response_timeout)
             except BaseException:
                 raw.close()
                 raise

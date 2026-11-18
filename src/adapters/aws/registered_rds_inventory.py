@@ -1,0 +1,99 @@
+"""Read-only immutable identity checks for an explicitly registered existing RDS.
+
+This is instance evidence only; logical DB ownership must be composed with the
+SQL verifier. It neither adopts pool allocations nor creates resources.
+"""
+
+import hashlib
+import json
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
+from domain.database_inventory import DatabaseInventoryUnavailable, DatabaseResourceEvidence
+from domain.database_migration import DatabasePlacement
+
+
+@dataclass(frozen=True)
+class RegisteredRdsInventory:
+    placement: DatabasePlacement
+    resource_id: str
+    hostname: str
+    port: int
+    vpc_id: str
+    security_groups: tuple[str, ...]
+    required_tags: tuple[tuple[str, str], ...]
+
+    def __post_init__(self):
+        if (
+            not isinstance(self.placement, DatabasePlacement)
+            or self.placement.location.provider != "aws"
+            or self.placement.role == "sky_state"
+            or not re.fullmatch(r"db-[A-Za-z0-9]{1,64}", self.resource_id)
+            or not re.fullmatch(r"vpc-[a-f0-9]{8,17}", self.vpc_id)
+            or not self.security_groups
+            or len(set(self.security_groups)) != len(self.security_groups)
+            or any(not re.fullmatch(r"sg-[a-f0-9]{8,17}", v) for v in self.security_groups)
+            or dict(self.required_tags).get("sky-managed") != "true"
+            or len(dict(self.required_tags)) != len(self.required_tags)
+        ):
+            raise ValueError("Exact existing workload RDS registration required")
+        DatabaseResourceEvidence(self.placement, "registration", datetime.now(UTC), self.hostname, self.port)
+
+
+class RegisteredRdsInventoryVerifier:
+    def __init__(self, registration, *, sts, rds, clock=lambda: datetime.now(UTC)):
+        if not isinstance(registration, RegisteredRdsInventory):
+            raise TypeError("Typed existing RDS registration required")
+        self.registration, self.sts, self.rds, self.clock = registration, sts, rds, clock
+
+    def verify(self, placement):
+        r = self.registration
+        if placement != r.placement:
+            raise ValueError("RDS placement differs from registration")
+        try:
+            account = placement.location.authority_ref
+            region = placement.location.location
+            if self.sts.get_caller_identity()["Account"] != account or self.rds.meta.region_name != region:
+                raise ValueError("AWS caller or region changed")
+            (value,) = self.rds.describe_db_instances(DBInstanceIdentifier=placement.instance_id)[
+                "DBInstances"
+            ]
+            arn = f"arn:aws:rds:{region}:{account}:db:{placement.instance_id}"
+            tags = {v["Key"]: v["Value"] for v in value.get("TagList", [])}
+            if (
+                value.get("DBInstanceArn") != arn
+                or value.get("DbiResourceId") != r.resource_id
+                # Backing up changes neither resource identity nor tenant
+                # ownership. SQL/TLS readiness is a separate mandatory check;
+                # backup-related I/O stalls still fail its bounded timeouts.
+                or value.get("DBInstanceStatus") not in {"available", "backing-up"}
+                or value.get("Engine") != "postgres"
+                or value.get("PubliclyAccessible") is not False
+                or value.get("StorageEncrypted") is not True
+                or value.get("DBSubnetGroup", {}).get("VpcId") != r.vpc_id
+                or int(value.get("EngineVersion", "0").split(".")[0]) != placement.postgres_major
+                or (value.get("Endpoint", {}).get("Address"), value.get("Endpoint", {}).get("Port"))
+                != (r.hostname, r.port)
+                or sorted(v["VpcSecurityGroupId"] for v in value.get("VpcSecurityGroups", []))
+                != sorted(r.security_groups)
+                or any(v.get("Status") != "active" for v in value.get("VpcSecurityGroups", []))
+                or any(tags.get(k) != v for k, v in r.required_tags)
+            ):
+                raise ValueError("Registered private RDS resource changed")
+            digest = hashlib.sha256(
+                json.dumps(
+                    {
+                        "arn": arn,
+                        "resource": r.resource_id,
+                        "vpc": r.vpc_id,
+                        "groups": sorted(r.security_groups),
+                        "tags": tags,
+                        "observed_status": value.get("DBInstanceStatus"),
+                    },
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+            return DatabaseResourceEvidence(placement, "RDS-" + digest, self.clock(), r.hostname, r.port)
+        except Exception:  # noqa: BLE001 -- redact provider diagnostics
+            raise DatabaseInventoryUnavailable("Registered RDS ownership unavailable") from None

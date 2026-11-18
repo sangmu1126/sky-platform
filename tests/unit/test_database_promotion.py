@@ -1,5 +1,7 @@
 """Shared-to-dedicated plans must not claim a safe cutover before verification."""
 
+import hashlib
+import json
 from dataclasses import replace
 
 import pytest
@@ -112,3 +114,36 @@ def test_plan_identity_cannot_be_reused_across_account_or_session_requirements()
         source, target, _trigger(), source_revision="d" * 64, websocket_sessions=True
     )
     assert len({baseline["plan_id"], another_account["plan_id"], sessions["plan_id"]}) == 3
+
+
+@pytest.mark.parametrize(
+    ("sessions", "account", "revision", "expected_digest"),
+    [
+        (False, "111111111111", "a", "a27b1884a5f681b1acf3347c8a2c2410a40a63c78597ed3b167a930dc3d8b8d7"),
+        (True, "111111111111", "a", "30d6112f49a9338d369f515e219517dbc9a9aa385c61b51b11c07e0e1b1acde3"),
+        (False, "222222222222", "d", "3a86593afe3121e9c43a48d885e58e1ea6f3b17c54370569001a70ce3e90b962"),
+    ],
+)
+def test_persisted_legacy_plan_format_and_identity_are_unchanged(
+    sessions, account, revision, expected_digest
+):
+    # Captured before contract extraction. Existing approvals, copy baselines and
+    # journal records reference these exact plans; adding fields can invalidate them.
+    source = replace(_binding("shared_workload", "shared-pool-1"), account_id=account)
+    target = replace(_binding("dedicated_workload", "game-a-rds"), account_id=account)
+    result = plan_database_promotion(
+        source, target, _trigger(), source_revision=revision * 64, websocket_sessions=sessions
+    )
+    encoded = json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
+    assert hashlib.sha256(encoded).hexdigest() == expected_digest
+
+
+@pytest.mark.parametrize("change", [{"account_id": "222222222222"}, {"region": "ap-northeast-1"}])
+def test_legacy_planner_still_rejects_cross_account_or_region(change):
+    with pytest.raises(ValueError, match="Cross-account or cross-region"):
+        plan_database_promotion(
+            _binding("shared_workload", "shared-pool-1"),
+            replace(_binding("dedicated_workload", "game-a-rds"), **change),
+            _trigger(),
+            source_revision="a" * 64,
+        )
