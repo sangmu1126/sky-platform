@@ -28,12 +28,16 @@ from tests.unit.test_environment_admission import registered
 
 def composition():
     execution = registered()
+    resource_ref = "EVR-" + "a" * 64
+    effect_ref = "EEF-" + "b" * 64
+    resources = Mock(verify=Mock(return_value={"verified": True}), reference=resource_ref)
+    effect = Mock(return_value={"result_ref": "result"}, reference=effect_ref)
     return RegisteredEnvironmentExecutionComposition(
         execution,
-        "EVR-" + "a" * 64,
-        Mock(verify=Mock(return_value={"verified": True})),
-        "EEF-" + "b" * 64,
-        Mock(return_value={"result_ref": "result"}),
+        resource_ref,
+        resources,
+        effect_ref,
+        effect,
     )
 
 
@@ -141,10 +145,11 @@ def test_operator_manifest_and_installed_provider_must_match_exactly(tmp_path):
     provider.assert_called_once_with((selected.execution.job.id,))
     assert entry_point.loads == 1
 
+    changed_ref = "EVR-" + "c" * 64
     changed = RegisteredEnvironmentExecutionComposition(
         selected.execution,
-        "EVR-" + "c" * 64,
-        selected.resource_verifier,
+        changed_ref,
+        Mock(verify=selected.resource_verifier.verify, reference=changed_ref),
         selected.effect_ref,
         selected.effect,
     )

@@ -29,6 +29,11 @@ class RegisteredEnvironmentExecutionComposition:
             raise ValueError("Pinned environment resource and effect references required")
         if not callable(getattr(self.resource_verifier, "verify", None)) or not callable(self.effect):
             raise TypeError("Registered environment resource verifier and effect required")
+        if (
+            getattr(self.resource_verifier, "reference", None) != self.resource_verifier_ref
+            or getattr(self.effect, "reference", None) != self.effect_ref
+        ):
+            raise ValueError("Environment composition references differ from implementations")
 
 
 class RegisteredEnvironmentResourceRouter:
