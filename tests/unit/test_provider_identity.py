@@ -10,6 +10,7 @@ import pytest
 from adapters.runtime.provider_identity import (
     ObservedProviderResourceIdentity,
     ProviderIdentityEvidenceReader,
+    ProviderIdentityInspectorRouter,
     RegisteredProviderIdentityInventory,
     RegisteredProviderResourceIdentity,
     assess_provider_identity,
@@ -44,6 +45,7 @@ def provider_registration(inventory=None, *, endpoint="source"):
                 "https-service" if policy.category == "external_api" else "s3-bucket",
                 policy.logical_ref + "-resource",
                 ("1" if policy.category == "external_api" else "2") * 64,
+                "provider-readonly-authority",
             )
         )
     return RegisteredProviderIdentityInventory(
@@ -147,6 +149,16 @@ def test_provider_registration_is_exhaustive_and_report_tampering_is_rejected():
     tampered["resources"][0]["resource_ref"] = "other-resource"
     with pytest.raises(ValueError, match="Invalid provider identity report"):
         validate_provider_identity_report(registered, tampered)
+
+
+def test_provider_inspector_router_requires_exact_registered_provider():
+    aws = type("Inspector", (), {"inspect": lambda self, resource: resource.resource_ref})()
+    https = type("Inspector", (), {"inspect": lambda self, resource: resource.resource_ref})()
+    router = ProviderIdentityInspectorRouter((("aws", aws), ("https", https)))
+    registered = provider_registration().resources[0]
+    assert router.inspect(replace(registered, provider_ref="https")) == registered.resource_ref
+    with pytest.raises(ValueError, match="inspector unavailable"):
+        router.inspect(replace(registered, provider_ref="unknown"))
 
 
 def provider_runtime_case(tmp_path):

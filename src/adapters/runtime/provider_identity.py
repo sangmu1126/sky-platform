@@ -27,6 +27,7 @@ class RegisteredProviderResourceIdentity:
     resource_kind: str
     resource_ref: str
     identity_sha256: str
+    authority_ref: str
 
     def __post_init__(self):
         for value in (
@@ -35,6 +36,7 @@ class RegisteredProviderResourceIdentity:
             self.provider_ref,
             self.resource_kind,
             self.resource_ref,
+            self.authority_ref,
         ):
             _ref(value)
         if self.category not in PROVIDER_IDENTITY_CATEGORIES:
@@ -152,7 +154,7 @@ def assess_provider_identity(registration, observations, *, now):
         verified = bool(
             observation
             and resource.logical_ref not in duplicate_refs
-            and observation.authority_ref == registration.authority_ref
+            and observation.authority_ref == resource.authority_ref
             and (
                 observation.provider_ref,
                 observation.resource_kind,
@@ -317,3 +319,29 @@ class ProviderIdentityEvidenceReader:
             )
         except Exception:  # noqa: BLE001 -- raw provider identity details remain private
             raise WorkloadInventoryUnavailable("Registered provider identity unavailable") from None
+
+
+class ProviderIdentityInspectorRouter:
+    """Dispatch one registration across separately pinned provider authorities."""
+
+    def __init__(self, bindings):
+        if (
+            not isinstance(bindings, tuple)
+            or not 1 <= len(bindings) <= 16
+            or tuple(sorted(bindings, key=lambda value: value[0])) != bindings
+            or len({value[0] for value in bindings}) != len(bindings)
+        ):
+            raise ValueError("Canonical provider identity inspector bindings required")
+        for provider_ref, inspector in bindings:
+            _ref(provider_ref)
+            if not callable(getattr(inspector, "inspect", None)):
+                raise TypeError("Provider identity inspector binding required")
+        self.inspectors = dict(bindings)
+
+    def inspect(self, resource):
+        if not isinstance(resource, RegisteredProviderResourceIdentity):
+            raise TypeError("Registered provider resource identity required")
+        inspector = self.inspectors.get(resource.provider_ref)
+        if inspector is None:
+            raise ValueError("Registered provider identity inspector unavailable")
+        return inspector.inspect(resource)
