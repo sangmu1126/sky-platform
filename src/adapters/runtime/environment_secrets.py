@@ -11,6 +11,7 @@ import tempfile
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 from application.environment_admission import RegisteredEnvironmentExecution
 from domain.environment_transition import _digest, _ref
@@ -314,29 +315,55 @@ class AwsAndPrivateEnvironmentSecretResolver:
         _regional_aws_client(secretsmanager, "secretsmanager", region)
         self.execution_revision = execution_revision
         self.account_id, self.region = account_id, region
-        self.targets = {value.secret_ref: value for value in (*aws_secrets, router_transport)}
+        self.aws_secrets = aws_secrets
+        self.targets = MappingProxyType(
+            {value.secret_ref: value for value in (*aws_secrets, router_transport)}
+        )
         self.router_transport = router_transport
         self.sts, self.secretsmanager = sts, secretsmanager
-        document = {
+        self.reference = "ESR-" + self._registration_digest()
+
+    def _registration_document(self):
+        return {
             "schema_version": 1,
             "profile": "aws_private_environment_secret_resolver_v1",
-            "execution_revision": execution_revision,
-            "account_id": account_id,
-            "region": region,
-            "aws_secrets": [asdict(value) for value in aws_secrets],
+            "execution_revision": self.execution_revision,
+            "account_id": self.account_id,
+            "region": self.region,
+            "aws_secrets": [asdict(value) for value in self.aws_secrets],
             "router_transport": {
-                "secret_ref": router_transport.secret_ref,
-                "version_ref": router_transport.version_ref,
-                "private_key_sha256": router_transport.private_key_sha256,
-                "known_hosts_sha256": router_transport.known_hosts_sha256,
+                "secret_ref": self.router_transport.secret_ref,
+                "version_ref": self.router_transport.version_ref,
+                "private_key_sha256": self.router_transport.private_key_sha256,
+                "known_hosts_sha256": self.router_transport.known_hosts_sha256,
             },
         }
-        self.reference = (
-            "ESR-"
-            + hashlib.sha256(
-                json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-            ).hexdigest()
-        )
+
+    def _registration_digest(self):
+        return hashlib.sha256(
+            json.dumps(
+                self._registration_document(),
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+
+    def _registration_is_current(self):
+        try:
+            expected = {value.secret_ref: value for value in (*self.aws_secrets, self.router_transport)}
+            prefix = f"arn:aws:secretsmanager:{self.region}:{self.account_id}:secret:"
+            _regional_aws_client(self.sts, "sts", self.region)
+            _regional_aws_client(self.secretsmanager, "secretsmanager", self.region)
+            return (
+                isinstance(self.targets, MappingProxyType)
+                and dict(self.targets) == expected
+                and tuple(value.purpose for value in self.aws_secrets) == tuple(sorted(_AWS_PURPOSES))
+                and all(value.secret_arn.startswith(prefix) for value in self.aws_secrets)
+                and self.reference == "ESR-" + self._registration_digest()
+            )
+        except (AttributeError, TypeError, ValueError):
+            return False
 
     def _aws_material(self, target):
         identity = self.sts.get_caller_identity()
@@ -443,6 +470,7 @@ class AwsAndPrivateEnvironmentSecretResolver:
         if (
             not isinstance(execution, RegisteredEnvironmentExecution)
             or execution.revision != self.execution_revision
+            or not self._registration_is_current()
             or not callable(guard)
         ):
             raise ValueError("Exact guarded environment secret execution required")

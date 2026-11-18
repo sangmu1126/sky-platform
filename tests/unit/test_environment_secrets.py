@@ -338,6 +338,42 @@ def test_resolver_reference_changes_with_version_tags_or_router_files(tmp_path):
     assert "private-password" not in resolver.reference
 
 
+@pytest.mark.parametrize(
+    "change",
+    ["reference", "targets", "registration", "sts-endpoint", "secrets-endpoint"],
+)
+def test_resolver_rechecks_registered_authority_before_secret_access(tmp_path, change):
+    execution, targets, _router, sts, secrets, resolver = fixture(tmp_path)
+    target = targets[0]
+    if change == "reference":
+        resolver.reference = "ESR-" + "f" * 64
+    elif change == "targets":
+        resolver.targets = {target.secret_ref: target}
+    elif change == "registration":
+        resolver.aws_secrets = (replace(target, version_ref="f" * 32), *targets[1:])
+    elif change == "sts-endpoint":
+        sts.meta.endpoint_url = "https://sts.us-east-1.amazonaws.com"
+    else:
+        secrets.meta.endpoint_url = "https://secretsmanager.us-east-1.amazonaws.com"
+    guard = Mock()
+
+    with (
+        pytest.raises(ValueError, match="Exact guarded"),
+        resolver.open(
+            target.secret_ref,
+            target.version_ref,
+            execution=execution,
+            purpose=target.purpose,
+            guard=guard,
+        ),
+    ):
+        pass
+    guard.assert_not_called()
+    sts.get_caller_identity.assert_not_called()
+    secrets.describe_secret.assert_not_called()
+    secrets.get_secret_value.assert_not_called()
+
+
 def test_registration_rejects_public_or_symlinked_operator_files(tmp_path):
     key, hosts = private_files(tmp_path)
     key.chmod(0o644)
