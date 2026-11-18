@@ -105,6 +105,19 @@ class RegisteredEnvironmentTransferRuntime:
         self.resolver, self.composer = resolver, composer
         self.reference = registration.document()["runtime_ref"]
 
+    def _registration_is_current(self, execution):
+        return (
+            isinstance(self.registration, RegisteredEnvironmentTransferRuntimeRegistration)
+            and self.registration.execution_revision == execution.revision
+            and self.reference == self.registration.document()["runtime_ref"]
+            and callable(getattr(self.resolver, "open", None))
+            and callable(self.composer)
+            and getattr(self.resolver, "reference", None) == self.registration.secret_resolver_ref
+            and getattr(self.composer, "reference", None) == self.registration.composition_ref
+            and getattr(self.resolver, "execution_revision", None) == execution.revision
+            and getattr(self.composer, "execution", None) == execution
+        )
+
     @staticmethod
     def _validate_runtime(execution, transport, flow, *, guard, journal):
         transfer = execution.job.transfer
@@ -138,7 +151,12 @@ class RegisteredEnvironmentTransferRuntime:
 
     @contextmanager
     def __call__(self, execution, *, guard, journal):
-        if execution != self.execution or not callable(guard) or not callable(journal):
+        if (
+            execution != self.execution
+            or not self._registration_is_current(execution)
+            or not callable(guard)
+            or not callable(journal)
+        ):
             raise ValueError("Exact guarded environment transfer runtime execution required")
         stack = ExitStack()
         materials = {}

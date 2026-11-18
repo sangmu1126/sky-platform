@@ -181,3 +181,13 @@ def test_effect_rejects_runtime_bound_to_different_execution():
     effect.runtime.execution = other
     with pytest.raises(ValueError, match="differs from registered reference"):
         RegisteredEnvironmentTransferEffect(execution, effect.runtime_ref, effect.runtime)
+
+
+def test_effect_rechecks_runtime_pin_before_execution():
+    execution, effect, transport, flow, _result = effect_fixture()
+    effect.runtime.reference = "ETR-" + "f" * 64
+
+    with pytest.raises(ValueError, match="Exact guarded"):
+        effect(execution, guard=Mock(), journal=Mock())
+    transport.verify_registration.assert_not_called()
+    flow.promote.assert_not_called()

@@ -42,7 +42,11 @@ class RegisteredEnvironmentResourceRouter:
 
     def verify(self, execution, *, guard):
         selected = self.compositions.get(execution.job.id)
-        if selected is None or selected.execution != execution:
+        if (
+            selected is None
+            or selected.execution != execution
+            or getattr(selected.resource_verifier, "reference", None) != selected.resource_verifier_ref
+        ):
             raise ValueError("Environment resource verifier registration changed")
         return selected.resource_verifier.verify(execution, guard=guard)
 
@@ -53,7 +57,11 @@ class RegisteredEnvironmentEffectRouter:
 
     def __call__(self, execution, *, guard, journal):
         selected = self.compositions.get(execution.job.id)
-        if selected is None or selected.execution != execution:
+        if (
+            selected is None
+            or selected.execution != execution
+            or getattr(selected.effect, "reference", None) != selected.effect_ref
+        ):
             raise ValueError("Environment effect registration changed")
         return selected.effect(execution, guard=guard, journal=journal)
 

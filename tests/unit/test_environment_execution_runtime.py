@@ -272,3 +272,23 @@ def test_runtime_implementations_must_match_registered_references(tmp_path, impl
             resolver,
             runtime.composer,
         )
+
+
+@pytest.mark.parametrize("implementation", ["resolver", "composer", "registration", "runtime"])
+def test_runtime_rechecks_pin_chain_before_opening_secrets(tmp_path, implementation):
+    execution, resolver, runtime = runtime_fixture(tmp_path)
+    if implementation == "resolver":
+        runtime.resolver.reference = "ESR-" + "f" * 64
+    elif implementation == "composer":
+        runtime.composer.reference = "RTC-" + "f" * 64
+    elif implementation == "registration":
+        runtime.registration = replace(runtime.registration, composition_ref="RTC-" + "f" * 64)
+    else:
+        runtime.reference = "ETR-" + "f" * 64
+
+    with (
+        pytest.raises(ValueError, match="Exact guarded"),
+        runtime(execution, guard=Mock(), journal=Mock()),
+    ):
+        pass
+    assert resolver.events == []

@@ -239,6 +239,23 @@ def test_composition_routers_never_select_from_queue_data():
         effects(other, guard=guard, journal=journal)
 
 
+@pytest.mark.parametrize("implementation", ["resource", "effect"])
+def test_composition_routers_recheck_implementation_pins_at_dispatch(implementation):
+    selected = composition()
+    resources = RegisteredEnvironmentResourceRouter((selected,))
+    effects = RegisteredEnvironmentEffectRouter((selected,))
+    if implementation == "resource":
+        selected.resource_verifier.reference = "EVR-" + "f" * 64
+        with pytest.raises(ValueError, match="resource verifier registration changed"):
+            resources.verify(selected.execution, guard=Mock())
+        selected.resource_verifier.verify.assert_not_called()
+    else:
+        selected.effect.reference = "EEF-" + "f" * 64
+        with pytest.raises(ValueError, match="effect registration changed"):
+            effects(selected.execution, guard=Mock(), journal=Mock())
+        selected.effect.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "change",
     [

@@ -128,7 +128,13 @@ class RegisteredEnvironmentTransferEffect:
         )
 
     def __call__(self, execution, *, guard, journal):
-        if execution != self.execution or not callable(guard) or not callable(journal):
+        if (
+            execution != self.execution
+            or getattr(self.runtime, "reference", None) != self.runtime_ref
+            or getattr(self.runtime, "execution", None) != execution
+            or not callable(guard)
+            or not callable(journal)
+        ):
             raise ValueError("Exact guarded environment transfer effect required")
         transfer = execution.job.transfer
         guard()

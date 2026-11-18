@@ -169,6 +169,8 @@ def runtime_check(tmp_path, *, mutation=False):
         )
         return transport, flow
 
+    read_only_composer.reference = compose.reference
+    read_only_composer.execution = execution
     runtime.composer = read_only_composer
     return execution, runtime, RegisteredRuntimeExecutionResourceCheck(execution, runtime.reference, runtime)
 
