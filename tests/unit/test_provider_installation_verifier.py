@@ -52,6 +52,8 @@ def test_two_installations_use_isolated_python_minimal_environment_and_offline_p
             (site / "sky_aws_vm_rehearsal").mkdir()
             return ""
         script = arguments[-1]
+        if "interfaces.b_runtime" in script:
+            return verifier._CHECK_CONFIG_OUTPUT
         if "environment_execution_registration" in script:
             return (
                 '{"artifact":"' + artifact + '","bytecode":true,"count":1,"effect":"EEF-registered",'
@@ -70,9 +72,10 @@ def test_two_installations_use_isolated_python_minimal_environment_and_offline_p
 
     assert result["base_wheel_sha256"] == hashlib.sha256(b"base-wheel").hexdigest()
     assert result["provider_wheel_sha256"] == hashlib.sha256(b"provider-wheel").hexdigest()
+    assert result["worker_check_config_without_external_calls"] is True
     pip_calls = [call for call in calls if "pip" in call[0]]
     inspect_calls = [call for call in calls if "pip" not in call[0]]
-    assert len(pip_calls) == 2 and len(inspect_calls) == 6
+    assert len(pip_calls) == 2 and len(inspect_calls) == 8
     for arguments, env, cwd in pip_calls:
         assert arguments[1:4] == ["-I", "-m", "pip"]
         assert {"--isolated", "--no-index", "--no-input", "--no-cache-dir", "--no-deps"} <= set(arguments)

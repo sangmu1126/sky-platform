@@ -120,13 +120,60 @@ def _unique(pairs):
     return result
 
 
+def _manifest_bytes(path):
+    try:
+        value = Path(path)
+    except TypeError:
+        raise ValueError("Explicit environment execution manifest required") from None
+    if not value.is_absolute():
+        raise ValueError("Absolute environment execution manifest required")
+    try:
+        descriptor = os.open(
+            value,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError:
+        raise ValueError("Immutable environment execution manifest required") from None
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            or not 1 <= before.st_size <= 65536
+        ):
+            raise ValueError("Immutable bounded environment execution manifest required")
+        raw = bytearray()
+        while len(raw) <= 65536:
+            chunk = os.read(descriptor, min(65537 - len(raw), 65536))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        after = os.fstat(descriptor)
+        if len(raw) != before.st_size or (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_uid,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_uid,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise ValueError("Environment execution manifest changed while reading")
+        return bytes(raw)
+    finally:
+        os.close(descriptor)
+
+
 def load_environment_execution_manifest(path, *, workspace):
     if not path:
         raise ValueError("Explicit environment execution manifest required")
-    with Path(path).open("rb") as source:
-        raw = source.read(65537)
-    if not raw or len(raw) > 65536:
-        raise ValueError("Bounded environment execution manifest required")
+    raw = _manifest_bytes(path)
     value = json.loads(raw, object_pairs_hook=_unique)
     if (
         not isinstance(value, dict)
@@ -152,6 +199,8 @@ def load_environment_execution_manifest(path, *, workspace):
     canonical = json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
     ).encode()
+    if raw not in {canonical, canonical + b"\n"}:
+        raise ValueError("Canonical environment execution manifest required")
     return EnvironmentExecutionManifest(
         value["workspace"],
         EnvironmentProviderArtifact(

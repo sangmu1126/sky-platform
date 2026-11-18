@@ -5,6 +5,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 from pathlib import PurePosixPath
 from unittest.mock import Mock, patch
 
@@ -68,7 +69,7 @@ def manifest_file(tmp_path, selected, entry_point=None, **changes):
     }
     value.update(changes)
     path = tmp_path / "environment-worker.json"
-    path.write_text(json.dumps(value))
+    path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False))
     return path
 
 
@@ -236,6 +237,47 @@ def test_manifest_rejects_wrong_scope_unknown_fields_and_empty_authority(tmp_pat
     selected = composition()
     with pytest.raises(ValueError):
         load_environment_execution_manifest(manifest_file(tmp_path, selected, **change), workspace="test")
+
+
+@pytest.mark.parametrize("change", ["relative", "symlink", "mode", "noncanonical"])
+def test_manifest_requires_one_immutable_canonical_absolute_file(tmp_path, monkeypatch, change):
+    selected = composition()
+    path = manifest_file(tmp_path, selected)
+    requested = path
+    if change == "relative":
+        monkeypatch.chdir(tmp_path)
+        requested = path.name
+    elif change == "symlink":
+        link = tmp_path / "manifest-link.json"
+        link.symlink_to(path)
+        requested = link
+    elif change == "mode":
+        path.chmod(0o666)
+    else:
+        value = json.loads(path.read_bytes())
+        path.write_text(json.dumps(value, indent=2, sort_keys=True))
+    with pytest.raises(ValueError, match="manifest"):
+        load_environment_execution_manifest(requested, workspace="test")
+
+
+def test_manifest_descriptor_change_during_read_is_rejected(tmp_path):
+    path = manifest_file(tmp_path, composition())
+    original = os.read
+    changed = False
+
+    def mutate_mode(descriptor, size):
+        nonlocal changed
+        content = original(descriptor, size)
+        if not changed:
+            os.fchmod(descriptor, 0o666)
+            changed = True
+        return content
+
+    with (
+        patch("interfaces.environment_execution_registration.os.read", side_effect=mutate_mode),
+        pytest.raises(ValueError, match="changed while reading"),
+    ):
+        load_environment_execution_manifest(path, workspace="test")
 
 
 def test_provider_discovery_requires_one_installed_entry_point(tmp_path):

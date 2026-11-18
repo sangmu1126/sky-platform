@@ -16,6 +16,9 @@ PROVIDER = "sky-aws-vm-rehearsal"
 WORKSPACE = "isolated-rehearsal"
 _ENVIRONMENT_KEYS = ("LANG", "LC_ALL", "PATH", "SYSTEMROOT")
 _MAX_WHEEL_BYTES = 256 * 1024 * 1024
+_CHECK_CONFIG_OUTPUT = (
+    "Reviewed environment worker configuration valid; provider code, AWS and DB were not called"
+)
 
 
 def _run(arguments, *, env, cwd):
@@ -167,6 +170,59 @@ def _inspect(python, site, workspace, manifest, *, cwd):
         )
     )
     manifest.write_text(json.dumps(document, sort_keys=True, separators=(",", ":")))
+    manifest.chmod(0o400)
+    state_ca = manifest.with_name("state-ca-" + site.name + ".pem")
+    state_ca.write_text("isolated-check-ca\n")
+    state_ca.chmod(0o400)
+    check_env = {
+        **env,
+        "SKY_DATABASE_HOST": "state.rehearsal.invalid",
+        "SKY_DATABASE_NAME": "sky_state",
+        "SKY_DATABASE_SECRET_ARN": (
+            "arn:aws:secretsmanager:ap-northeast-2:000000000000:secret:isolated-check"
+        ),
+        "SKY_DATABASE_SSLROOTCERT": str(state_ca),
+        "SKY_AWS_REGION": "ap-northeast-2",
+        "SKY_AWS_ACCOUNT_ID": "000000000000",
+        "SKY_STATE_WORKSPACE": workspace,
+        "SKY_ENVIRONMENT_EXECUTION_QUEUE_URL": (
+            "https://sqs.ap-northeast-2.amazonaws.com/000000000000/isolated-environment.fifo"
+        ),
+        "SKY_ALB_TRUSTS_JSON": json.dumps(
+            {
+                "version": 1,
+                "trusts": [
+                    {
+                        "signer_arn": (
+                            "arn:aws:elasticloadbalancing:ap-northeast-2:000000000000:"
+                            "loadbalancer/app/isolated-check/0123456789abcdef"
+                        ),
+                        "issuer": "https://identity.rehearsal.invalid/",
+                        "client_id": "isolated-check",
+                        "login_source": "corporate_sso",
+                    }
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "SKY_MEMBERSHIPS_JSON": '{"members":[],"version":1}',
+    }
+    check_config = _run(
+        _isolated_python(
+            python,
+            site,
+            (
+                "from interfaces.b_runtime import main;"
+                "main(['worker','--mode','environment-execution',"
+                f"'--environment-execution-config',{str(manifest)!r},'--check-config'])"
+            ),
+        ),
+        env=check_env,
+        cwd=cwd,
+    )
+    if check_config != _CHECK_CONFIG_OUTPUT or not _provider_cache_absent(site):
+        raise ValueError("Worker check-config imported provider code or changed external state")
     result = json.loads(
         _run(
             _isolated_python(
@@ -191,7 +247,7 @@ def _inspect(python, site, workspace, manifest, *, cwd):
             cwd=cwd,
         )
     )
-    return artifact, document, result
+    return artifact, document, result, check_config
 
 
 def verify(base_wheel, provider_wheel, *, python=sys.executable):
@@ -245,7 +301,7 @@ def verify(base_wheel, provider_wheel, *, python=sys.executable):
                 raise ValueError("Provider import created bytecode")
     if observations[0] != observations[1]:
         raise ValueError("Provider installation differs by target path")
-    artifact, manifest, composition = observations[0]
+    artifact, manifest, composition, check_config = observations[0]
     if (
         artifact.get("provider_artifact_sha256") != manifest.get("provider_artifact_sha256")
         or composition.get("artifact") != artifact.get("provider_artifact_sha256")
@@ -254,6 +310,7 @@ def verify(base_wheel, provider_wheel, *, python=sys.executable):
         or composition.get("resource") != manifest["registrations"][0]["resource_verifier_ref"]
         or composition.get("effect") != manifest["registrations"][0]["effect_ref"]
         or composition.get("bytecode") is not True
+        or check_config != _CHECK_CONFIG_OUTPUT
     ):
         raise ValueError("Installed provider composition differs from secret-free pins")
     return {
@@ -266,6 +323,7 @@ def verify(base_wheel, provider_wheel, *, python=sys.executable):
         "registrations": composition["count"],
         "runtime_secret_purposes": composition["secrets"],
         "provider_code_imported_only_after_manifest": True,
+        "worker_check_config_without_external_calls": True,
     }
 
 
