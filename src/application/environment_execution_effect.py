@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 
@@ -175,7 +176,8 @@ class RegisteredEnvironmentTransferEffect:
                 or result.get("continuous_sync") is not False
                 or result.get("write_pause_budget_seconds") != transfer.policy.write_pause_budget_seconds
                 or type(elapsed) not in {int, float}
-                or elapsed < 0
+                or (type(elapsed) is float and not math.isfinite(elapsed))
+                or not 0 <= elapsed <= transfer.policy.write_pause_budget_seconds
             ):
                 raise ValueError("Exact bounded environment transfer receipt required")
             guard()

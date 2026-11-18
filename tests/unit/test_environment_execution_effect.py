@@ -143,6 +143,18 @@ def test_effect_never_accepts_changed_runtime_or_ambiguous_receipt(failure):
         effect(execution, guard=Mock(), journal=Mock())
 
 
+@pytest.mark.parametrize(
+    "elapsed",
+    [-1, True, float("nan"), float("inf"), float("-inf"), 121],
+)
+def test_effect_requires_finite_elapsed_time_within_write_pause_budget(elapsed):
+    execution, effect, _transport, flow, _result = effect_fixture()
+    flow.promote.return_value["operation_elapsed_seconds"] = elapsed
+
+    with pytest.raises(ValueError, match="Exact bounded"):
+        effect(execution, guard=Mock(), journal=Mock())
+
+
 def test_effect_reference_changes_with_runtime_or_execution_revision():
     execution, effect, *_ = effect_fixture()
     implementation = Mock(reference="ETR-" + "d" * 64, execution=execution)
