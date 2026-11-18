@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict
 from datetime import datetime
 
+from adapters.database.environment_execution_runtime import RegisteredEnvironmentTransferRuntime
 from adapters.database.environment_transfer import RegisteredTransferEndpoint
 from adapters.onprem.environment_router import EnvironmentNginxRouter, RegisteredEnvironmentRouter
 from application.environment_admission import RegisteredEnvironmentExecution
 from application.environment_execution_effect import RegisteredEnvironmentResourceCheck
 from domain.database_inventory import DatabaseResourceEvidence
+
+_RUNTIME_REF = re.compile(r"ETR-[a-f0-9]{64}\Z")
 
 
 def _reference(profile, value):
@@ -137,6 +141,78 @@ class RegisteredRouteExecutionResourceCheck:
             ).hexdigest()
         )
         return {"check_ref": self.reference, "evidence_ref": evidence}
+
+    def check(self):
+        return RegisteredEnvironmentResourceCheck(self.reference, self.collect)
+
+
+class RegisteredRuntimeExecutionResourceCheck:
+    """Open pinned materials for read-only DB, runtime, and route verification."""
+
+    def __init__(self, execution, runtime_ref, runtime):
+        if not isinstance(execution, RegisteredEnvironmentExecution):
+            raise TypeError("Registered environment execution required")
+        if (
+            not isinstance(runtime_ref, str)
+            or not _RUNTIME_REF.fullmatch(runtime_ref)
+            or not isinstance(runtime, RegisteredEnvironmentTransferRuntime)
+            or runtime.reference != runtime_ref
+            or runtime.execution != execution
+        ):
+            raise ValueError("Exact registered environment runtime required")
+        self.execution, self.runtime_ref, self.runtime = execution, runtime_ref, runtime
+        self.reference = _reference(
+            "registered_runtime_execution_resource_v1",
+            {
+                "execution_revision": execution.revision,
+                "runtime_ref": runtime_ref,
+                "required_binding": asdict(execution.job.transfer.source),
+                "checks": [
+                    "database_registration",
+                    "source_runtime",
+                    "target_runtime",
+                    "source_route",
+                ],
+            },
+        )
+
+    def collect(self, execution, *, guard):
+        if execution != self.execution or not callable(guard):
+            raise ValueError("Exact guarded runtime resource execution required")
+
+        def no_effect_journal(_value):
+            raise RuntimeError("Resource verification cannot record external-effect intent")
+
+        guard()
+        with self.runtime(execution, guard=guard, journal=no_effect_journal) as (transport, flow):
+            verification = transport.verify_registration(execution.job.transfer, guard=guard)
+            plan_id = execution.job.transfer.document()["plan_id"]
+            if verification != {
+                "plan_id": plan_id,
+                "registration_verified": True,
+                "mutation": False,
+            }:
+                raise ValueError("Current registered database verification required")
+            binding = asdict(execution.job.transfer.source)
+            route = flow.traffic.router.probe(binding)
+            if route != {"binding": binding, "verified_scope": "routed_https_database_read"}:
+                raise ValueError("Current registered source route verification required")
+            guard()
+        evidence = hashlib.sha256(
+            json.dumps(
+                {
+                    "check_ref": self.reference,
+                    "execution_revision": execution.revision,
+                    "runtime_ref": self.runtime_ref,
+                    "database": verification,
+                    "route": route,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+        return {"check_ref": self.reference, "evidence_ref": "ENVRT-" + evidence}
 
     def check(self):
         return RegisteredEnvironmentResourceCheck(self.reference, self.collect)

@@ -9,12 +9,14 @@ import pytest
 from adapters.database.environment_execution_resources import (
     RegisteredDatabaseExecutionResourceCheck,
     RegisteredRouteExecutionResourceCheck,
+    RegisteredRuntimeExecutionResourceCheck,
     registered_environment_transfer_resource_checks,
 )
 from application.environment_execution_effect import RegisteredEnvironmentTransferResources
 from domain.database_inventory import DatabaseResourceEvidence
 from tests.unit.test_database_transfer import NOW, adapter
 from tests.unit.test_environment_admission import registered
+from tests.unit.test_environment_execution_runtime import runtime_fixture
 from tests.unit.test_environment_router import fixture as router_fixture
 
 
@@ -140,3 +142,51 @@ def test_canonical_bundle_feeds_fixed_evr_aggregator(tmp_path):
     receipt = RegisteredEnvironmentTransferResources(execution, checks).verify(execution, guard=Mock())
     assert receipt["verified"] is True
     assert len(receipt["evidence_refs"]) == 3
+
+
+def runtime_check(tmp_path, *, mutation=False):
+    execution, _resolver, runtime = runtime_fixture(tmp_path)
+    compose = runtime.composer
+
+    def read_only_composer(*args, **kwargs):
+        transport, flow = compose(*args, **kwargs)
+        plan_id = execution.job.transfer.document()["plan_id"]
+        if mutation:
+            transport.verify_registration = lambda *_args, **_kwargs: flow.journal(
+                {"stage": "forbidden", "status": "intent"}
+            )
+        else:
+            transport.verify_registration = Mock(
+                return_value={
+                    "plan_id": plan_id,
+                    "registration_verified": True,
+                    "mutation": False,
+                }
+            )
+        binding = execution.job.transfer.document()["source"]
+        flow.traffic.router.probe = Mock(
+            return_value={"binding": binding, "verified_scope": "routed_https_database_read"}
+        )
+        return transport, flow
+
+    runtime.composer = read_only_composer
+    return execution, runtime, RegisteredRuntimeExecutionResourceCheck(execution, runtime.reference, runtime)
+
+
+def test_runtime_check_opens_pinned_materials_for_read_only_database_and_route_proof(tmp_path):
+    execution, runtime, check = runtime_check(tmp_path)
+    guard = Mock()
+    receipt = check.collect(execution, guard=guard)
+    assert check.reference.startswith("ERC-")
+    assert receipt["check_ref"] == check.reference
+    assert receipt["evidence_ref"].startswith("ENVRT-")
+    assert len([event for event in runtime.resolver.events if event[0] == "open"]) == 5
+    assert len([event for event in runtime.resolver.events if event[0] == "close"]) == 5
+    resources = RegisteredEnvironmentTransferResources(execution, (check.check(),))
+    assert resources.verify(execution, guard=Mock())["verified"] is True
+
+
+def test_runtime_resource_check_cannot_record_or_cross_external_effect_intent(tmp_path):
+    execution, _runtime, check = runtime_check(tmp_path, mutation=True)
+    with pytest.raises(RuntimeError, match="cannot record"):
+        check.collect(execution, guard=Mock())
