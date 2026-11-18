@@ -2,7 +2,14 @@
 
 import pytest
 
-from adapters.runtime.pinned_https import pinned_https_endpoint
+from adapters.runtime.pinned_https import pinned_dns_hostname, pinned_https_endpoint
+
+
+def test_canonical_dns_hostname_is_reusable_without_url_parsing():
+    assert pinned_dns_hostname("controller.example.test") == "controller.example.test"
+    for value in ("Controller.example.test", "localhost", "127.0.0.1", "a..b", None):
+        with pytest.raises(ValueError, match="DNS hostname"):
+            pinned_dns_hostname(value)
 
 
 @pytest.mark.parametrize(

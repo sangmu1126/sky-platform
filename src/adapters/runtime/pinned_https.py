@@ -13,14 +13,14 @@ _HOST = re.compile(
 _SEGMENT = re.compile(r"[A-Za-z0-9_~-](?:[A-Za-z0-9._~-]{0,254}[A-Za-z0-9_~-])?\Z")
 
 
-def _canonical_dns_hostname(value):
+def pinned_dns_hostname(value):
     if not isinstance(value, str) or not _HOST.fullmatch(value):
-        return False
+        raise ValueError("Canonical pinned DNS hostname required")
     try:
         ipaddress.ip_address(value)
     except ValueError:
-        return True
-    return False
+        return value
+    raise ValueError("Canonical pinned DNS hostname required")
 
 
 def pinned_https_endpoint(value):
@@ -29,13 +29,14 @@ def pinned_https_endpoint(value):
     try:
         url = urlsplit(value)
         port = url.port or 443
+        hostname = pinned_dns_hostname(url.hostname)
     except ValueError:
         raise ValueError("Canonical pinned HTTPS endpoint required") from None
     expected_authority = url.hostname if url.port is None else f"{url.hostname}:{port}"
     segments = url.path[1:].split("/") if url.path != "/" else []
     if (
         url.scheme != "https"
-        or not _canonical_dns_hostname(url.hostname)
+        or hostname != url.hostname
         or url.netloc != expected_authority
         or value != f"https://{expected_authority}{url.path}"
         or url.username

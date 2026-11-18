@@ -23,10 +23,10 @@ def registration():
         "daemon-1234567890",
         "a" * 64,
         "sha256:" + "b" * 64,
-        "192.0.2.1",
+        "10.0.0.10",
         8443,
         "source.test",
-        "target.internal",
+        "172.16.0.10",
         8443,
         "target.test",
         "owned-network",
@@ -152,11 +152,32 @@ def test_duplicate_nested_router_metadata_is_rejected():
 
 
 @pytest.mark.parametrize(
-    "address", ["127.0.0.1; command", "host\nreturn 200;", "$(id)", "0.0.0.0", "224.0.0.1"]
+    "address",
+    [
+        "127.0.0.1; command",
+        "host\nreturn 200;",
+        "$(id)",
+        "0.0.0.0",
+        "224.0.0.1",
+        "192.0.2.1",
+        "app.internal",
+        "169.254.169.254",
+    ],
 )
 def test_upstream_configuration_cannot_inject_nginx_or_shell(address):
     with pytest.raises(ValueError):
         replace(registration(), source_address=address)
+
+
+@pytest.mark.parametrize("name", ["Source.test", "localhost", "127.0.0.1", "source..test", "-x.test"])
+def test_upstream_tls_identity_must_be_canonical_dns(name):
+    with pytest.raises(ValueError, match="Pinned upstream"):
+        replace(registration(), source_tls_name=name)
+
+
+def test_private_ipv6_upstream_is_bracketed_in_nginx_authority():
+    value = replace(registration(), source_address="fd00::10")
+    assert "proxy_pass https://[fd00::10]:8443;" in value.configuration(asdict(value.transfer.source))
 
 
 def test_pinned_command_only_accepts_the_two_registered_configurations():

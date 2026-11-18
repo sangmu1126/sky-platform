@@ -7,7 +7,6 @@ intents before switching. Unknown reload outcomes prohibit replay.
 
 import base64
 import hashlib
-import ipaddress
 import json
 import re
 import time
@@ -15,6 +14,8 @@ from dataclasses import asdict, dataclass
 
 from adapters.build.process import bounded_command
 from adapters.onprem.database_inventory import PinnedVmInventoryCommand
+from adapters.runtime.pinned_https import pinned_dns_hostname
+from adapters.runtime.private_network import pinned_private_address
 from adapters.runtime.strict_json import strict_external_json
 from domain.database_transfer import RegisteredDatabaseTransfer
 
@@ -57,21 +58,13 @@ class RegisteredEnvironmentRouter:
             (self.source_address, self.source_tls_name, self.source_port),
             (self.target_address, self.target_tls_name, self.target_port),
         ):
-            if (
-                not isinstance(address, str)
-                or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}", address)
-                or not isinstance(name, str)
-                or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}", name)
-                or type(port) is not int
-                or not 1024 <= port <= 65535
-            ):
+            if type(port) is not int or not 1024 <= port <= 65535:
                 raise ValueError("Pinned upstream address, TLS identity and port required")
             try:
-                ip = ipaddress.ip_address(address)
+                pinned_private_address(address)
+                pinned_dns_hostname(name)
             except ValueError:
-                ip = None
-            if ip is not None and (ip.is_unspecified or ip.is_multicast):
-                raise ValueError("Unicast upstream required")
+                raise ValueError("Pinned upstream address, TLS identity and port required") from None
 
     def configuration(self, binding):
         if binding == asdict(self.transfer.source):
@@ -80,12 +73,13 @@ class RegisteredEnvironmentRouter:
             address, port, name = self.target_address, self.target_port, self.target_tls_name
         else:
             raise ValueError("Unregistered environment routing binding")
+        authority = f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
         identity = hashlib.sha256(
             json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         if self.profile == "tug_round_drain_v1":
             common = (
-                f"  proxy_pass https://{address}:{port};\n"
+                f"  proxy_pass https://{authority};\n"
                 f"  proxy_ssl_server_name on;\n  proxy_ssl_name {name};\n"
                 "  proxy_ssl_trusted_certificate /etc/nginx/sky/ca.pem;\n"
                 "  proxy_ssl_verify on;\n  proxy_ssl_verify_depth 2;\n"
@@ -114,7 +108,7 @@ class RegisteredEnvironmentRouter:
             " ssl_certificate_key /etc/nginx/sky/gateway.key;\n ssl_protocols TLSv1.2 TLSv1.3;\n"
             " client_max_body_size 16k;\n location = /scores {\n"
             "  limit_except GET POST { deny all; }\n"
-            f"  proxy_pass https://{address}:{port};\n  proxy_ssl_server_name on;\n  proxy_ssl_name {name};\n"
+            f"  proxy_pass https://{authority};\n  proxy_ssl_server_name on;\n  proxy_ssl_name {name};\n"
             "  proxy_ssl_trusted_certificate /etc/nginx/sky/ca.pem;\n  proxy_ssl_verify on;\n"
             "  proxy_ssl_verify_depth 2;\n  proxy_connect_timeout 3s;\n  proxy_read_timeout 5s;\n"
             "  proxy_send_timeout 5s;\n  proxy_next_upstream off;\n  proxy_http_version 1.1;\n"
