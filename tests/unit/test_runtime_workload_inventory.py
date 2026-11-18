@@ -144,6 +144,51 @@ def test_proc_reader_verifies_process_listener_writer_and_ignores_inbound_client
     assert report["observed_probes"] == [["local-file", "jobs"], ["session", "api"]]
 
 
+@pytest.mark.parametrize("second_writer", [True, False])
+def test_every_registered_process_replica_must_observe_component_dependencies(tmp_path, second_writer):
+    reader, source, proc, published = runtime_case(tmp_path)
+    files = [(3, "/data/output-2.db", 0o100002)] if second_writer else []
+    process(proc, 203, "jobs-2", 333, "/usr/bin/python3", files=files)
+    reader.registration = replace(
+        reader.registration,
+        processes=(
+            reader.registration.processes[0],
+            reader.registration.processes[1],
+            RegisteredLinuxProcess("jobs", 203, 333, 1000, "/usr/bin/python3", process_ref="jobs-2"),
+        ),
+    )
+
+    if second_writer:
+        snapshot = reader.collect(source.inventory, "source")
+        report = published[snapshot.evidence_refs[0]]
+        assert report["status"] == "verified"
+        assert [value["process_ref"] for value in report["processes"]] == [
+            "api",
+            "jobs",
+            "jobs-2",
+        ]
+        assert report["observed_probes"] == [["local-file", "jobs"], ["session", "api"]]
+    else:
+        with pytest.raises(WorkloadInventoryUnavailable):
+            reader.collect(source.inventory, "source")
+        report = next(iter(published.values()))
+        assert report["status"] == "blocked"
+        assert "registered_runtime_dependency_unobserved:local-file:jobs:jobs-2" in report["blockers"]
+        assert ["local-file", "jobs"] not in report["observed_probes"]
+
+
+def test_runtime_registration_rejects_duplicate_process_replica_refs(tmp_path):
+    reader, _source, _proc, _published = runtime_case(tmp_path)
+    with pytest.raises(ValueError, match="process replicas"):
+        replace(
+            reader.registration,
+            processes=(
+                *reader.registration.processes,
+                RegisteredLinuxProcess("jobs", 203, 333, 1000, "/usr/bin/python3"),
+            ),
+        )
+
+
 @pytest.mark.parametrize("change", ["missing_writer", "unexpected_writer", "unknown_socket", "listener"])
 def test_missing_or_unregistered_runtime_state_is_persisted_blocked(change, tmp_path):
     reader, source, proc, published = runtime_case(
