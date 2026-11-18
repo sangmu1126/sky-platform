@@ -50,6 +50,7 @@ jobs:
       SKY_TEST_POSTGRES_DSN: "host=127.0.0.1 port=5432 dbname=sky_test user=sky_test password=disposable-test-password sslmode=disable"
       SKY_TEST_POOL_POSTGRES_DSN: "host=127.0.0.1 port=5433 dbname=sky_pool_control user=pool_owner password=disposable-pool-password sslmode=disable"
       SKY_TEST_PROMOTION_POSTGRES_DSN: "host=127.0.0.1 port=5434 dbname=postgres user=promotion_owner password=disposable-promotion-password sslmode=disable"
+      SKY_TEST_MIGRATION_STATE_DSN: "host=127.0.0.1 port=5432 dbname=sky_migration_state_ci user=sky_test password=disposable-test-password sslmode=disable"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -57,6 +58,16 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install --upgrade 'pip>=26.2,<27'
       - run: pip install -e '.[dev,state-postgres]'
+      - name: Prepare isolated environment review and gate ledger database
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+          from psycopg import sql
+
+          with psycopg.connect(os.environ['SKY_TEST_POSTGRES_DSN'], autocommit=True) as db:
+              db.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier('sky_migration_state_ci')))
+          PY
       - name: Check distribution contents
         run: |
           python -m pip wheel --no-deps --wheel-dir /tmp/sky-wheels .
@@ -92,6 +103,23 @@ jobs:
               'assets/static/database-preparation.html',
               'assets/static/cognito-auth.js', 'assets/static/cognito-login.html',
               'interfaces/http/cognito_identity.py', 'interfaces/http/cognito_browser.py',
+              'domain/database_transfer.py', 'domain/environment_transition.py',
+              'domain/platform_image.py', 'domain/workload_inventory.py',
+              'ports/environment_transition.py', 'ports/workload_inventory.py',
+              'application/environment_transition.py', 'application/environment_gate_review.py',
+              'application/environment_admission.py', 'application/environment_cutover.py',
+              'application/environment_agent_tools.py',
+              'application/environment_dependency_inventory.py', 'engine/workload_inventory.py',
+              'adapters/source/workload_inventory.py',
+              'adapters/runtime/workload_inventory.py',
+              'adapters/database/environment_transfer.py', 'adapters/database/environment_fence.py',
+              'adapters/database/environment_control.py', 'adapters/database/environment_traffic.py',
+              'adapters/state/environment_reviews.py', 'adapters/state/environment_gates.py',
+              'adapters/state/environment_admission.py', 'adapters/state/workload_inventory.py',
+              'adapters/state/source_workload_inventory.py',
+              'adapters/state/runtime_workload_inventory.py',
+              'adapters/state/worker_connection.py', 'adapters/onprem/published_endpoint.py',
+              'adapters/ai/environment_agent_sdk.py', 'interfaces/environment_demo.py',
           }
           assert required <= files, sorted(required - files)
           PY
@@ -118,6 +146,7 @@ jobs:
           SKY_TEST_K6_IMAGE: grafana/k6:2.3.0@sha256:9c2dee7f8ed74d317e4027c06a10f169b625638189de8d4555d0b3486a5aeb34
       - name: UI and PostgreSQL JavaScript tests
         run: |
+          node --test tests/unit/test_tug_write_gate.cjs tests/unit/test_tug_postgres.cjs
           node tests/regression/test_postgres_ui.mjs
           node tests/regression/test_aws_backend_ui.mjs
           node tests/regression/test_deployment_read_ui.mjs
