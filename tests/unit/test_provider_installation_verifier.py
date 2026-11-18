@@ -42,9 +42,16 @@ def test_two_installations_use_isolated_python_minimal_environment_and_offline_p
 
     calls = []
     artifact = "a" * 64
+    execution = "b" * 64
     manifest = {
         "provider_artifact_sha256": artifact,
-        "registrations": [{"resource_verifier_ref": "RVR-registered", "effect_ref": "EEF-registered"}],
+        "registrations": [
+            {
+                "execution_revision": execution,
+                "resource_verifier_ref": "RVR-registered",
+                "effect_ref": "EEF-registered",
+            }
+        ],
     }
 
     def run(arguments, *, env, cwd):
@@ -59,7 +66,17 @@ def test_two_installations_use_isolated_python_minimal_environment_and_offline_p
         if "environment_execution_registration" in script:
             return (
                 '{"artifact":"' + artifact + '","bytecode":true,"count":1,"effect":"EEF-registered",'
-                '"resource":"RVR-registered","secrets":6}'
+                '"resource":"RVR-registered","secrets":6,'
+                '"runtime_pin":"ETR-registered","runtime_impl":"ETR-registered",'
+                '"resolver_pin":"ESR-registered","resolver_impl":"ESR-registered",'
+                '"composer_pin":"RTC-registered","composer_impl":"RTC-registered",'
+                '"execution":"'
+                + execution
+                + '","runtime_execution":"'
+                + execution
+                + '","composer_execution":"'
+                + execution
+                + '"}'
             )
         if "environment_execution_provider" in script:
             return '{"provider_artifact_sha256":"' + artifact + '"}'
@@ -74,6 +91,7 @@ def test_two_installations_use_isolated_python_minimal_environment_and_offline_p
 
     assert result["base_wheel_sha256"] == hashlib.sha256(b"base-wheel").hexdigest()
     assert result["provider_wheel_sha256"] == hashlib.sha256(b"provider-wheel").hexdigest()
+    assert result["runtime_chain_pins_match"] is True
     assert result["worker_check_config_without_external_calls"] is True
     pip_calls = [call for call in calls if "pip" in call[0]]
     inspect_calls = [call for call in calls if "pip" not in call[0]]
