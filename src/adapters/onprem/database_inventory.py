@@ -295,6 +295,28 @@ class VmDatabaseInventoryVerifier:
                 "sky-owner-ref": placement.owner_ref,
                 "sky-database-role": placement.role,
             }
+            container_labels = container.get("labels")
+            volume_labels = volume.get("labels")
+            mounts = container.get("mounts")
+            ports = container.get("ports")
+            if (
+                not isinstance(container_labels, dict)
+                or not isinstance(volume_labels, dict)
+                or any(
+                    not isinstance(key, str)
+                    or not isinstance(value, str)
+                    or not 1 <= len(key.encode()) <= 256
+                    or len(value.encode()) > 4096
+                    for values in (container_labels, volume_labels)
+                    for key, value in values.items()
+                )
+                or not isinstance(mounts, list)
+                or not 1 <= len(mounts) <= 16
+                or any(not isinstance(value, dict) for value in mounts)
+                or not isinstance(ports, dict)
+                or set(ports) != {"5432/tcp"}
+            ):
+                raise ValueError("Canonical VM database evidence required")
             if (
                 daemon != r.daemon_id
                 or container.get("id") != r.container_id
@@ -302,15 +324,14 @@ class VmDatabaseInventoryVerifier:
                 or container.get("running") is not True
                 or container.get("privileged") is not False
                 or container.get("network_mode") in {"host", "none"}
-                or any(container.get("labels", {}).get(k) != v for k, v in labels.items())
+                or any(container_labels.get(k) != v for k, v in labels.items())
                 or volume.get("name") != r.volume_name
                 or volume.get("driver") != "local"
                 or volume.get("scope") != "local"
                 or volume.get("options") is not False
-                or any(volume.get("labels", {}).get(k) != v for k, v in labels.items())
+                or any(volume_labels.get(k) != v for k, v in labels.items())
             ):
                 raise ValueError("VM database identity or ownership changed")
-            mounts = container.get("mounts", [])
             data = [m for m in mounts if m.get("Destination") == "/var/lib/postgresql/data"]
             if (
                 len(data) != 1
@@ -324,12 +345,14 @@ class VmDatabaseInventoryVerifier:
                 for m in mounts
             ):
                 raise ValueError("Unsafe database mount")
-            ports = container.get("ports", {}).get("5432/tcp")
+            bindings = ports["5432/tcp"]
             if (
-                not isinstance(ports, list)
-                or len(ports) != 1
-                or ports[0].get("HostPort") != str(r.server_port)
-                or ports[0].get("HostIp") in {None, "", "0.0.0.0", "::"}
+                not isinstance(bindings, list)
+                or len(bindings) != 1
+                or not isinstance(bindings[0], dict)
+                or set(bindings[0]) != {"HostIp", "HostPort"}
+                or bindings[0].get("HostPort") != str(r.server_port)
+                or bindings[0].get("HostIp") in {None, "", "0.0.0.0", "::"}
             ):
                 raise ValueError("One explicitly bound registered database port required")
             digest = hashlib.sha256(

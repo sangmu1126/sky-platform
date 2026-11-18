@@ -90,6 +90,7 @@ def test_valid_vm_reads_only_fixed_metadata_and_returns_no_environment(registere
         lambda c, v: c["mounts"][0].update(Type="tmpfs"),
         lambda c, v: c["mounts"].append({"Source": "/", "Destination": "/host"}),
         lambda c, v: c["ports"]["5432/tcp"][0].update(HostIp="0.0.0.0"),
+        lambda c, v: c["ports"].update({"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8080"}]}),
         lambda c, v: v["labels"].update({"sky-owner-ref": "foreign"}),
         lambda c, v: v.update(options=True),
     ],
@@ -113,6 +114,14 @@ def test_duplicate_remote_metadata_fields_cannot_prove_inventory(registered):
     verifier.command = Mock(
         side_effect=[json.dumps(verifier.registration.daemon_id), '{"id":"one","id":"two"}']
     )
+    with pytest.raises(DatabaseInventoryUnavailable):
+        verifier.verify(verifier.registration.placement)
+
+
+@pytest.mark.parametrize("field", ["labels", "mounts", "ports"])
+def test_malformed_vm_database_evidence_is_sanitized(registered, field):
+    verifier, container, _volume = registered
+    container[field] = [] if field != "mounts" else [[]]
     with pytest.raises(DatabaseInventoryUnavailable):
         verifier.verify(verifier.registration.placement)
 
