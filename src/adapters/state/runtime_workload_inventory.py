@@ -81,6 +81,25 @@ class PostgresRuntimeWorkloadInventoryReports:
             self.authorizer._owner(db, principal, inventory.scope.application_id)
             if self.current_principal(principal) != principal:
                 raise PermissionError("Runtime inventory membership changed")
+            provider_report_id = document["provider_identity_report_id"]
+            if registration.provider_identity_registration_id:
+                provider = db.execute(
+                    """SELECT provider_identity_registration_id,inventory_id,application_id,
+                    organization_id,endpoint,document->>'status',expires_at >= %s::timestamptz
+                    FROM sky_state.provider_identity_reports
+                    WHERE workspace=%s AND report_id=%s FOR SHARE""",
+                    (document["evaluated_at"], self.operations.workspace, provider_report_id),
+                ).fetchone()
+                if provider != (
+                    registration.provider_identity_registration_id,
+                    inventory.document()["inventory_id"],
+                    inventory.scope.application_id,
+                    principal.organization_id,
+                    registration.endpoint,
+                    "verified",
+                    True,
+                ):
+                    raise ValueError("Durable provider identity evidence required")
             db.execute(
                 """INSERT INTO sky_state.runtime_inventory_reports
                 (workspace,report_id,runtime_registration_id,inventory_id,application_id,

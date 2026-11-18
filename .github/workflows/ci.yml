@@ -112,14 +112,20 @@ jobs:
               'application/environment_dependency_inventory.py', 'engine/workload_inventory.py',
               'adapters/source/workload_inventory.py',
               'adapters/runtime/workload_inventory.py',
+              'adapters/runtime/provider_identity.py',
+              'adapters/onprem/runtime_inventory.py',
+              'adapters/onprem/runtime_inventory_install.py',
               'adapters/database/environment_transfer.py', 'adapters/database/environment_fence.py',
               'adapters/database/environment_control.py', 'adapters/database/environment_traffic.py',
               'adapters/state/environment_reviews.py', 'adapters/state/environment_gates.py',
               'adapters/state/environment_admission.py', 'adapters/state/workload_inventory.py',
               'adapters/state/source_workload_inventory.py',
               'adapters/state/runtime_workload_inventory.py',
+              'adapters/state/provider_identity.py',
               'adapters/state/worker_connection.py', 'adapters/onprem/published_endpoint.py',
               'adapters/ai/environment_agent_sdk.py', 'interfaces/environment_demo.py',
+              'interfaces/runtime_inventory_helper.py',
+              'interfaces/runtime_inventory_ssh_gate.py',
           }
           assert required <= files, sorted(required - files)
           PY
