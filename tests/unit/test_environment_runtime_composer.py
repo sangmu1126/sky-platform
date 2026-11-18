@@ -157,6 +157,23 @@ def test_composition_document_is_secret_free_and_binds_every_public_registration
     text = str(document)
     assert "private-password" not in text and "private-token" not in text
     assert all(str(value.private_key) not in text for value in [materials["router_transport"]])
+    assert str(tmp_path) not in text and "sslrootcert" not in text
+
+    moved = tmp_path / "moved-ca.pem"
+    moved.write_bytes((tmp_path / "ca.pem").read_bytes())
+    moved_registration = replace(
+        registration,
+        source_endpoint=replace(
+            registration.source_endpoint,
+            inventory=replace(registration.source_endpoint.inventory, sslrootcert=str(moved)),
+        ),
+        target_endpoint=replace(
+            registration.target_endpoint,
+            inventory=replace(registration.target_endpoint.inventory, sslrootcert=str(moved)),
+        ),
+        control_ca_path=str(moved),
+    )
+    assert moved_registration.document()["composition_ref"] == document["composition_ref"]
 
 
 def test_composer_builds_one_guarded_transport_and_cutover_graph(tmp_path):

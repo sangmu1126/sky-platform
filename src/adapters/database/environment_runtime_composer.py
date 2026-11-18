@@ -173,10 +173,47 @@ class RegisteredEnvironmentRuntimeComposition:
             raise ValueError("Bounded transfer byte limit required")
 
     def document(self):
+        def endpoint(value):
+            inventory = value.inventory
+            return {
+                "inventory": {
+                    "resource": asdict(inventory.resource),
+                    "hostname": inventory.hostname,
+                    "port": inventory.port,
+                    "login_role": inventory.login_role,
+                    "ca_sha256": inventory.ca_sha256,
+                },
+                "connect_port": value.connect_port,
+                "connect_hostaddr": value.connect_hostaddr,
+            }
+
         value = {
             "schema_version": 1,
             "profile": "registered_aws_vm_environment_runtime_composition_v1",
-            **asdict(self),
+            "execution_revision": self.execution_revision,
+            "source_endpoint": endpoint(self.source_endpoint),
+            "target_endpoint": endpoint(self.target_endpoint),
+            "source_rds": asdict(self.source_rds),
+            "target_vm": asdict(self.target_vm),
+            "router": asdict(self.router),
+            "router_host": self.router_host,
+            "router_user": self.router_user,
+            "router_port": self.router_port,
+            "source_writer_role": self.source_writer_role,
+            "target_writer_role": self.target_writer_role,
+            "source_ownership_marker": self.source_ownership_marker,
+            "target_ownership_marker": self.target_ownership_marker,
+            "source_control_endpoint": self.source_control_endpoint,
+            "source_control_address": self.source_control_address,
+            "source_controller_id": self.source_controller_id,
+            "target_control_endpoint": self.target_control_endpoint,
+            "target_control_address": self.target_control_address,
+            "target_controller_id": self.target_controller_id,
+            "control_ca_sha256": self.control_ca_sha256,
+            "runtime_verifier_ref": self.runtime_verifier_ref,
+            "entrypoint_probe_ref": self.entrypoint_probe_ref,
+            "max_rows": self.max_rows,
+            "max_bytes": self.max_bytes,
         }
         digest = hashlib.sha256(
             json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
