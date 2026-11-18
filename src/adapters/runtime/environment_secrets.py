@@ -57,6 +57,15 @@ def _secret_value(value, name, *, maximum):
     return result
 
 
+def _regional_aws_client(client, service, region):
+    metadata = getattr(client, "meta", None)
+    if (
+        getattr(metadata, "region_name", None) != region
+        or getattr(metadata, "endpoint_url", None) != f"https://{service}.{region}.amazonaws.com"
+    ):
+        raise ValueError("Regional AWS secret authority required")
+
+
 @dataclass(frozen=True)
 class DatabaseRuntimeSecretMaterial:
     username: str = field(repr=False)
@@ -154,9 +163,18 @@ def _private_file(path, expected_sha256=None):
         if len(content) != before.st_size or (
             before.st_dev,
             before.st_ino,
+            before.st_mode,
+            before.st_uid,
             before.st_size,
             before.st_mtime_ns,
-        ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_uid,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
             raise ValueError("Operator secret file changed")
         if expected_sha256 is not None and hashlib.sha256(content).hexdigest() != expected_sha256:
             raise ValueError("Operator secret file changed")
@@ -257,9 +275,8 @@ class AwsAndPrivateEnvironmentSecretResolver:
             callable(getattr(secretsmanager, name, None)) for name in ("describe_secret", "get_secret_value")
         ):
             raise TypeError("Read-only AWS secret clients required")
-        client_region = getattr(getattr(secretsmanager, "meta", None), "region_name", None)
-        if client_region != region:
-            raise ValueError("AWS secret client region differs from registration")
+        _regional_aws_client(sts, "sts", region)
+        _regional_aws_client(secretsmanager, "secretsmanager", region)
         self.execution_revision = execution_revision
         self.account_id, self.region = account_id, region
         self.targets = {value.secret_ref: value for value in (*aws_secrets, router_transport)}
@@ -290,9 +307,17 @@ class AwsAndPrivateEnvironmentSecretResolver:
         if self.sts.get_caller_identity().get("Account") != self.account_id:
             raise ValueError("AWS secret authority changed")
         metadata = self.secretsmanager.describe_secret(SecretId=target.secret_arn)
-        tags = {value.get("Key"): value.get("Value") for value in metadata.get("Tags", [])}
+        raw_tags = metadata.get("Tags")
         if (
-            metadata.get("ARN") != target.secret_arn
+            not isinstance(raw_tags, list)
+            or not 1 <= len(raw_tags) <= 50
+            or any(not isinstance(value, dict) or set(value) != {"Key", "Value"} for value in raw_tags)
+        ):
+            raise ValueError("AWS secret ownership changed")
+        tags = {value["Key"]: value["Value"] for value in raw_tags}
+        if (
+            len(tags) != len(raw_tags)
+            or metadata.get("ARN") != target.secret_arn
             or metadata.get("DeletedDate") is not None
             or any(tags.get(key) != value for key, value in target.required_tags)
         ):
@@ -331,6 +356,7 @@ class AwsAndPrivateEnvironmentSecretResolver:
             for path, content in ((private_key, key), (known_hosts, hosts)):
                 descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
                 with os.fdopen(descriptor, "wb") as output:
+                    os.fchmod(output.fileno(), 0o600)
                     output.write(content)
                     output.flush()
                     os.fsync(output.fileno())

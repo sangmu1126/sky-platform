@@ -71,12 +71,20 @@ class _FailClosedEntrypointProbe:
 
 
 class _UnavailableSts:
+    meta = SimpleNamespace(
+        region_name=REGION,
+        endpoint_url=f"https://sts.{REGION}.amazonaws.com",
+    )
+
     def get_caller_identity(self):
         raise RuntimeError("Reference-only AWS client")
 
 
 class _UnavailableSecrets:
-    meta = SimpleNamespace(region_name=REGION)
+    meta = SimpleNamespace(
+        region_name=REGION,
+        endpoint_url=f"https://secretsmanager.{REGION}.amazonaws.com",
+    )
 
     def describe_secret(self, **_kwargs):
         raise RuntimeError("Reference-only AWS client")

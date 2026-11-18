@@ -2,9 +2,10 @@
 
 import hashlib
 import json
+import os
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -53,8 +54,19 @@ def fixture(tmp_path):
     targets = tuple(aws_target(purpose, index) for index, purpose in enumerate(PURPOSES))
     key, hosts = private_files(tmp_path)
     router = private_router_transport_registration("secret-router", key, hosts)
-    sts = Mock(get_caller_identity=Mock(return_value={"Account": ACCOUNT}))
-    secrets = Mock(meta=SimpleNamespace(region_name=REGION))
+    sts = Mock(
+        meta=SimpleNamespace(
+            region_name=REGION,
+            endpoint_url=f"https://sts.{REGION}.amazonaws.com",
+        ),
+        get_caller_identity=Mock(return_value={"Account": ACCOUNT}),
+    )
+    secrets = Mock(
+        meta=SimpleNamespace(
+            region_name=REGION,
+            endpoint_url=f"https://secretsmanager.{REGION}.amazonaws.com",
+        )
+    )
 
     def describe(SecretId):
         target = next(value for value in targets if value.secret_arn == SecretId)
@@ -137,7 +149,9 @@ def stat_mode(path):
     return path.stat().st_mode & 0o777
 
 
-@pytest.mark.parametrize("change", ["account", "metadata", "version", "schema", "binary", "exception"])
+@pytest.mark.parametrize(
+    "change", ["account", "metadata", "duplicate-tags", "version", "schema", "binary", "exception"]
+)
 def test_aws_identity_version_schema_or_provider_failure_is_sanitized(tmp_path, change):
     execution, targets, _router, sts, secrets, resolver = fixture(tmp_path)
     target = targets[0]
@@ -146,6 +160,16 @@ def test_aws_identity_version_schema_or_provider_failure_is_sanitized(tmp_path, 
     elif change == "metadata":
         secrets.describe_secret.side_effect = None
         secrets.describe_secret.return_value = {"ARN": target.secret_arn, "Tags": []}
+    elif change == "duplicate-tags":
+        secrets.describe_secret.side_effect = None
+        secrets.describe_secret.return_value = {
+            "ARN": target.secret_arn,
+            "Tags": [
+                {"Key": "sky-managed", "Value": "false"},
+                {"Key": "sky-managed", "Value": "true"},
+                {"Key": "sky-application-id", "Value": "app"},
+            ],
+        }
     elif change == "version":
         secrets.get_secret_value.side_effect = None
         secrets.get_secret_value.return_value = {
@@ -252,6 +276,43 @@ def test_registration_rejects_public_or_symlinked_operator_files(tmp_path):
     link.symlink_to(key)
     with pytest.raises(ValueError):
         private_router_transport_registration("secret-router", link, hosts)
+
+
+@pytest.mark.parametrize("client", ["sts", "secretsmanager"])
+def test_registration_rejects_nonregional_or_custom_aws_endpoints(tmp_path, client):
+    execution, targets, router, sts, secrets, _resolver = fixture(tmp_path)
+    selected = sts if client == "sts" else secrets
+    selected.meta.endpoint_url = "https://localhost.invalid"
+    with pytest.raises(ValueError, match="Regional AWS secret authority"):
+        AwsAndPrivateEnvironmentSecretResolver(
+            execution_revision=execution.revision,
+            account_id=ACCOUNT,
+            region=REGION,
+            aws_secrets=targets,
+            router_transport=router,
+            sts=sts,
+            secretsmanager=secrets,
+        )
+
+
+def test_private_file_metadata_change_during_descriptor_read_is_rejected(tmp_path):
+    key, hosts = private_files(tmp_path)
+    original = os.read
+    changed = False
+
+    def mutate_mode(descriptor, size):
+        nonlocal changed
+        content = original(descriptor, size)
+        if not changed:
+            os.fchmod(descriptor, 0o644)
+            changed = True
+        return content
+
+    with (
+        patch("adapters.runtime.environment_secrets.os.read", side_effect=mutate_mode),
+        pytest.raises(ValueError, match="changed"),
+    ):
+        private_router_transport_registration("secret-router", key, hosts)
 
 
 def test_private_file_hash_uses_exact_bytes(tmp_path):
