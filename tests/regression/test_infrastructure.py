@@ -165,14 +165,17 @@ class InfrastructureTests(unittest.TestCase):
             {'type': 'output_text', 'text': json.dumps(proposal)}]}]}
         with patch('application.infrastructure.urllib.request.build_opener') as opener:
             opener.return_value.open.return_value = io.BytesIO(json.dumps(response).encode())
+            requirements = {'source_revision': 'a' * 64, 'detected_requirements': []}
             result = OpenAIInfrastructurePlanner(AISettings('fixture-key', 'fixture-model')).propose(
-                {'package.json': 'start'}, ['local-docker'], False)
+                {'package.json': 'start'}, ['local-docker'], False,
+                deployment_requirements=requirements)
             payload = json.loads(opener.return_value.open.call_args.args[0].data)
         self.assertEqual(result, proposal)
         self.assertFalse(payload['store'])
         self.assertTrue(payload['text']['format']['strict'])
         self.assertEqual(json.loads(payload['input'])['available_targets'], ['local-docker'])
         self.assertEqual(json.loads(payload['input'])['candidates'][0]['target'], 'local-docker')
+        self.assertEqual(json.loads(payload['input'])['deployment_requirements'], requirements)
         self.assertIsNone(json.loads(payload['input'])['candidates'][0]['monthly_cost_estimate_usd'])
 
     def test_planner_receives_backend_specific_facts_without_invented_price(self):
@@ -193,7 +196,8 @@ class InfrastructureTests(unittest.TestCase):
             opener.return_value.open.return_value = io.BytesIO(b'x' * (1024 * 1024 + 1))
             with self.assertRaisesRegex(ValueError, '응답 크기 제한'):
                 OpenAIInfrastructurePlanner(AISettings('fixture-key', 'fixture-model')).propose(
-                    {'package.json': 'start'}, ['local-docker'], False)
+                    {'package.json': 'start'}, ['local-docker'], False,
+                    deployment_requirements={'source_revision': 'a' * 64})
 
     def test_planner_retries_temporary_rejection_once(self):
         proposal = {'target': 'local-docker', 'workload': 'stateless-http',
@@ -207,7 +211,8 @@ class InfrastructureTests(unittest.TestCase):
                 patch('adapters.ai.openai_http.random.uniform', return_value=0):
             opener.return_value.open.side_effect = [failure, io.BytesIO(json.dumps(response).encode())]
             result = OpenAIInfrastructurePlanner(AISettings('fixture-key', 'fixture-model')).propose(
-                {'package.json': 'start'}, ['local-docker'], False)
+                {'package.json': 'start'}, ['local-docker'], False,
+                deployment_requirements={'source_revision': 'a' * 64})
         self.assertEqual(result, proposal)
         self.assertEqual(opener.return_value.open.call_count, 2)
 
@@ -612,10 +617,13 @@ class InfrastructureTests(unittest.TestCase):
             self.assertEqual(tools.attempts, 0)
 
     def test_auto_target_resolves_before_job_and_keeps_infrastructure_plan(self):
+        observed_requirements = []
+
         class Planner:
             def __init__(self, _settings):
                 pass
-            def propose(self, files, available_targets, public_access):
+            def propose(self, files, available_targets, public_access, *, deployment_requirements):
+                observed_requirements.append(deployment_requirements)
                 return {'target': 'aws-ecs-express', 'workload': 'stateless-http',
                         'rationale': '공개 HTTP 서비스',
                         'evidence': [{'file': 'package.json', 'quote': '"start": "node server.js"'}]}
@@ -643,6 +651,11 @@ class InfrastructureTests(unittest.TestCase):
             self.assertEqual(job['target'], 'aws-ecs-express')
             self.assertEqual(job['requested_target'], 'auto')
             self.assertEqual(job['infrastructure_plan']['planner'], 'openai')
+            contract = job['infrastructure_plan']['deployment_requirements']
+            self.assertEqual(observed_requirements, [contract])
+            self.assertEqual(contract['source_revision'], job['source_digest'])
+            self.assertEqual(contract['deployment_shape'], 'single-http-container')
+            self.assertIn('statelessness', contract['unknowns'])
             self.assertEqual(job['infrastructure_profile']['storage'], 'unconfirmed')
             compatibility = job['infrastructure_plan']['compatibility']
             self.assertTrue(compatibility['compatible'])

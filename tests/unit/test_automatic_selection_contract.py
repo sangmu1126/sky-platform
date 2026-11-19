@@ -43,13 +43,19 @@ def response(target):
     )
 
 
+def requirements():
+    return {"source_revision": "a" * 64, "detected_requirements": []}
+
+
 def test_response_enum_matches_offered_targets_and_is_request_local():
     original_schema = deepcopy(INFRA_SCHEMA)
     planner = OpenAIInfrastructurePlanner(AISettings("fixture-key", "fixture-model"))
     with patch("application.infrastructure.urllib.request.build_opener") as opener:
         opener.return_value.open.side_effect = [response("local-docker"), response("cloud-run")]
-        planner.propose({"app.py": "hello"}, ["local-docker"], False)
-        planner.propose({"app.py": "hello"}, ["cloud-run", "aws-ecs-express"], True)
+        planner.propose({"app.py": "hello"}, ["local-docker"], False,
+                        deployment_requirements=requirements())
+        planner.propose({"app.py": "hello"}, ["cloud-run", "aws-ecs-express"], True,
+                        deployment_requirements=requirements())
         payloads = [json.loads(call.args[0].data) for call in opener.return_value.open.call_args_list]
     for payload, targets in zip(payloads, [["local-docker"], ["cloud-run", "aws-ecs-express"]]):
         inputs = json.loads(payload["input"])
@@ -71,13 +77,15 @@ def test_response_enum_matches_offered_targets_and_is_request_local():
         (["local-docker", {}], False),
         ("local-docker", False),
         (["local-docker"], "true"),
+        (["onprem-vm"], False),
     ],
 )
 def test_invalid_or_explicit_only_choices_never_reach_the_api(targets, public):
     planner = OpenAIInfrastructurePlanner(AISettings("fixture-key", "fixture-model"))
     with patch("application.infrastructure.read_response") as request:
         with pytest.raises(ValueError):
-            planner.propose({"app.py": "hello"}, targets, public)
+            planner.propose({"app.py": "hello"}, targets, public,
+                            deployment_requirements=requirements())
         request.assert_not_called()
 
 
@@ -114,17 +122,20 @@ def test_public_url_requirement_is_transmitted_and_retained_after_citation_retry
         public_url_required=True,
     )
     assert result["selection_conditions"] == {"public_access_allowed": True, "public_url_required": True}
-    assert [call.kwargs for call in planner.propose.call_args_list] == [
-        {"public_url_required": True},
-        {"retry_invalid_evidence": True, "public_url_required": True},
-    ]
+    calls = [call.kwargs for call in planner.propose.call_args_list]
+    assert calls[0]["public_url_required"] is True
+    assert calls[1]["public_url_required"] is True
+    assert calls[1]["retry_invalid_evidence"] is True
+    assert calls[0]["deployment_requirements"] == calls[1]["deployment_requirements"]
+    assert calls[0]["deployment_requirements"] == result["deployment_requirements"]
 
 
 def test_model_request_records_explicit_public_url_requirement():
     planner = OpenAIInfrastructurePlanner(AISettings("fixture-key", "fixture-model"))
     with patch("application.infrastructure.urllib.request.build_opener") as opener:
         opener.return_value.open.return_value = response("aws-ecs-express")
-        planner.propose({"app.py": "hello"}, ["aws-ecs-express"], True, public_url_required=True)
+        planner.propose({"app.py": "hello"}, ["aws-ecs-express"], True,
+                        deployment_requirements=requirements(), public_url_required=True)
         payload = json.loads(opener.return_value.open.call_args.args[0].data)
     assert json.loads(payload["input"])["selection_conditions"] == {
         "public_access_allowed": True,

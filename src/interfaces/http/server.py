@@ -25,6 +25,7 @@ from engine.candidates import compare_targets, static_hosting_candidate
 from engine.aws_backend_assessment import with_aws_backend_options
 from engine.static_site import assess_static_site
 from engine.deployment_policy import deployment_policy, policy_from_record
+from engine.deployment_requirements import deployment_requirements
 from application.analysis import AISettings, analyze_project, redact
 from application.agent import DeploymentAgent, DeploymentCancelled, DeploymentTools, NeedsEnvironment, OpenAIDeployAgent
 from application.application_registry import ApplicationRegistry
@@ -2232,6 +2233,10 @@ def handler_for(app: App):
                             configuration_reason=static_configuration_reason))
                     self.json_response(200, {'source_digest': digest,
                                              'application_ir': application_ir(profile, digest).as_dict(),
+                                             'deployment_requirements': deployment_requirements(
+                                                 profile, digest,
+                                                 public_access_allowed=public_flag == 'true',
+                                                 public_url_required=public_url_required == 'true'),
                                              'deployment_policy': policy.as_dict(),
                                              'capability_models': {
                                                  target: target_capability_model(target).as_dict()
@@ -2599,7 +2604,8 @@ def handler_for(app: App):
                                 raise ValueError('현재 설정에서 감지된 요구와 호환되는 자동 배포 대상이 없습니다.')
                             infrastructure_plan = plan_infrastructure(project, available_targets,
                                 public_flag == 'true', app.infrastructure_planner_factory(app.ai_settings),
-                                public_url_required=public_url_required == 'true')
+                                public_url_required=public_url_required == 'true',
+                                profile=infrastructure_profile)
                             target = infrastructure_plan['target']
                             validate_infrastructure(infrastructure_profile, target)
                             infrastructure_plan['candidates'] = [

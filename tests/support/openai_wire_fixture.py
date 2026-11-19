@@ -92,6 +92,8 @@ class ResponsesWireFixture:
         assert payload['text']['format']['strict'] is True
         context = json.loads(payload['input'])
         assert 'local-docker' in context['available_targets']
+        assert context['deployment_requirements']['deployment_shape'] == 'single-http-container'
+        assert 'statelessness' in context['deployment_requirements']['unknowns']
         if self.wsgi_generated:
             assert 'Flask' in context['files']['app.py']
             evidence = {'file': 'app.py', 'quote': 'Flask'}

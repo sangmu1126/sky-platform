@@ -59,6 +59,13 @@ class CompatibilityPreviewTests(unittest.TestCase):
         self.assertEqual(payload['application_ir']['schema_version'], 2)
         self.assertEqual(payload['application_ir']['source_revision'], payload['source_digest'])
         self.assertEqual(payload['application_ir']['unknowns'], ('component_topology', 'statelessness'))
+        requirements = payload['deployment_requirements']
+        self.assertEqual(requirements['source_revision'], payload['source_digest'])
+        self.assertEqual(requirements['deployment_shape'], 'single-http-container')
+        self.assertEqual(requirements['detected_requirements'], [])
+        self.assertIn('statelessness', requirements['unknowns'])
+        self.assertEqual(requirements['access'], {
+            'public_access_allowed': True, 'public_url_required': False})
         self.assertEqual(payload['deployment_policy']['selection_mode'], 'auto_target')
         self.assertTrue(payload['deployment_policy']['public_access_allowed'])
         self.assertIn('aws-ecs-express', payload['deployment_policy']['allowed_targets'])
@@ -108,6 +115,10 @@ class CompatibilityPreviewTests(unittest.TestCase):
         sqlite_requirement = next(item for item in ir['requirements'] if item['kind'] == 'sqlite')
         evidence_ids = set(sqlite_requirement['evidence_ids'])
         self.assertTrue(evidence_ids)
+        contract = payload['deployment_requirements']
+        self.assertIn('sqlite', contract['required_capabilities'])
+        self.assertEqual({item['file'] for item in contract['evidence']
+                          if item['kind'] == 'sqlite'}, {'package.json', 'server.js'})
         self.assertEqual({item['path'] for item in ir['evidence'] if item['id'] in evidence_ids},
                          {'package.json', 'server.js'})
         self.assertTrue(all(item['source']['revision'] == ir['source_revision']
