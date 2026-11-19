@@ -27,6 +27,15 @@ def test_credential_patterns_are_redacted_without_registered_values(secret):
     assert redact(secret) != secret
 
 
+def test_ecs_express_hostname_is_not_mistaken_for_an_api_token():
+    url = "https://sk-4aa8d4ce032d4adcac9137e53910485a.ecs.ap-northeast-2.on.aws"
+    assert redact(url) == url
+    assert public_value({"url": url, "token": "sk-LOCAL_SYNTHETIC_SECRET_CANARY_123456789"}) == {
+        "url": url,
+        "token": "[REDACTED_TOKEN]",
+    }
+
+
 def test_registered_runtime_secret_encoded_forms_are_not_exported(monkeypatch):
     value = "opaque-canary/+with space-123456"
     monkeypatch.setenv("AWS_SESSION_TOKEN", value)

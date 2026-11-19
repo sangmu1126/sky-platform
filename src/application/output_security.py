@@ -45,10 +45,12 @@ def redact(text: str, *, values=()) -> str:
         r"-----BEGIN [^-]*PRIVATE KEY-----.*?(?:-----END [^-]*PRIVATE KEY-----|\Z)",
         "[REDACTED_PRIVATE_KEY]",
         text,
-        flags=re.S,
+        flags=re.DOTALL,
     )
     text = re.sub(
-        r"\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,}|(?:AKIA|ASIA)[A-Z0-9]{16})\b",
+        r"\b(?:sk-[A-Za-z0-9_-]{12,}\b(?!\.ecs\.[a-z0-9-]+\.on\.aws\b)|"
+        r"gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,}|"
+        r"(?:AKIA|ASIA)[A-Z0-9]{16})\b",
         "[REDACTED_TOKEN]",
         text,
     )
