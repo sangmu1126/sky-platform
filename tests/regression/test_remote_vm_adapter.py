@@ -134,6 +134,59 @@ class RemoteVmAdapterTests(unittest.TestCase):
             self.assertEqual(job["infrastructure_plan"]["compatibility"]["access_mode"], "public")
             self.assertEqual(job["compilation"]["target_plan"]["execution_configuration"]["database_mode"], "none")
 
+    def test_auto_upload_offers_ecs_and_vm_and_persists_selected_vm_contract(self):
+        observed = []
+
+        class Planner:
+            def __init__(self, _settings):
+                pass
+
+            def propose(self, files, targets, public, *, deployment_requirements):
+                observed.append((set(targets), deployment_requirements))
+                return {
+                    "target": "onprem-vm",
+                    "workload": "stateless-http",
+                    "rationale": "설정된 원격 Linux VM을 선택합니다.",
+                    "evidence": [{"file": "server.js", "quote": "createServer"}],
+                }
+
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("package.json", '{"scripts":{"start":"node server.js"}}')
+            bundle.writestr(
+                "server.js", 'require("node:http").createServer((q,r)=>r.end("ok"))')
+        content = archive.getvalue()
+        with tempfile.TemporaryDirectory() as temporary:
+            app = App(Path(temporary), AISettings("fixture-key", "fixture-model"),
+                      infrastructure_planner_factory=Planner, monitor_interval=0)
+            handler = handler_for(app).__new__(handler_for(app))
+            handler.path = "/api/deployments"
+            handler.json_response = Mock()
+            handler.headers = {"X-Sky-Token": app.token, "X-Deploy-Target": "auto",
+                               "X-Public-Access": "true", "Content-Length": str(len(content))}
+            handler.rfile = io.BytesIO(content)
+            with (patch.object(RemoteVmComposeAdapter, "unavailable_reason", return_value=None),
+                  patch.object(VmSettings, "from_environment", return_value=self.settings),
+                  patch("interfaces.http.server.AwsSettings.unavailable_reason", return_value=None),
+                  patch("interfaces.http.server.CloudRunSettings.unavailable_reason",
+                        return_value="GCP unavailable"),
+                  patch("interfaces.http.server.threading.Thread")):
+                handler.do_POST()
+            self.assertEqual(handler.json_response.call_args.args[0], 202)
+            job = app.jobs[handler.json_response.call_args.args[1]["id"]]
+            self.assertEqual(job["target"], "onprem-vm")
+            self.assertEqual(job["requested_target"], "auto")
+            self.assertEqual(job["vm"]["ssh_host"], "vm.example.test")
+            self.assertIn("aws-ecs-express", observed[0][0])
+            self.assertIn("onprem-vm", observed[0][0])
+            self.assertEqual(observed[0][1],
+                             job["infrastructure_plan"]["deployment_requirements"])
+            candidates = {item["id"]: item
+                          for item in job["infrastructure_plan"]["candidates"]}
+            self.assertEqual(candidates["aws-ecs-express"]["status"], "eligible")
+            self.assertEqual(candidates["onprem-vm"]["status"], "eligible")
+            self.assertTrue(candidates["onprem-vm"]["selected"])
+
     def test_health_inspects_persisted_vm_and_pinned_docker_host(self):
         attempt = "a" * 16 + "-a1"
         name = f"sky-{attempt}"

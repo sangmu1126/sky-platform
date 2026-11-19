@@ -8,7 +8,7 @@ from engine.compatibility import InfrastructureProfile, infrastructure_compatibi
 from engine.cost_exposure import cost_exposure
 from engine.static_site import StaticSiteAssessment
 
-SUPPORTED_TARGETS = ("local-docker", "aws-ecs-express", "cloud-run")
+SUPPORTED_TARGETS = ("local-docker", "onprem-vm", "aws-ecs-express", "cloud-run")
 
 
 def compare_targets(
@@ -20,15 +20,11 @@ def compare_targets(
     local_sqlite: bool = False,
     include_compose: bool = False,
 ) -> tuple[list[dict], list[dict]]:
-    """Evaluate target variants; Compose is explicit-only until auto selection is verified."""
+    """Evaluate executable targets; same-host Compose remains explicit-only."""
     if type(public_url_required) is not bool or (public_url_required and not public_access):
         raise ValueError("공개 URL을 요구하려면 인터넷 공개를 허용해야 합니다.")
     reports = []
-    targets = (
-        (*SUPPORTED_TARGETS, "onprem-compose", "onprem-vm")
-        if include_compose and "onprem-vm" in availability
-        else ((*SUPPORTED_TARGETS, "onprem-compose") if include_compose else SUPPORTED_TARGETS)
-    )
+    targets = (*SUPPORTED_TARGETS, "onprem-compose") if include_compose else SUPPORTED_TARGETS
     for target in targets:
         report = infrastructure_compatibility(
             profile,
@@ -51,7 +47,7 @@ def compare_targets(
             report["problems"].append(
                 "사용자가 공개 URL을 요구하지만 이 대상은 공개 URL로 배포되지 않습니다."
             )
-        reason = availability[target]
+        reason = availability.get(target, "배포 대상 설정을 확인할 수 없습니다.")
         reports.append(
             {
                 **report,

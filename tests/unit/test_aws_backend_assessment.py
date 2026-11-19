@@ -192,7 +192,9 @@ def test_architecture_decision_records_unselected_unsupported_options(tmp_path):
     assert options["aws-lambda"].selection == "not_selected"
     assert options["aws-ec2"].selection == "not_selected"
     assert "AUTOMATIC_SELECTION_NOT_INTEGRATED" in options["aws-lambda"].reason_codes
-    candidates[1]["status"] = "unsupported_by_sky"
+    next(item for item in candidates if item["id"] == "aws-ecs-express")["status"] = (
+        "unsupported_by_sky"
+    )
     with pytest.raises(ValueError, match="selection disagrees"):
         architecture_decision(
             application_ir(profile, "c" * 64).as_dict(), deployment_policy("auto", True), plan

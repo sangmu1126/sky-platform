@@ -2594,6 +2594,7 @@ def handler_for(app: App):
                                         application_id, database['database_id'])
                         if target == 'auto':
                             availability = {'local-docker': None,
+                                            'onprem-vm': RemoteVmComposeAdapter.unavailable_reason(),
                                             'aws-ecs-express': app.aws_settings.unavailable_reason(),
                                             'cloud-run': app.cloud_settings.unavailable_reason()}
                             _, candidates = compare_targets(infrastructure_profile, availability,

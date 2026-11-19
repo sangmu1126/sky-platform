@@ -24,6 +24,12 @@ _DEPLOYMENT_FACTS = {
         "request_timeout_seconds": 60,
         "public_url": "configuration-dependent",
     },
+    "onprem-vm": {
+        "execution": "Docker Compose service on a configured Linux VM over SSH",
+        "minimum_instances": 1,
+        "maximum_instances": 1,
+        "public_url": "configuration-dependent HTTP endpoint",
+    },
     "aws-ecs-express": {
         "execution": "ECS Express service running a Fargate task",
         "minimum_instances": 1,

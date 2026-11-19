@@ -181,13 +181,15 @@ class InfrastructureTests(unittest.TestCase):
     def test_planner_receives_backend_specific_facts_without_invented_price(self):
         from engine.target_selection_context import automatic_target_context
 
-        candidates = automatic_target_context(['cloud-run', 'aws-ecs-express'], True)
-        self.assertEqual([item['backend'] for item in candidates], ['cloud_run', 'ecs_express'])
-        self.assertEqual([item['sky_deployment']['minimum_instances'] for item in candidates], [0, 1])
-        self.assertEqual([item['sky_deployment']['maximum_instances'] for item in candidates], [1, 1])
-        self.assertEqual([item['access_mode'] for item in candidates], ['public', 'public'])
+        candidates = automatic_target_context(['cloud-run', 'onprem-vm', 'aws-ecs-express'], True)
+        self.assertEqual([item['backend'] for item in candidates],
+                         ['cloud_run', 'compose_remote_vm', 'ecs_express'])
+        self.assertEqual([item['sky_deployment']['minimum_instances'] for item in candidates], [0, 1, 1])
+        self.assertEqual([item['sky_deployment']['maximum_instances'] for item in candidates], [1, 1, 1])
+        self.assertEqual([item['access_mode'] for item in candidates], ['public', 'public', 'public'])
         self.assertTrue(all(not item['automatic_path_supports_database'] for item in candidates))
-        self.assertEqual([item['explicit_postgresql_binding'] for item in candidates], [True, True])
+        self.assertEqual([item['explicit_postgresql_binding'] for item in candidates],
+                         [True, False, True])
         self.assertTrue(all(item['monthly_cost_estimate_usd'] is None for item in candidates))
         self.assertEqual(automatic_target_context(['cloud-run'], False)[0]['access_mode'], 'authenticated')
 

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from adapters.aws.static_site import AwsStaticSiteAdapter
 from adapters.local.docker import LocalDockerAdapter
+from adapters.onprem.vm import RemoteVmComposeAdapter, VmSettings
 from application.deployment_core import extract_project, source_digest
 from application.health import check_deployment
 from application.github_source import (
@@ -277,6 +278,7 @@ class GitHubDeploymentsMixin:
         if requested_target == "auto":
             _, candidates = compare_targets(
                 profile, {"local-docker": None,
+                          "onprem-vm": RemoteVmComposeAdapter.unavailable_reason(),
                           "cloud-run": self.cloud_settings.unavailable_reason(),
                           "aws-ecs-express": self.aws_settings.unavailable_reason()},
                 public_access=public, public_url_required=public_url_required,
@@ -291,6 +293,7 @@ class GitHubDeploymentsMixin:
             plan = plan_infrastructure(
                 project, available, public, self.infrastructure_planner_factory(self.ai_settings),
                 public_url_required=public_url_required,
+                profile=profile,
             )
             plan["candidates"] = [{**item, "selected": item["id"] == plan["target"]} for item in candidates]
             target = plan["target"]
@@ -345,6 +348,8 @@ class GitHubDeploymentsMixin:
                 job["architecture_decision"], job["application_ir"], policy, plan)
             if target == "cloud-run":
                 job["cloud"] = asdict(self.cloud_settings)
+            elif target == "onprem-vm":
+                job["vm"] = asdict(VmSettings.from_environment())
             elif target == "aws-ecs-express":
                 job["aws"] = asdict(self.aws_settings)
             with self.lock:
