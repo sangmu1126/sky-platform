@@ -24,6 +24,29 @@ class RemoteVmAdapterTests(unittest.TestCase):
                 VmSettings(host, "sky", "app.example.test").validate()
         with self.assertRaises(ValueError):
             VmSettings("vm.example.test", "root;id", "app.example.test").validate()
+        with self.assertRaises(ValueError):
+            VmSettings("vm.example.test", "sky", "app.example.test", "true").validate()
+
+    def test_required_public_url_needs_explicit_operator_verification(self):
+        with patch("adapters.onprem.vm.LocalComposeAdapter.unavailable_reason", return_value=None):
+            self.assertIsNone(RemoteVmComposeAdapter.unavailable_reason(self.settings))
+            self.assertIn(
+                "SKY_VM_PUBLIC_URL_VERIFIED=true",
+                RemoteVmComposeAdapter.unavailable_reason(
+                    self.settings, public_url_required=True),
+            )
+            verified = VmSettings("vm.example.test", "sky", "app.example.test", True)
+            self.assertIsNone(RemoteVmComposeAdapter.unavailable_reason(
+                verified, public_url_required=True))
+
+    def test_public_url_verification_environment_value_is_strict(self):
+        with patch.dict("os.environ", {
+            "SKY_VM_SSH_HOST": "vm.example.test",
+            "SKY_VM_SSH_USER": "sky",
+            "SKY_VM_PUBLIC_HOST": "app.example.test",
+            "SKY_VM_PUBLIC_URL_VERIFIED": "yes",
+        }, clear=True):
+            self.assertIn("true 또는 false", RemoteVmComposeAdapter.unavailable_reason())
 
     def test_remote_compose_uses_vm_port_and_keeps_values_out_of_file(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -134,6 +157,29 @@ class RemoteVmAdapterTests(unittest.TestCase):
             self.assertEqual(job["infrastructure_plan"]["compatibility"]["access_mode"], "public")
             self.assertEqual(job["compilation"]["target_plan"]["execution_configuration"]["database_mode"], "none")
 
+    def test_explicit_vm_rejects_unverified_required_public_url(self):
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("package.json", '{"scripts":{"start":"node server.js"}}')
+            bundle.writestr(
+                "server.js", 'require("node:http").createServer((q,r)=>r.end("ok"))')
+        content = archive.getvalue()
+        with tempfile.TemporaryDirectory() as temporary:
+            app = App(Path(temporary), AISettings("fixture-key", "fixture-model"), monitor_interval=0)
+            handler = handler_for(app).__new__(handler_for(app))
+            handler.path = "/api/deployments"
+            handler.json_response = Mock()
+            handler.headers = {"X-Sky-Token": app.token, "X-Deploy-Target": "onprem-vm",
+                               "X-Public-Access": "true", "X-Public-URL-Required": "true",
+                               "Content-Length": str(len(content))}
+            handler.rfile = io.BytesIO(content)
+            with patch.object(VmSettings, "from_environment", return_value=self.settings):
+                handler.do_POST()
+            self.assertEqual(handler.json_response.call_args.args[0], 400)
+            self.assertIn("SKY_VM_PUBLIC_URL_VERIFIED=true",
+                          handler.json_response.call_args.args[1]["error"])
+            self.assertFalse(app.jobs)
+
     def test_auto_upload_offers_ecs_and_vm_and_persists_selected_vm_contract(self):
         observed = []
 
@@ -186,6 +232,57 @@ class RemoteVmAdapterTests(unittest.TestCase):
             self.assertEqual(candidates["aws-ecs-express"]["status"], "eligible")
             self.assertEqual(candidates["onprem-vm"]["status"], "eligible")
             self.assertTrue(candidates["onprem-vm"]["selected"])
+
+    def test_auto_public_url_requirement_excludes_unverified_vm(self):
+        observed = []
+
+        class Planner:
+            def __init__(self, _settings):
+                pass
+
+            def propose(self, files, targets, public, *, deployment_requirements,
+                        public_url_required=False):
+                observed.append((set(targets), public, public_url_required,
+                                 deployment_requirements))
+                return {
+                    "target": "aws-ecs-express",
+                    "workload": "stateless-http",
+                    "rationale": "검증된 공개 URL을 제공하는 적격 대상을 선택합니다.",
+                    "evidence": [{"file": "server.js", "quote": "createServer"}],
+                }
+
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("package.json", '{"scripts":{"start":"node server.js"}}')
+            bundle.writestr(
+                "server.js", 'require("node:http").createServer((q,r)=>r.end("ok"))')
+        content = archive.getvalue()
+        with tempfile.TemporaryDirectory() as temporary:
+            app = App(Path(temporary), AISettings("fixture-key", "fixture-model"),
+                      infrastructure_planner_factory=Planner, monitor_interval=0)
+            handler = handler_for(app).__new__(handler_for(app))
+            handler.path = "/api/deployments"
+            handler.json_response = Mock()
+            handler.headers = {"X-Sky-Token": app.token, "X-Deploy-Target": "auto",
+                               "X-Public-Access": "true", "X-Public-URL-Required": "true",
+                               "Content-Length": str(len(content))}
+            handler.rfile = io.BytesIO(content)
+            with (patch.object(VmSettings, "from_environment", return_value=self.settings),
+                  patch("interfaces.http.server.AwsSettings.unavailable_reason", return_value=None),
+                  patch("interfaces.http.server.CloudRunSettings.unavailable_reason",
+                        return_value="GCP unavailable"),
+                  patch("interfaces.http.server.threading.Thread")):
+                handler.do_POST()
+            self.assertEqual(handler.json_response.call_args.args[0], 202)
+            job = app.jobs[handler.json_response.call_args.args[1]["id"]]
+            self.assertEqual(job["target"], "aws-ecs-express")
+            self.assertEqual(observed[0][0], {"aws-ecs-express"})
+            self.assertEqual(observed[0][1:3], (True, True))
+            candidates = {item["id"]: item
+                          for item in job["infrastructure_plan"]["candidates"]}
+            self.assertEqual(candidates["onprem-vm"]["status"], "requires_setup")
+            self.assertIn("SKY_VM_PUBLIC_URL_VERIFIED=true",
+                          candidates["onprem-vm"]["reasons"][0])
 
     def test_health_inspects_persisted_vm_and_pinned_docker_host(self):
         attempt = "a" * 16 + "-a1"

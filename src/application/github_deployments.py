@@ -278,7 +278,8 @@ class GitHubDeploymentsMixin:
         if requested_target == "auto":
             _, candidates = compare_targets(
                 profile, {"local-docker": None,
-                          "onprem-vm": RemoteVmComposeAdapter.unavailable_reason(),
+                          "onprem-vm": RemoteVmComposeAdapter.unavailable_reason(
+                              public_url_required=public_url_required),
                           "cloud-run": self.cloud_settings.unavailable_reason(),
                           "aws-ecs-express": self.aws_settings.unavailable_reason()},
                 public_access=public, public_url_required=public_url_required,

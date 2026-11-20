@@ -25,13 +25,19 @@ class VmSettings:
     ssh_host: str
     ssh_user: str
     public_host: str
+    public_url_verified: bool = False
 
     @classmethod
     def from_environment(cls) -> VmSettings:
+        verified = os.getenv("SKY_VM_PUBLIC_URL_VERIFIED", "false")
+        if verified not in {"true", "false"}:
+            raise ValueError("SKY_VM_PUBLIC_URL_VERIFIED는 true 또는 false여야 합니다.")
         return cls(os.getenv("SKY_VM_SSH_HOST", ""), os.getenv("SKY_VM_SSH_USER", ""),
-                   os.getenv("SKY_VM_PUBLIC_HOST", ""))
+                   os.getenv("SKY_VM_PUBLIC_HOST", ""), verified == "true")
 
     def validate(self) -> None:
+        if type(self.public_url_verified) is not bool:
+            raise ValueError("VM 공개 URL 검증 설정이 올바르지 않습니다.")
         if not _USER.fullmatch(self.ssh_user):
             raise ValueError("SKY_VM_SSH_USER에 유효한 Linux 계정을 지정하세요.")
         for value, name in ((self.ssh_host, "SKY_VM_SSH_HOST"),
@@ -59,12 +65,18 @@ class RemoteVmComposeAdapter(LocalComposeAdapter):
                                      sqlite_volume=False, remote_host=True)
 
     @staticmethod
-    def unavailable_reason(settings: VmSettings | None = None) -> str | None:
-        settings = settings or VmSettings.from_environment()
+    def unavailable_reason(
+        settings: VmSettings | None = None, *, public_url_required: bool = False
+    ) -> str | None:
+        if type(public_url_required) is not bool:
+            raise ValueError("공개 URL 필수 조건이 올바르지 않습니다.")
         try:
+            settings = settings or VmSettings.from_environment()
             settings.validate()
         except ValueError as exc:
             return str(exc)
+        if public_url_required and not settings.public_url_verified:
+            return "공개 URL 필수 배포에는 SKY_VM_PUBLIC_URL_VERIFIED=true 확인이 필요합니다."
         if shutil.which("ssh") is None:
             return "SSH CLI를 사용할 수 없습니다."
         return LocalComposeAdapter.unavailable_reason()

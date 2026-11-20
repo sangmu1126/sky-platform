@@ -120,6 +120,7 @@ def main():
                 "ssh_host": settings.ssh_host,
                 "ssh_user": settings.ssh_user,
                 "public_host": settings.public_host,
+                "public_url_verified": settings.public_url_verified,
             }
             candidates = {item["id"]: item for item in job["infrastructure_plan"]["candidates"]}
             assert candidates["aws-ecs-express"]["status"] == "eligible"

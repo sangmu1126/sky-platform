@@ -2219,7 +2219,8 @@ def handler_for(app: App):
                         digest = source_digest(project)
                         availability = {'local-docker': None,
                                         'onprem-compose': LocalComposeAdapter.unavailable_reason(),
-                                        'onprem-vm': RemoteVmComposeAdapter.unavailable_reason(),
+                                        'onprem-vm': RemoteVmComposeAdapter.unavailable_reason(
+                                            public_url_required=public_url_required == 'true'),
                                         'aws-ecs-express': app.aws_settings.unavailable_reason(),
                                         'cloud-run': app.cloud_settings.unavailable_reason()}
                         reports, candidates = compare_targets(
@@ -2430,8 +2431,10 @@ def handler_for(app: App):
                         raise ValueError(app.cloud_settings.unavailable_reason())
                     if target == 'onprem-compose' and LocalComposeAdapter.unavailable_reason():
                         raise ValueError(LocalComposeAdapter.unavailable_reason())
-                    if target == 'onprem-vm' and RemoteVmComposeAdapter.unavailable_reason():
-                        raise ValueError(RemoteVmComposeAdapter.unavailable_reason())
+                    vm_unavailable = RemoteVmComposeAdapter.unavailable_reason(
+                        public_url_required=public_url_required == 'true') if target == 'onprem-vm' else None
+                    if vm_unavailable:
+                        raise ValueError(vm_unavailable)
                     if target == "aws-ecs-express":
                         if app.aws_settings.unavailable_reason():
                             raise ValueError(app.aws_settings.unavailable_reason())
@@ -2594,7 +2597,8 @@ def handler_for(app: App):
                                         application_id, database['database_id'])
                         if target == 'auto':
                             availability = {'local-docker': None,
-                                            'onprem-vm': RemoteVmComposeAdapter.unavailable_reason(),
+                                            'onprem-vm': RemoteVmComposeAdapter.unavailable_reason(
+                                                public_url_required=public_url_required == 'true'),
                                             'aws-ecs-express': app.aws_settings.unavailable_reason(),
                                             'cloud-run': app.cloud_settings.unavailable_reason()}
                             _, candidates = compare_targets(infrastructure_profile, availability,
